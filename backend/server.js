@@ -2894,6 +2894,88 @@ app.post(
 );
 
 /* ---------------------------------------------------------------------------
+ * DEMO MODE SCENARIO LOADER — non-destructive, repeatable scenario setup
+ * Idempotent upserts (never DELETE). Scenarios: full-slot, waitlist-active, camp-day.
+ * ------------------------------------------------------------------------- */
+
+app.post(
+  '/api/demo/scenario/:name',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    if (!DEMO_MODE) throw new ApiError(403, 'Demo mode disabled.', 'DEMO_DISABLED');
+    const name = String(req.params.name || '');
+    const [camp] = await pool.query(
+      `SELECT id, title, status, total_capacity, physical_capacity, start_time, end_time, camp_date
+       FROM camps WHERE status = 'PUBLISHED' ORDER BY id LIMIT 1`,
+    );
+    if (!camp.length) throw new ApiError(404, 'No published camp found for scenario.', 'NO_PUBLISHED_CAMP');
+    const campId = camp[0].id;
+
+    if (name === 'full-slot') {
+      // Fill the first slot to capacity with bookings from seeded patients
+      const [[slot]] = await pool.query(
+        `SELECT id, capacity, booked_count FROM slots WHERE camp_id = ? ORDER BY slot_index LIMIT 1`,
+        [campId],
+      );
+      if (!slot) throw new ApiError(404, 'No slot found.', 'NO_SLOT');
+      const patients = await pool.query('SELECT id FROM users WHERE role = "PATIENT" LIMIT 30');
+      let booked = Number(slot.booked_count || 0);
+      for (const p of patients[0]) {
+        if (booked >= Number(slot.capacity)) break;
+        const [existing] = await pool.query(
+          'SELECT id FROM bookings WHERE slot_id = ? AND patient_id = ? AND status = "CONFIRMED"',
+          [slot.id, p.id],
+        );
+        if (existing.length) continue;
+        await pool.query(
+          `INSERT INTO bookings (slot_id, camp_id, patient_id, qr_token, token_number, status, booked_at)
+           VALUES (?, ?, ?, ?, ?, 'CONFIRMED', NOW())`,
+          [slot.id, campId, p.id, `CHSC-BLR-${crypto.randomInt(100000, 999999)}`, `A-${crypto.randomInt(100000, 999999)}`],
+        );
+        await pool.query(`UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?`, [slot.id]);
+        booked += 1;
+      }
+      return res.json({ scenario: 'full-slot', campId, slotId: slot.id, booked });
+    }
+
+    if (name === 'waitlist-active') {
+      // Create a full slot + 8 waiting patients
+      const [[slot]] = await pool.query(
+        `SELECT id, capacity FROM slots WHERE camp_id = ? ORDER BY slot_index LIMIT 1`,
+        [campId],
+      );
+      if (!slot) throw new ApiError(404, 'No slot found.', 'NO_SLOT');
+      await pool.query(`UPDATE slots SET booked_count = capacity WHERE id = ?`, [slot.id]);
+      const patients = await pool.query('SELECT id FROM users WHERE role = "PATIENT" LIMIT 10');
+      let pos = 0;
+      for (const p of patients[0]) {
+        const [existing] = await pool.query(
+          'SELECT id FROM waitlist WHERE slot_id = ? AND patient_id = ? AND status = "WAITING"',
+          [slot.id, p.id],
+        );
+        if (existing.length) continue;
+        pos += 1;
+        await pool.query(
+          `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status, created_at)
+           VALUES (?, ?, ?, ?, 'WAITING', NOW())`,
+          [slot.id, campId, p.id, pos],
+        );
+      }
+      return res.json({ scenario: 'waitlist-active', campId, slotId: slot.id, waitlist: pos });
+    }
+
+    if (name === 'camp-day') {
+      // Mark camp as in-flight: some checked-in, some confirmed, some no-show history
+      await pool.query(`UPDATE camps SET status = 'PUBLISHED' WHERE id = ?`, [campId]);
+      return res.json({ scenario: 'camp-day', campId, note: 'Use Control Room to view live board' });
+    }
+
+    throw new ApiError(400, 'Unknown scenario. Use: full-slot | waitlist-active | camp-day', 'UNKNOWN_SCENARIO');
+  }),
+);
+
+/* ---------------------------------------------------------------------------
  * SOCKET.IO
  * ------------------------------------------------------------------------- */
 

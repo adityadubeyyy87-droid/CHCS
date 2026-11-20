@@ -402,6 +402,16 @@ const engine = {
     };
   },
 
+  async scenario(name) {
+    // Deterministic Mode-B mirror of the demo scenario loader.
+    const scenarios = {
+      'full-slot': { scenario: 'full-slot', booked: 10, note: 'Slot filled to capacity (10/10).' },
+      'waitlist-active': { scenario: 'waitlist-active', waitlist: 8, note: '8 patients waiting for a seat.' },
+      'camp-day': { scenario: 'camp-day', note: 'Camp day in flight; open Control Room.' },
+    };
+    return { ...(scenarios[name] || { error: 'Unknown scenario', simulated: true }), simulated: true };
+  },
+
   async controlRoom(campId) {
     const camp = DB.camps.find((c) => c.id === Number(campId));
     if (!camp) return { error: 'Camp not found.', simulated: true };
