@@ -447,4 +447,66 @@ All data is minimised (name, phone, email, age group only — no medical history
 
 ---
 
+## LIVING EXPERIENCE LAYER — 5-MINUTE WOW DEMO
+
+**Goal:** Demonstrate real 3D/motion + human-crafted healthcare feel, plus the strongest evidence for the 10 implementation marks.
+
+| Time | Action | What to show |
+|---|---|---|
+| 0:00–0:45 | Login as Organizer → Control Room | Live camp-day board: slot fill bars, check-in queue, staff load warnings, no-show risk badges |
+| 0:45–1:30 | Concurrency Proof page | "Run 50-way race" → 10 confirmed (green), 40 waitlisted (amber, positions 1–40), 0 overbooked, DB verification |
+| 1:30–2:00 | Demo Scenario Loader | Click "waitlist-active" → watch Control Room fill with 8 waiting patients |
+| 2:00–2:45 | QR Check-In (offline tolerance) | Toggle offline → scan queues locally with "pending sync" banner → back online → auto-sync |
+| 2:45–3:15 | Smart Waitlist + No-Show Risk | MyBookings shows "Position #3" for waitlisted; Control Room shows "No-show High/Medium/Low" with reason |
+| 3:15–3:45 | Data Provenance badges | Analytics charts carry "Seeded demo data" SIMULATED badges; meta note explains no field data |
+| 3:45–4:15 | Audit Trail | `/api/admin/audit-log` shows who cancelled which booking and when |
+| 4:15–5:00 | Q&A | 10 technical viva answers below |
+
+---
+
+## 10 TECHNICAL VIVA ANSWERS (Living Experience Layer)
+
+**Q1: How do you prove zero overbooking live during the demo?**
+A: The Concurrency Proof page fires 50 simultaneous `SELECT ... FOR UPDATE` transactions against one capacity-10 slot. The page animates 10 confirmed (green) and 40 waitlisted (amber, FIFO positions 1–40) and reads back `booked_count <= capacity` from MySQL. The `zeroOverbooked` flag is `true` only when DB confirms exactly 10 confirmed, 40 waiting, 0 errors.
+
+**Q2: Is the concurrency proof real or simulated?**
+A: Mode A (live MySQL) runs real InnoDB row-lock transactions; Mode B uses a deterministic engine mirror clearly tagged `simulated: true`. The mode chip and badges make this explicit — never presented as real when it isn't.
+
+**Q3: What happens if two staff check in the same patient simultaneously?**
+A: The check-in endpoint locks the booking row with `SELECT ... FOR UPDATE`. The first check-in sets status to CHECKED_IN; the second finds it already CHECKED_IN and rejects with a clear error. No double check-in.
+
+**Q4: How does offline check-in work without losing data?**
+A: When `navigator.onLine` is false, scans are queued locally with a `PENDING_SYNC` flag and shown on an offline banner. On reconnect (`online` event), `syncOffline()` replays them through the normal check-in endpoint. Failed syncs are re-queued with `SYNC_FAILED` status.
+
+**Q5: How is waitlist position shown and is it really FIFO?**
+A: `myBookings` returns `waitlistPosition` via a LEFT JOIN to the waitlist table. Promotion selects the lowest `position` (by `created_at, id`) under the same slot row lock that releases the seat — atomic, so two simultaneous cancellations can't promote two people into one seat.
+
+**Q6: Is the no-show risk score AI/ML?**
+A: No — explicitly a rule-based heuristic: `no_shows / past_bookings` per patient → Low (<0.3) / Medium (0.3–0.6) / High (>0.6), with a text reason (`"3 no-show in 8 past bookings"`). Labeled "heuristic, not AI prediction" and staff-facing only.
+
+**Q7: What does the Data Provenance badge prove?**
+A: Every analytics chart carries a "Seeded demo data" badge, and the meta note states no field-collected patient data exists. This defends the 8 data-collection marks honestly — seeded vs. test vs. field data is clearly distinguished.
+
+**Q8: How does the audit trail work without slowing requests?**
+A: `auditLog()` writes to `audit_log` inside a try/catch that never throws — if audit logging fails, the primary booking/camp action still completes. It's append-only: actor, action, target, before/after JSON, timestamp.
+
+**Q9: Is the demo scenario loader destructive?**
+A: No. It uses idempotent `INSERT ... ON DUPLICATE KEY UPDATE`-style logic (never DELETE). Scenarios (full-slot, waitlist-active, camp-day) are repeatable and safe to run mid-review.
+
+**Q10: Why build these "wow" features on top of the stable core?**
+A: Per the pre-mortem, the likeliest demo failure is an empty/unpredictable DB. The scenario loader makes demo state repeatable; the concurrency proof gives visual evidence for the 10 implementation marks; provenance badges defend the 8 data-collection marks. Each adds user value and passes the "so what?" test.
+
+---
+
+## PRE-MORTEM — 5 LIKELIEST DEMO FAILURES & FIXES
+
+1. **Empty DB / unpredictable state** → Fixed: Demo scenario loader seeds repeatable scenarios (full-slot, waitlist-active, camp-day).
+2. **Slow network** → Fixed: Concurrency proof fires 50 requests in parallel from one tab; Socket.io falls back to polling.
+3. **WebGL / 3D failure** → Fixed: No WebGL used; all animation is CSS/SVG; works with `prefers-reduced-motion`.
+4. **Dead email/SMS service** → Fixed: Reminders are sandboxed/SIMULATED; booking doesn't depend on delivery.
+5. **Stale data** → Fixed: Control Room re-reads from MySQL on every Socket.io event; concurrency proof re-queries `booked_count` after the race.
+
+---
+
 *End of academic review package.*
+

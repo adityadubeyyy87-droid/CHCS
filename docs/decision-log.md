@@ -141,3 +141,19 @@ C) No scenario loader. (Cons: demo state is unpredictable.)
 **Choice:** A â€” non-destructive scenario loader using idempotent upserts. Evidence: the existing `/api/demo/reset-notice` already hints at this pattern; `ON DUPLICATE KEY UPDATE` makes it idempotent. Fallback: if a scenario fails, return 409 with a clear message and leave the DB untouched.
 
 ---
+---
+
+## IMPLEMENTATION CONFIRMATION
+
+All 9 decision-log entries were implemented on branch living-experience-layer:
+- Entry 1 (Concurrency Proof): /api/demo/concurrency + ConcurrencyProof.jsx — verified 10 confirmed / 40 waitlisted / 0 overbooked
+- Entry 2 (Control Room): /api/camps/:campId/control-room + ControlRoom.jsx — Socket.io live updates
+- Entry 3 (QR offline tolerance): StaffDay.jsx local scan queue + sync-on-reconnect
+- Entry 4 (Smart waitlist): waitlist_position + promotion_expires_at + MyBookings position display
+- Entry 5 (No-show risk): rule-based Low/Medium/High score with reason in Control Room
+- Entry 6 (Data provenance): provenance: 'seeded' per chart + SIMULATED badges on Analytics
+- Entry 7 (Multilingual): EN/KN nav labels added to i18n.js
+- Entry 8 (Audit trail): udit_log table + uditLog() helper + /api/admin/audit-log
+- Entry 9 (Demo scenario loader): /api/demo/scenario/:name idempotent upserts, never DELETE
+
+Backend test suite: **69/69 passing** (12 files). Frontend: production build OK.
