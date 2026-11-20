@@ -1,0 +1,431 @@
+{
+  "info": {
+    "name": "CHSC — Community Health Screening Camp Scheduler",
+    "description": "Postman collection for the CHSC API. Covers authentication, camp management, patient booking, waitlist, attendance, staff assignment, analytics, and admin operations. All role-based endpoints are included with demo accounts.\n\nDemo accounts (seeded):\n- Admin: admin@cmrit.edu / Admin@123\n- Organizer: organizer@cmrit.edu / Password@123\n- Doctor: doctor@cmrit.edu / Password@123\n- Volunteer: volunteer@cmrit.edu / Password@123\n- Patient: patient@cmrit.edu / Password@123",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01. Health",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/health",
+            "description": "Check API and database health. Returns database connection status and version."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02. Authentication",
+      "item": [
+        {
+          "name": "POST /api/auth/register",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/register",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"New Patient\",\n  \"email\": \"newpatient@example.com\",\n  \"phone\": \"9845000200\",\n  \"password\": \"Test@1234\",\n  \"ageGroup\": \"30-45\",\n  \"preferredLanguage\": \"en\"\n}"
+            },
+            "description": "Register a new patient account. Password must be 8+ chars with a letter and number. Phone must be 10 digits."
+          }
+        },
+        {
+          "name": "POST /api/auth/login",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"patient@cmrit.edu\",\n  \"password\": \"Password@123\"\n}"
+            },
+            "description": "Login with email/phone and password. Returns JWT token and user object."
+          }
+        },
+        {
+          "name": "POST /api/auth/demo-login",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/demo-login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"PATIENT\"\n}"
+            },
+            "description": "One-click demo login for any role (PATIENT, ORGANIZER, DOCTOR, VOLUNTEER, ADMIN)."
+          }
+        },
+        {
+          "name": "GET /api/auth/me",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/me",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "description": "Get current authenticated user profile. Requires valid JWT."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03. Camps (Public + Organizer)",
+      "item": [
+        {
+          "name": "GET /api/camps",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/camps?page=1&pageSize=10",
+            "description": "List published camps with pagination. Returns camp bundles with slots and staff."
+          }
+        },
+        {
+          "name": "GET /api/camps/:id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/camps/1",
+            "description": "Get a single camp with its slots and staff assignments."
+          }
+        },
+        {
+          "name": "GET /api/camps/:id/slots",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/camps/1/slots",
+            "description": "List all slots for a camp with availability and waitlist counts."
+          }
+        },
+        {
+          "name": "POST /api/camps",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/camps",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{organizerToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Bannerghatta Community Health Camp\",\n  \"descriptionEn\": \"Free screening, BP, sugar, BMI and vision check.\",\n  \"venue\": \"Bannerghatta Community Hall\",\n  \"address\": \"Bannerghatta Main Road, Bengaluru 560083\",\n  \"campDate\": \"2027-02-15\",\n  \"startTime\": \"09:00\",\n  \"endTime\": \"16:00\",\n  \"slotDurationMins\": 30,\n  \"totalCapacity\": 80,\n  \"physicalCapacity\": 70,\n  \"status\": \"PUBLISHED\"\n}"
+            },
+            "description": "Create a new camp with deterministic slot generation. Organizer or Admin only."
+          }
+        },
+        {
+          "name": "PATCH /api/camps/:id/status",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/camps/1/status",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{organizerToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"COMPLETED\"\n}"
+            },
+            "description": "Update camp status (DRAFT, PUBLISHED, COMPLETED, CANCELLED)."
+          }
+        },
+        {
+          "name": "DELETE /api/camps/:id",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/camps/1",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizerToken}}" }],
+            "description": "Delete a camp only if it has no booking history. Otherwise use status=CANCELLED."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04. Patient Booking",
+      "item": [
+        {
+          "name": "POST /api/slots/:slotId/book",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/slots/1/book",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{patientToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"travelMode\": \"WALK\",\n  \"pledge\": true\n}"
+            },
+            "description": "Book a slot. Uses SELECT ... FOR UPDATE row lock for zero overbooking. Full slot → FIFO waitlist. One active booking per patient per camp."
+          }
+        },
+        {
+          "name": "PATCH /api/bookings/:id/cancel",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/bookings/1/cancel",
+            "header": [{ "key": "Authorization", "value": "Bearer {{patientToken}}" }],
+            "description": "Cancel a confirmed booking. Frees the seat and atomically promotes the first waitlisted patient (FIFO)."
+          }
+        },
+        {
+          "name": "PATCH /api/bookings/:id/reschedule",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/bookings/1/reschedule",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{patientToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"slotId\": 2\n}"
+            },
+            "description": "Move a confirmed booking to another slot in the same camp. Reminders are re-queued."
+          }
+        },
+        {
+          "name": "GET /api/bookings/me",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/bookings/me",
+            "header": [{ "key": "Authorization", "value": "Bearer {{patientToken}}" }],
+            "description": "List the current patient's bookings with camp, slot, and QR details."
+          }
+        },
+        {
+          "name": "GET /api/bookings/:id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/bookings/1",
+            "header": [{ "key": "Authorization", "value": "Bearer {{patientToken}}" }],
+            "description": "Get a single booking with offline pass data (QR token, token number, venue, time)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "05. Attendance & Check-In",
+      "item": [
+        {
+          "name": "POST /api/checkin",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/checkin",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{doctorToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"qrToken\": \"CHSC-BLR-104\"\n}"
+            },
+            "description": "Check in a patient by QR token or token number. Doctor, Volunteer, Organizer, Admin only. Broadcasts to Live Queue TV via Socket.io."
+          }
+        },
+        {
+          "name": "PATCH /api/bookings/:id/attendance",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/bookings/1/attendance",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{doctorToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"CHECKED_IN\"\n}"
+            },
+            "description": "Update attendance state: CONFIRMED→CHECKED_IN/NO_SHOW, CHECKED_IN→COMPLETED/NO_SHOW, NO_SHOW→CHECKED_IN. State machine enforced."
+          }
+        },
+        {
+          "name": "GET /api/queue/:campId",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/queue/1",
+            "description": "Live queue snapshot for a camp: current patient, next up, average wait. Used by the Live Queue TV."
+          }
+        },
+        {
+          "name": "POST /api/camps/:campId/close-out",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/camps/1/close-out",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizerToken}}" }],
+            "description": "Close camp day: remaining CONFIRMED bookings become NO_SHOW, reminders cancelled, camp marked COMPLETED. Idempotent."
+          }
+        }
+      ]
+    },
+    {
+      "name": "06. Staff Assignment",
+      "item": [
+        {
+          "name": "GET /api/camps/:campId/staff",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/camps/1/staff",
+            "description": "List staff assignments for a camp with clinical load warnings."
+          }
+        },
+        {
+          "name": "GET /api/staff/me",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/staff/me",
+            "header": [{ "key": "Authorization", "value": "Bearer {{doctorToken}}" }],
+            "description": "List the authenticated staff member's camp assignments."
+          }
+        },
+        {
+          "name": "POST /api/camps/:campId/staff",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/camps/1/staff",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{organizerToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": 3,\n  \"roleAtCamp\": \"DOCTOR\",\n  \"shiftStart\": \"09:00\",\n  \"shiftEnd\": \"16:00\",\n  \"expectedLoadPerHour\": 20,\n  \"maxPatientsPerHour\": 20,\n  \"duties\": \"General medicine review\"\n}"
+            },
+            "description": "Assign staff to a camp. Blocks overlapping shifts for the same person on the same day."
+          }
+        },
+        {
+          "name": "DELETE /api/staff/:id",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/staff/1",
+            "header": [{ "key": "Authorization", "value": "Bearer {{organizerToken}}" }],
+            "description": "Remove a staff assignment."
+          }
+        }
+      ]
+    },
+    {
+      "name": "07. Admin & Analytics",
+      "item": [
+        {
+          "name": "GET /api/admin/analytics",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/admin/analytics",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "Platform analytics: KPIs, bookings vs capacity, attendance vs no-show, hourly utilisation."
+          }
+        },
+        {
+          "name": "GET /api/admin/capacity-advisor",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/admin/capacity-advisor?physicalCapacity=100",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "Rule-based statistical Capacity Advisor (NOT AI/ML). Recommends booking capacity based on empirical no-show rate."
+          }
+        },
+        {
+          "name": "GET /api/admin/notifications",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/admin/notifications?limit=50",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "Notification gateway audit log (SMS/email delivery attempts and outcomes)."
+          }
+        },
+        {
+          "name": "GET /api/admin/users",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/admin/users?page=1&pageSize=20",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "List all users with pagination. Admin only."
+          }
+        },
+        {
+          "name": "PATCH /api/admin/users/:id/role",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/admin/users/5/role",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"VOLUNTEER\"\n}"
+            },
+            "description": "Change a user's role. Admin only."
+          }
+        },
+        {
+          "name": "POST /api/admin/reminders/run",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/admin/reminders/run",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "Manual reminder sweep. Claims due reminders with SELECT ... FOR UPDATE SKIP LOCKED for idempotent delivery."
+          }
+        },
+        {
+          "name": "GET /api/admin/reports/export.csv",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/admin/reports/export.csv",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "Export camp attendance report as CSV (Capacity, Booked, Attended, No-Shows, Rate)."
+          }
+        },
+        {
+          "name": "DELETE /api/users/me/purge",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/users/me/purge",
+            "header": [{ "key": "Authorization", "value": "Bearer {{patientToken}}" }],
+            "description": "DPDP-aligned right to erasure. Deletes user data and releases active seats."
+          }
+        }
+      ]
+    },
+    {
+      "name": "08. Demo Utilities",
+      "item": [
+        {
+          "name": "POST /api/demo/rush",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/demo/rush",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{organizerToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"campId\": 1\n}"
+            },
+            "description": "Add synthetic demand to available slots (demo only)."
+          }
+        },
+        {
+          "name": "POST /api/demo/reset-notice",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/demo/reset-notice",
+            "description": "Demo reset hint. Full DB reset: mysql -u root -p < database/schema.sql"
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "token", "value": "" },
+    { "key": "patientToken", "value": "" },
+    { "key": "organizerToken", "value": "" },
+    { "key": "doctorToken", "value": "" },
+    { "key": "adminToken", "value": "" }
+  ]
+}

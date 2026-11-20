@@ -1,0 +1,2745 @@
+/* ============================================================================
+ * COMMUNITY HEALTH SCREENING CAMP SCHEDULER (CHSC)
+ * Express.js + Socket.io + MySQL 8 backend
+ * CMRIT Bengaluru · Department of Information Science & Engineering
+ *
+ * Architectural highlights
+ *  - Pessimistic row locking (SELECT ... FOR UPDATE) for zero overbooking
+ *  - Atomic cancellation → FIFO waitlist promotion in one ACID transaction
+ *  - Deterministic interval partitioning for automatic slot generation
+ *  - Rule-based statistical Capacity Advisor (not black-box ML)
+ *  - node-cron reminder sweep (24h + 2h)
+ *  - Sandbox SMS/Email gateway with live Socket.io interception
+ *  - DPDP Act-aligned data minimisation and right-to-erasure endpoint
+ * ========================================================================== */
+
+require('dotenv').config();
+
+const express = require('express');
+const http = require('http');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const cors = require('cors');
+const mysql = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cron = require('node-cron');
+const nodemailer = require('nodemailer');
+const { Server } = require('socket.io');
+
+const { schemas, validateBody } = require('./lib/validation');
+const { parsePagination, buildPagination } = require('./lib/pagination');
+const { createLimiters } = require('./lib/limits');
+const { createProviders } = require('./lib/providers');
+const remindersEngine = require('./lib/reminders');
+
+const PORT = Number(process.env.PORT || 4000);
+const JWT_SECRET = process.env.JWT_SECRET || 'chsc-cmrit-dev-secret-change-in-viva';
+const JWT_EXPIRES = process.env.JWT_EXPIRES || '12h';
+const DEMO_MODE = String(process.env.DEMO_MODE || 'true') !== 'false';
+const FRONTEND_ORIGIN =
+  process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173';
+const ALLOWED_ORIGINS = FRONTEND_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean);
+const ALPHA_MAX = Number(process.env.ALPHA_MAX || 0.25);
+
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || '127.0.0.1',
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'community_health_scheduler',
+  waitForConnections: true,
+  connectionLimit: Number(process.env.DB_POOL_SIZE || 20),
+  queueLimit: 0,
+  enableKeepAlive: true,
+  decimalNumbers: true,
+  timezone: 'local',
+});
+
+const app = express();
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*')) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS blocked origin: ${origin}`));
+  },
+  credentials: true,
+};
+
+app.use((req, res, next) => {
+  req.id = String(req.headers['x-request-id'] || crypto.randomUUID());
+  res.setHeader('X-Request-Id', req.id);
+  next();
+});
+
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+const limiters = createLimiters({
+  disabled: String(process.env.RATE_LIMIT_DISABLED || 'false') === 'true',
+});
+const providers = createProviders(process.env, { quiet: process.env.NODE_ENV === 'test' });
+app.use('/api', limiters.api);
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: ALLOWED_ORIGINS, credentials: true },
+  transports: ['websocket', 'polling'],
+});
+
+/* ---------------------------------------------------------------------------
+ * Small utilities
+ * ------------------------------------------------------------------------- */
+
+class ApiError extends Error {
+  constructor(status, message, code = 'API_ERROR', details = null) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+function parseTimeToMinutes(value) {
+  if (value === null || value === undefined) return NaN;
+  const text = String(value);
+  const match = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return NaN;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function minutesToTime(totalMinutes) {
+  const normalized = ((Math.round(totalMinutes) % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(normalized / 60)).padStart(2, '0');
+  const mm = String(normalized % 60).padStart(2, '0');
+  return `${hh}:${mm}:00`;
+}
+
+function formatTime12(timeValue) {
+  const minutes = parseTimeToMinutes(timeValue);
+  if (!Number.isFinite(minutes)) return String(timeValue);
+  let h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ${suffix}`;
+}
+
+function todayIso() {
+  const d = new Date();
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function maskName(name = '') {
+  const parts = String(name).trim().split(/\s+/);
+  return `${parts[0] || 'Guest'} ${parts[1] ? `${parts[1][0]}.` : ''}`.trim();
+}
+
+function maskEmail(email = '') {
+  const [local, domain] = String(email).split('@');
+  if (!domain) return 'hidden';
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function makeQrToken() {
+  return `CHSC-BLR-${crypto.randomInt(100000, 999999)}`;
+}
+
+function makeTokenNumber() {
+  const prefix = String.fromCharCode(65 + crypto.randomInt(0, 6));
+  return `${prefix}-${crypto.randomInt(100000, 999999)}`;
+}
+
+function safeUser(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    role: row.role,
+    ageGroup: row.age_group,
+    preferredLanguage: row.preferred_language,
+    isActive: Boolean(row.is_active),
+    createdAt: row.created_at,
+  };
+}
+
+function publicCamp(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    descriptionEn: row.description_en,
+    descriptionKn: row.description_kn,
+    venue: row.venue,
+    address: row.address,
+    city: row.city,
+    campDate: row.camp_date,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    slotDurationMins: Number(row.slot_duration_mins),
+    totalCapacity: Number(row.total_capacity),
+    physicalCapacity: Number(row.physical_capacity),
+    status: row.status,
+    createdBy: row.created_by,
+    creatorName: row.creator_name || null,
+    slotCapacity: Number(row.slot_capacity || 0),
+    bookedTotal: Number(row.booked_total || 0),
+    waitingTotal: Number(row.waiting_total || 0),
+    staffTotal: Number(row.staff_total || 0),
+    createdAt: row.created_at,
+  };
+}
+
+function publicSlot(row) {
+  return {
+    id: row.id,
+    campId: row.camp_id,
+    slotIndex: Number(row.slot_index),
+    startTime: row.start_time,
+    endTime: row.end_time,
+    capacity: Number(row.capacity),
+    bookedCount: Number(row.booked_count),
+    waitingCount: Number(row.waiting_count || 0),
+    remaining: Number(row.capacity) - Number(row.booked_count),
+  };
+}
+
+function publicStaff(row) {
+  return {
+    id: row.id,
+    campId: row.camp_id,
+    userId: row.user_id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    roleAtCamp: row.role_at_camp,
+    shiftStart: row.shift_start,
+    shiftEnd: row.shift_end,
+    expectedLoadPerHour: Number(row.expected_load_per_hour),
+    maxPatientsPerHour: Number(row.max_patients_per_hour),
+    duties: row.duties,
+    loadWarning: Number(row.expected_load_per_hour) > Number(row.max_patients_per_hour),
+  };
+}
+
+function publicBooking(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    slotId: row.slot_id,
+    campId: row.camp_id,
+    patientId: row.patient_id,
+    patientName: row.patient_name || undefined,
+    qrToken: row.qr_token,
+    tokenNumber: row.token_number,
+    status: row.status,
+    travelMode: row.travel_mode,
+    pledgeOnTime: Boolean(row.pledge_on_time),
+    bookedAt: row.booked_at,
+    checkedInAt: row.checked_in_at,
+    cancelledAt: row.cancelled_at,
+    campTitle: row.camp_title || undefined,
+    campDate: row.camp_date || undefined,
+    venue: row.venue || undefined,
+    startTime: row.start_time || undefined,
+    endTime: row.end_time || undefined,
+  };
+}
+
+function publicNotification(row) {
+  return {
+    id: row.id,
+    bookingId: row.booking_id,
+    userId: row.user_id,
+    channel: row.channel,
+    type: row.type,
+    recipient: row.recipient,
+    subject: row.subject,
+    message: row.message,
+    provider: row.provider,
+    status: row.status,
+    sentAt: row.sent_at,
+  };
+}
+
+async function withTransaction(work) {
+  const conn = await pool.getConnection();
+  try {
+    // READ COMMITTED minimises gap-lock surprises while SELECT ... FOR UPDATE
+    // still provides an exclusive X-lock on the targeted slot index record.
+    await conn.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+    await conn.beginTransaction();
+    const result = await work(conn);
+    await conn.commit();
+    return result;
+  } catch (error) {
+    try {
+      await conn.rollback();
+    } catch (_) {
+      /* connection may already be closed */
+    }
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Authentication & role middleware
+ * ------------------------------------------------------------------------- */
+
+function signToken(user) {
+  return jwt.sign(
+    { sub: String(user.id), role: user.role, name: user.name, email: user.email },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES, issuer: 'chsc-cmrit' },
+  );
+}
+
+function authenticate(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return next(new ApiError(401, 'Authentication token required.', 'AUTH_REQUIRED'));
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = {
+      id: Number(payload.sub),
+      role: payload.role,
+      name: payload.name,
+      email: payload.email,
+    };
+    return next();
+  } catch (_) {
+    return next(new ApiError(401, 'Session expired or token invalid.', 'AUTH_INVALID'));
+  }
+}
+
+function optionalAuth(req, _res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (token) {
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      req.user = {
+        id: Number(payload.sub),
+        role: payload.role,
+        name: payload.name,
+        email: payload.email,
+      };
+    } catch (_) {
+      req.user = null;
+    }
+  }
+  next();
+}
+
+function requireRole(...roles) {
+  const allowed = roles.map((r) => r.toUpperCase());
+  return (req, _res, next) => {
+    if (!req.user) return next(new ApiError(401, 'Authentication required.', 'AUTH_REQUIRED'));
+    if (!allowed.includes(req.user.role)) {
+      return next(
+        new ApiError(403, `Role ${req.user.role} cannot perform this action.`, 'ROLE_FORBIDDEN', {
+          allowed,
+        }),
+      );
+    }
+    return next();
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * Reminder gateway (Nodemailer + Fast2SMS/Twilio sandbox + Socket.io mirror)
+ * ------------------------------------------------------------------------- */
+
+let smtpTransporter = null;
+if (process.env.SMTP_HOST) {
+  smtpTransporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: String(process.env.SMTP_SECURE || 'false') === 'true',
+    auth: process.env.SMTP_USER
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      : undefined,
+  });
+}
+
+function providerFor(channel) {
+  if (channel === 'SMS') {
+    return process.env.SMS_PROVIDER || 'Fast2SMS Sandbox';
+  }
+  return 'Nodemailer Sandbox';
+}
+
+async function insertNotification(conn, data) {
+  const payload = data.payload ? JSON.stringify(data.payload) : null;
+  const [result] = await conn.query(
+    `INSERT INTO notifications_log
+       (booking_id, user_id, channel, type, recipient, subject, message, provider, status, payload)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.bookingId || null,
+      data.userId || null,
+      data.channel,
+      data.type,
+      data.recipient,
+      data.subject || null,
+      data.message,
+      data.provider || providerFor(data.channel),
+      data.status || 'SIMULATED',
+      payload,
+    ],
+  );
+  return {
+    id: result.insertId,
+    bookingId: data.bookingId || null,
+    userId: data.userId || null,
+    channel: data.channel,
+    type: data.type,
+    recipient: data.recipient,
+    subject: data.subject || null,
+    message: data.message,
+    provider: data.provider || providerFor(data.channel),
+    status: data.status || 'SIMULATED',
+    sentAt: new Date().toISOString(),
+    simulated: true,
+  };
+}
+
+async function updateNotificationStatus(id, status) {
+  try {
+    await pool.query('UPDATE notifications_log SET status = ? WHERE id = ?', [status, id]);
+  } catch (error) {
+    console.warn('[notification status update]', error.message);
+  }
+}
+
+async function attemptRealDelivery(notification) {
+  try {
+    if (
+      notification.channel === 'EMAIL' &&
+      smtpTransporter &&
+      process.env.SMTP_USER &&
+      !String(notification.recipient).endsWith('@example.com')
+    ) {
+      await smtpTransporter.sendMail({
+        from: process.env.MAIL_FROM || 'CMRIT Community Health <no-reply@cmrit.edu>',
+        to: notification.recipient,
+        subject: notification.subject || 'Community Health Camp update',
+        text: notification.message,
+      });
+      await updateNotificationStatus(notification.id, 'SENT');
+      return;
+    }
+
+    if (notification.channel === 'SMS' && process.env.FAST2SMS_API_KEY) {
+      const url = new URL('https://www.fast2sms.com/dev/bulkV2');
+      url.searchParams.set('route', 'q');
+      url.searchParams.set('message', notification.message.slice(0, 480));
+      url.searchParams.set('language', 'english');
+      url.searchParams.set('flash', '0');
+      url.searchParams.set('numbers', notification.recipient);
+      const response = await fetch(url, {
+        headers: { authorization: process.env.FAST2SMS_API_KEY },
+      });
+      await updateNotificationStatus(notification.id, response.ok ? 'SENT' : 'FAILED');
+      return;
+    }
+
+    // Offline review path: DB audit + console mirror + live UI interception.
+    console.log(
+      `[GATEWAY ${notification.channel} · ${notification.provider}] → ${notification.recipient}\n${notification.message}`,
+    );
+    await updateNotificationStatus(notification.id, 'SIMULATED');
+  } catch (error) {
+    console.warn('[gateway delivery]', error.message);
+    await updateNotificationStatus(notification.id, 'FAILED');
+  }
+}
+
+function publishNotifications(notifications = []) {
+  for (const notification of notifications) {
+    if (!notification) continue;
+    // The live Gateway Interceptor Drawer listens to this event.
+    io.emit('gateway:message', notification);
+    io.emit('notification:new', notification);
+    attemptRealDelivery(notification);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Slot generation & camp bundle queries
+ * ------------------------------------------------------------------------- */
+
+function buildSlotPlan(startTime, endTime, slotDurationMins, totalCapacity) {
+  const start = parseTimeToMinutes(startTime);
+  const end = parseTimeToMinutes(endTime);
+  const duration = Number(slotDurationMins);
+  const capacity = Number(totalCapacity);
+
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    throw new ApiError(400, 'startTime and endTime must be HH:MM.', 'INVALID_TIME');
+  }
+  if (!Number.isFinite(duration) || duration < 5) {
+    throw new ApiError(400, 'slotDurationMins must be at least 5.', 'INVALID_DURATION');
+  }
+  if (!Number.isFinite(capacity) || capacity < 1) {
+    throw new ApiError(400, 'totalCapacity must be a positive integer.', 'INVALID_CAPACITY');
+  }
+  if (end <= start) {
+    throw new ApiError(400, 'endTime must be after startTime.', 'INVALID_INTERVAL');
+  }
+
+  // k = floor((T_end - T_start) / Δt)
+  const k = Math.floor((end - start) / duration);
+  if (k < 1) {
+    throw new ApiError(400, 'The camp interval is shorter than one slot.', 'INVALID_INTERVAL');
+  }
+  if (capacity < k) {
+    throw new ApiError(
+      400,
+      `Capacity (${capacity}) must be at least the number of slots (${k}).`,
+      'CAPACITY_TOO_SMALL',
+    );
+  }
+
+  // base = floor(C_camp / k); remainder = C_camp mod k
+  const base = Math.floor(capacity / k);
+  const remainder = capacity % k;
+
+  return Array.from({ length: k }, (_, index) => {
+    const slotStart = start + index * duration;
+    const slotEnd = slotStart + duration;
+    return {
+      slotIndex: index + 1,
+      startTime: minutesToTime(slotStart),
+      endTime: minutesToTime(slotEnd),
+      capacity: base + (index < remainder ? 1 : 0),
+    };
+  });
+}
+
+async function loadCampBundle(campId, conn = pool) {
+  const [campRows] = await conn.query(
+    `SELECT c.*, u.name AS creator_name,
+       (SELECT COALESCE(SUM(s.capacity), 0) FROM slots s WHERE s.camp_id = c.id) AS slot_capacity,
+       (SELECT COALESCE(SUM(s.booked_count), 0) FROM slots s WHERE s.camp_id = c.id) AS booked_total,
+       (SELECT COUNT(*) FROM waitlist w WHERE w.camp_id = c.id AND w.status = 'WAITING') AS waiting_total,
+       (SELECT COUNT(*) FROM staff_assignments sa WHERE sa.camp_id = c.id) AS staff_total
+     FROM camps c
+     LEFT JOIN users u ON u.id = c.created_by
+     WHERE c.id = ?`,
+    [campId],
+  );
+  if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+
+  const [slotRows] = await conn.query(
+    `SELECT s.*,
+       (SELECT COUNT(*) FROM waitlist w WHERE w.slot_id = s.id AND w.status = 'WAITING') AS waiting_count
+     FROM slots s WHERE s.camp_id = ? ORDER BY s.slot_index`,
+    [campId],
+  );
+  const [staffRows] = await conn.query(
+    `SELECT sa.*, u.name, u.email, u.phone
+     FROM staff_assignments sa JOIN users u ON u.id = sa.user_id
+     WHERE sa.camp_id = ? ORDER BY sa.role_at_camp, u.name`,
+    [campId],
+  );
+
+  const camp = publicCamp(campRows[0]);
+  camp.slots = slotRows.map(publicSlot);
+  camp.staff = staffRows.map(publicStaff);
+  camp.loadWarnings = camp.staff
+    .filter((member) => member.loadWarning)
+    .map((member) => ({
+      staffId: member.id,
+      name: member.name,
+      roleAtCamp: member.roleAtCamp,
+      expected: member.expectedLoadPerHour,
+      threshold: member.maxPatientsPerHour,
+      message: `${member.name} assigned ${member.expectedLoadPerHour} patients/hr — exceeds ${member.maxPatientsPerHour}/hr safe threshold.`,
+    }));
+  return camp;
+}
+
+async function loadAllCampBundles() {
+  return (await loadCampCollection()).camps;
+}
+
+/**
+ * Paginated camp collection in exactly three queries (camps + slots + staff)
+ * regardless of page size — no N+1 round trips.
+ */
+async function loadCampCollection({ where = `c.status IN ('PUBLISHED','COMPLETED')`, params = [], limit = null, offset = 0 } = {}) {
+  const paged = Number.isFinite(limit);
+  const [campRows] = await pool.query(
+    `SELECT c.*, u.name AS creator_name,
+       (SELECT COALESCE(SUM(s.capacity), 0) FROM slots s WHERE s.camp_id = c.id) AS slot_capacity,
+       (SELECT COALESCE(SUM(s.booked_count), 0) FROM slots s WHERE s.camp_id = c.id) AS booked_total,
+       (SELECT COUNT(*) FROM waitlist w WHERE w.camp_id = c.id AND w.status = 'WAITING') AS waiting_total,
+       (SELECT COUNT(*) FROM staff_assignments sa WHERE sa.camp_id = c.id) AS staff_total
+     FROM camps c
+     LEFT JOIN users u ON u.id = c.created_by
+     WHERE ${where}
+     ORDER BY c.camp_date ASC, c.start_time ASC, c.id ASC
+     ${paged ? 'LIMIT ? OFFSET ?' : ''}`,
+    paged ? [...params, limit, offset] : params,
+  );
+
+  const [[countRow]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM camps c WHERE ${where}`,
+    params,
+  );
+  const total = Number(countRow.total);
+
+  if (!campRows.length) return { camps: [], total };
+
+  const ids = campRows.map((row) => row.id);
+  const [slotRows] = await pool.query(
+    `SELECT s.*,
+       (SELECT COUNT(*) FROM waitlist w WHERE w.slot_id = s.id AND w.status = 'WAITING') AS waiting_count
+     FROM slots s WHERE s.camp_id IN (?) ORDER BY s.camp_id, s.slot_index`,
+    [ids],
+  );
+  const [staffRows] = await pool.query(
+    `SELECT sa.*, u.name, u.email, u.phone
+     FROM staff_assignments sa JOIN users u ON u.id = sa.user_id
+     WHERE sa.camp_id IN (?) ORDER BY sa.camp_id, sa.role_at_camp, u.name`,
+    [ids],
+  );
+
+  const slotsByCamp = new Map();
+  for (const row of slotRows) {
+    if (!slotsByCamp.has(row.camp_id)) slotsByCamp.set(row.camp_id, []);
+    slotsByCamp.get(row.camp_id).push(publicSlot(row));
+  }
+  const staffByCamp = new Map();
+  for (const row of staffRows) {
+    if (!staffByCamp.has(row.camp_id)) staffByCamp.set(row.camp_id, []);
+    staffByCamp.get(row.camp_id).push(publicStaff(row));
+  }
+
+  const camps = campRows.map((row) => {
+    const camp = publicCamp(row);
+    camp.slots = slotsByCamp.get(row.id) || [];
+    camp.staff = staffByCamp.get(row.id) || [];
+    camp.loadWarnings = camp.staff
+      .filter((member) => member.loadWarning)
+      .map((member) => ({
+        staffId: member.id,
+        name: member.name,
+        roleAtCamp: member.roleAtCamp,
+        expected: member.expectedLoadPerHour,
+        threshold: member.maxPatientsPerHour,
+        message: `${member.name} assigned ${member.expectedLoadPerHour} patients/hr — exceeds ${member.maxPatientsPerHour}/hr safe threshold.`,
+      }));
+    return camp;
+  });
+
+  return { camps, total };
+}
+
+/* ---------------------------------------------------------------------------
+ * Queue snapshot + analytics + advisor helpers
+ * ------------------------------------------------------------------------- */
+
+async function getQueueSnapshot(campId) {
+  const [rows] = await pool.query(
+    `SELECT b.id, b.token_number, b.status, b.checked_in_at, b.patient_id,
+            u.name AS patient_name, s.start_time, s.end_time
+     FROM bookings b
+     JOIN users u ON u.id = b.patient_id
+     JOIN slots s ON s.id = b.slot_id
+     WHERE b.camp_id = ? AND b.status = 'CHECKED_IN'
+     ORDER BY b.checked_in_at ASC, b.id ASC`,
+    [campId],
+  );
+
+  const now = Date.now();
+  const checkedIn = rows.map((row) => {
+    const checked = row.checked_in_at ? new Date(row.checked_in_at).getTime() : now;
+    return {
+      id: row.id,
+      tokenNumber: row.token_number,
+      patientName: maskName(row.patient_name),
+      checkedInAt: row.checked_in_at,
+      slot: `${formatTime12(row.start_time)} – ${formatTime12(row.end_time)}`,
+      waitedMinutes: Math.max(0, Math.round((now - checked) / 60000)),
+    };
+  });
+
+  const waits = checkedIn.map((item) => item.waitedMinutes);
+  const averageWaitMinutes = waits.length
+    ? Math.round(waits.reduce((sum, value) => sum + value, 0) / waits.length)
+    : 0;
+
+  return {
+    campId: Number(campId),
+    current: checkedIn[0] || null,
+    next: checkedIn.slice(1, 5),
+    totalCheckedIn: checkedIn.length,
+    averageWaitMinutes,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function buildAnalytics() {
+  const [[patientCount]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM users WHERE role = 'PATIENT' AND is_active = 1`,
+  );
+  const [[promotedCount]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM waitlist WHERE status = 'PROMOTED'`,
+  );
+  const [campRows] = await pool.query(
+    `SELECT c.id, c.title, c.venue, c.camp_date, c.status, c.total_capacity, c.physical_capacity,
+       (SELECT COALESCE(SUM(s.capacity), 0) FROM slots s WHERE s.camp_id = c.id) AS slot_capacity,
+       (SELECT COALESCE(SUM(s.booked_count), 0) FROM slots s WHERE s.camp_id = c.id) AS booked_total
+     FROM camps c
+     WHERE c.status IN ('PUBLISHED','COMPLETED')
+     ORDER BY c.camp_date ASC`,
+  );
+  const [statusRows] = await pool.query(
+    `SELECT b.camp_id, b.status, COUNT(*) AS total
+     FROM bookings b
+     JOIN camps c ON c.id = b.camp_id
+     WHERE c.status = 'COMPLETED'
+       AND b.status IN ('CHECKED_IN','COMPLETED','NO_SHOW')
+     GROUP BY b.camp_id, b.status`,
+  );
+  const [hourRows] = await pool.query(
+    `SELECT HOUR(s.start_time) AS hour_of_day,
+            SUM(s.booked_count) AS booked,
+            SUM(s.capacity) AS capacity
+     FROM slots s JOIN camps c ON c.id = s.camp_id
+     WHERE c.status = 'PUBLISHED'
+     GROUP BY HOUR(s.start_time)
+     ORDER BY hour_of_day`,
+  );
+
+  const statusMap = new Map();
+  for (const row of statusRows) {
+    if (!statusMap.has(row.camp_id)) statusMap.set(row.camp_id, {});
+    statusMap.get(row.camp_id)[row.status] = Number(row.total);
+  }
+
+  const bookingsVsCapacity = campRows.map((camp) => ({
+    camp: camp.title
+      .replace(' Community Health Camp', '')
+      .replace(' Primary Health Camp', '')
+      .replace(' (Completed)', ''),
+    short: camp.venue.split(' ')[0],
+    bookings: Number(camp.booked_total || 0),
+    capacity: Number(camp.slot_capacity || camp.total_capacity || 0),
+    date: camp.camp_date,
+    status: camp.status,
+  }));
+
+  const attendanceVsNoShow = campRows
+    .filter((camp) => camp.status === 'COMPLETED')
+    .map((camp) => {
+      const counts = statusMap.get(camp.id) || {};
+      return {
+        camp: camp.venue.split(' ')[0],
+        attended: Number(counts.CHECKED_IN || 0) + Number(counts.COMPLETED || 0),
+        noShow: Number(counts.NO_SHOW || 0),
+      };
+    });
+
+  const hourlyUtilisation = hourRows.map((row) => ({
+    hour: `${String(row.hour_of_day).padStart(2, '0')}:00`,
+    utilisation: Number(row.capacity)
+      ? Math.round((Number(row.booked) / Number(row.capacity)) * 100)
+      : 0,
+    booked: Number(row.booked),
+    capacity: Number(row.capacity),
+  }));
+
+  let attended = 0;
+  let noShow = 0;
+  statusRows.forEach((row) => {
+    if (row.status === 'NO_SHOW') noShow += Number(row.total);
+    else attended += Number(row.total);
+  });
+  const completedTotal = attended + noShow;
+  const noShowRate = completedTotal ? (noShow / completedTotal) * 100 : 0;
+  const attendanceRate = completedTotal ? (attended / completedTotal) * 100 : 0;
+
+  return {
+    kpis: {
+      totalRegistered: Number(patientCount.total),
+      attendanceRate: Number(attendanceRate.toFixed(1)),
+      waitlistPromotions: Number(promotedCount.total),
+      // Transparent label: modelled uplift, not a measured causal inference.
+      noShowReductionPct: 27,
+      noShowReductionBasis:
+        'Modelled 25–30% uplift from implementation intentions + timed reminders (Gollwitzer, 1999; meta-analytic range).',
+      totalBookings: statusRows.reduce((sum, row) => sum + Number(row.total), 0),
+      noShowRate: Number(noShowRate.toFixed(1)),
+    },
+    bookingsVsCapacity,
+    attendanceVsNoShow,
+    hourlyUtilisation,
+    meta: {
+      generatedAt: new Date().toISOString(),
+      engine: 'MySQL aggregate queries',
+      isolation: 'READ COMMITTED + explicit row locks for writes',
+    },
+  };
+}
+
+async function buildCapacityAdvisor(physicalCapacity = 100, alphaMax = ALPHA_MAX) {
+  const [[historical]] = await pool.query(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN b.status = 'NO_SHOW' THEN 1 ELSE 0 END) AS no_shows
+     FROM bookings b
+     JOIN camps c ON c.id = b.camp_id
+     WHERE c.status = 'COMPLETED'
+       AND b.status IN ('CHECKED_IN','COMPLETED','NO_SHOW')`,
+  );
+  const total = Number(historical.total || 0);
+  const noShows = Number(historical.no_shows || 0);
+  const p = total > 0 ? noShows / total : 0;
+  const cPhys = Math.max(1, Number(physicalCapacity) || 100);
+  const cap = Number(alphaMax) >= 0 ? Number(alphaMax) : ALPHA_MAX;
+  const rawRecommendation = Math.ceil(cPhys / Math.max(0.01, 1 - p));
+  const safetyCeiling = Math.floor(cPhys * (1 + cap));
+  const recommended = Math.max(cPhys, Math.min(rawRecommendation, safetyCeiling));
+  const buffer = recommended - cPhys;
+  const expectedAttendance = recommended * (1 - p);
+  const expectedDoctorUtilisation = Math.min(
+    100,
+    Number(((expectedAttendance / cPhys) * 100).toFixed(1)),
+  );
+
+  return {
+    badge: 'Rule-Based Statistical Heuristic — NOT Black-Box AI/ML',
+    formula: 'min( ceil(C_phys / (1 - p)), floor(C_phys × (1 + α_max)) )',
+    sampleSize: total,
+    noShows,
+    noShowRate: Number((p * 100).toFixed(1)),
+    physicalCapacity: cPhys,
+    alphaMax: cap,
+    rawRecommendation,
+    safetyCeiling,
+    recommended,
+    buffer,
+    expectedAttendance: Number(expectedAttendance.toFixed(1)),
+    expectedDoctorUtilisation,
+    interpretation:
+      'The advisor only reallocates a bounded safety buffer. Clinical judgement and venue constraints remain authoritative.',
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * Reminder sweep
+ * ------------------------------------------------------------------------- */
+
+async function runReminderSweep(trigger = 'cron') {
+  const result = await remindersEngine.runReminderSweep({ pool, providers });
+  io.emit('reminders:sweep', { trigger, ...result });
+  return result;
+}
+
+const REMINDER_CRON = String(process.env.REMINDER_CRON || '* * * * *');
+if (process.env.NODE_ENV !== 'test' && REMINDER_CRON !== 'off') {
+  cron.schedule(REMINDER_CRON, () => {
+    runReminderSweep('cron').catch((error) => console.warn('[reminder cron]', error.message));
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * HEALTH & AUTH
+ * ------------------------------------------------------------------------- */
+
+app.get('/api/health', async (_req, res) => {
+  let db = false;
+  let dbVersion = null;
+  try {
+    const [rows] = await pool.query('SELECT VERSION() AS version');
+    db = true;
+    dbVersion = rows[0].version;
+  } catch (error) {
+    dbVersion = error.code || error.message;
+  }
+  res.json({
+    ok: true,
+    service: 'CHSC API',
+    demoMode: DEMO_MODE,
+    database: db ? 'connected' : 'offline',
+    dbVersion,
+    socket: 'ready',
+    time: new Date().toISOString(),
+  });
+});
+
+app.post(
+  '/api/auth/register',
+  limiters.auth,
+  validateBody(schemas.registerSchema),
+  asyncHandler(async (req, res) => {
+    const {
+      name,
+      email,
+      phone,
+      password,
+      ageGroup = null,
+      preferredLanguage = 'en',
+    } = req.body || {};
+
+    if (!name || !email || !phone || !password) {
+      throw new ApiError(400, 'Name, email, phone and password are required.', 'VALIDATION');
+    }
+    if (String(password).length < 8) {
+      throw new ApiError(400, 'Password must be at least 8 characters.', 'WEAK_PASSWORD');
+    }
+    if (!/^[0-9]{10}$/.test(String(phone))) {
+      throw new ApiError(400, 'Phone must be a 10-digit Indian mobile number.', 'INVALID_PHONE');
+    }
+    if (ageGroup && !['18-29', '30-45', '46-60', '60+'].includes(ageGroup)) {
+      throw new ApiError(400, 'Invalid age group.', 'INVALID_AGE_GROUP');
+    }
+
+    const hash = await bcrypt.hash(String(password), 10);
+    try {
+      const [result] = await pool.query(
+        `INSERT INTO users
+           (name, email, phone, password_hash, role, age_group, preferred_language)
+         VALUES (?, ?, ?, ?, 'PATIENT', ?, ?)`,
+        [
+          String(name).trim(),
+          String(email).trim().toLowerCase(),
+          String(phone).trim(),
+          hash,
+          ageGroup,
+          preferredLanguage === 'kn' ? 'kn' : 'en',
+        ],
+      );
+      const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [result.insertId]);
+      const user = safeUser(rows[0]);
+      io.emit('admin:users-changed', { reason: 'registered', userId: user.id });
+      res.status(201).json({ user, token: signToken(user) });
+    } catch (error) {
+      if (error.code === 'ER_DUP_ENTRY') {
+        throw new ApiError(409, 'Email or phone is already registered.', 'USER_EXISTS');
+      }
+      throw error;
+    }
+  }),
+);
+
+app.post(
+  '/api/auth/login',
+  limiters.auth,
+  validateBody(schemas.loginSchema),
+  asyncHandler(async (req, res) => {
+    const { identifier, email, phone, password } = req.body || {};
+    const login = identifier || email || phone;
+    if (!login || !password) {
+      throw new ApiError(400, 'Email/phone and password are required.', 'VALIDATION');
+    }
+    const [rows] = await pool.query(
+      'SELECT * FROM users WHERE (email = ? OR phone = ?) AND is_active = 1 LIMIT 1',
+      [String(login).trim().toLowerCase(), String(login).trim()],
+    );
+    if (!rows.length || !(await bcrypt.compare(String(password), rows[0].password_hash))) {
+      throw new ApiError(401, 'Invalid credentials.', 'INVALID_CREDENTIALS');
+    }
+    const user = safeUser(rows[0]);
+    res.json({ user, token: signToken(user) });
+  }),
+);
+
+app.post(
+  '/api/auth/demo-login',
+  asyncHandler(async (req, res) => {
+    if (!DEMO_MODE) throw new ApiError(403, 'Demo login is disabled.', 'DEMO_DISABLED');
+    const role = String(req.body?.role || 'PATIENT').toUpperCase();
+    if (!['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'].includes(role)) {
+      throw new ApiError(400, 'Unknown demo role.', 'INVALID_ROLE');
+    }
+    const preferredEmail =
+      role === 'PATIENT'
+        ? 'patient@cmrit.edu'
+        : role === 'ADMIN'
+          ? 'admin@cmrit.edu'
+          : role === 'ORGANIZER'
+            ? 'organizer@cmrit.edu'
+            : role === 'DOCTOR'
+              ? 'doctor@cmrit.edu'
+              : 'volunteer@cmrit.edu';
+    const [rows] = await pool.query(
+      'SELECT * FROM users WHERE role = ? ORDER BY (email = ?) DESC, id ASC LIMIT 1',
+      [role, preferredEmail],
+    );
+    if (!rows.length) throw new ApiError(404, 'No demo user for this role.', 'DEMO_USER_MISSING');
+    const user = safeUser(rows[0]);
+    res.json({ user, token: signToken(user), demo: true });
+  }),
+);
+
+app.get(
+  '/api/auth/me',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query('SELECT * FROM users WHERE id = ? AND is_active = 1', [
+      req.user.id,
+    ]);
+    if (!rows.length) throw new ApiError(401, 'User no longer active.', 'USER_INACTIVE');
+    res.json({ user: safeUser(rows[0]) });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * PUBLIC CAMP READ APIs + DEMO BOOTSTRAP
+ * ------------------------------------------------------------------------- */
+
+app.get(
+  '/api/camps',
+  asyncHandler(async (req, res) => {
+    const paging = parsePagination(req.query);
+    if (!paging) {
+      throw new ApiError(
+        400,
+        'page must be ≥ 1 and pageSize between 1 and 100.',
+        'INVALID_PAGINATION',
+      );
+    }
+    const { camps, total } = await loadCampCollection(
+      paging.requested ? { limit: paging.limit, offset: paging.offset } : {},
+    );
+    res.json({ camps, pagination: buildPagination(total, paging) });
+  }),
+);
+
+app.get(
+  '/api/camps/:id',
+  asyncHandler(async (req, res) => {
+    const camp = await loadCampBundle(Number(req.params.id));
+    res.json({ camp });
+  }),
+);
+
+app.get(
+  '/api/camps/:id/slots',
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT s.*,
+        (SELECT COUNT(*) FROM waitlist w WHERE w.slot_id = s.id AND w.status = 'WAITING') AS waiting_count
+       FROM slots s WHERE s.camp_id = ? ORDER BY s.slot_index`,
+      [req.params.id],
+    );
+    res.json({ slots: rows.map(publicSlot) });
+  }),
+);
+
+app.get(
+  '/api/queue/:campId',
+  asyncHandler(async (req, res) => {
+    res.json({ queue: await getQueueSnapshot(req.params.campId) });
+  }),
+);
+
+app.get(
+  '/api/demo/bootstrap',
+  asyncHandler(async (_req, res) => {
+    if (!DEMO_MODE) throw new ApiError(403, 'Demo bootstrap is disabled.', 'DEMO_DISABLED');
+    const camps = await loadAllCampBundles();
+    const [notificationRows] = await pool.query(
+      'SELECT * FROM notifications_log ORDER BY sent_at DESC, id DESC LIMIT 30',
+    );
+    const analytics = await buildAnalytics();
+    const advisor = await buildCapacityAdvisor(100, ALPHA_MAX);
+    const queue = await getQueueSnapshot(camps[0]?.id || 1);
+    res.json({
+      source: 'mysql',
+      camps,
+      notifications: notificationRows.map(publicNotification),
+      analytics,
+      advisor,
+      queue,
+      generatedAt: new Date().toISOString(),
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * CAMP CREATION + DETERMINISTIC SLOT GENERATION
+ * ------------------------------------------------------------------------- */
+
+app.post(
+  '/api/camps',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.campCreateSchema),
+  asyncHandler(async (req, res) => {
+    const {
+      title,
+      descriptionEn = '',
+      descriptionKn = '',
+      venue,
+      address,
+      city = 'Bengaluru',
+      campDate,
+      startTime,
+      endTime,
+      slotDurationMins,
+      totalCapacity,
+      physicalCapacity,
+      status = 'PUBLISHED',
+    } = req.body || {};
+
+    if (!title || !venue || !address || !campDate || !startTime || !endTime) {
+      throw new ApiError(
+        400,
+        'title, venue, address, campDate, startTime and endTime are required.',
+        'VALIDATION',
+      );
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(campDate))) {
+      throw new ApiError(400, 'campDate must be YYYY-MM-DD.', 'INVALID_DATE');
+    }
+    if (!['DRAFT', 'PUBLISHED'].includes(String(status))) {
+      throw new ApiError(400, 'New camp status must be DRAFT or PUBLISHED.', 'INVALID_STATUS');
+    }
+
+    const plan = buildSlotPlan(startTime, endTime, slotDurationMins, totalCapacity);
+    const physical = Number(physicalCapacity || totalCapacity);
+
+    const result = await withTransaction(async (conn) => {
+      const [campInsert] = await conn.query(
+        `INSERT INTO camps
+          (title, description_en, description_kn, venue, address, city, camp_date,
+           start_time, end_time, slot_duration_mins, total_capacity, physical_capacity,
+           status, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          String(title).trim(),
+          String(descriptionEn || ''),
+          String(descriptionKn || ''),
+          String(venue).trim(),
+          String(address).trim(),
+          String(city).trim(),
+          campDate,
+          startTime,
+          endTime,
+          Number(slotDurationMins),
+          Number(totalCapacity),
+          physical,
+          status,
+          req.user.id,
+        ],
+      );
+
+      const campId = campInsert.insertId;
+      for (const slot of plan) {
+        await conn.query(
+          `INSERT INTO slots (camp_id, slot_index, start_time, end_time, capacity, booked_count)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+          [campId, slot.slotIndex, slot.startTime, slot.endTime, slot.capacity],
+        );
+      }
+      return campId;
+    });
+
+    const camp = await loadCampBundle(result);
+    io.emit('camp:created', { campId: camp.id, camp });
+    res.status(201).json({
+      camp,
+      slotPlan: plan,
+      algorithm: {
+        k: plan.length,
+        formula: 'k = floor((T_end − T_start) / Δt); seats = floor(C_camp / k) + remainder distribution',
+        capacityAllocated: plan.reduce((sum, slot) => sum + slot.capacity, 0),
+      },
+    });
+  }),
+);
+
+app.post(
+  '/api/camps/:id/generate-slots',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.generateSlotsSchema),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.id);
+    const {
+      startTime,
+      endTime,
+      slotDurationMins,
+      totalCapacity,
+      physicalCapacity,
+      force = false,
+    } = req.body || {};
+
+    const plan = buildSlotPlan(startTime, endTime, slotDurationMins, totalCapacity);
+
+    await withTransaction(async (conn) => {
+      const [camps] = await conn.query('SELECT * FROM camps WHERE id = ? FOR UPDATE', [campId]);
+      if (!camps.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+
+      const [[booked]] = await conn.query(
+        'SELECT COUNT(*) AS total FROM bookings WHERE camp_id = ? AND status <> "CANCELLED"',
+        [campId],
+      );
+      if (Number(booked.total) > 0 && !force) {
+        throw new ApiError(
+          409,
+          'Slots already contain bookings. Pass force=true only for empty camps.',
+          'SLOTS_IN_USE',
+          { activeBookings: Number(booked.total) },
+        );
+      }
+
+      await conn.query('DELETE FROM slots WHERE camp_id = ?', [campId]);
+      await conn.query(
+        `UPDATE camps SET start_time = ?, end_time = ?, slot_duration_mins = ?,
+          total_capacity = ?, physical_capacity = ? WHERE id = ?`,
+        [
+          startTime,
+          endTime,
+          Number(slotDurationMins),
+          Number(totalCapacity),
+          Number(physicalCapacity || totalCapacity),
+          campId,
+        ],
+      );
+      for (const slot of plan) {
+        await conn.query(
+          `INSERT INTO slots (camp_id, slot_index, start_time, end_time, capacity, booked_count)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+          [campId, slot.slotIndex, slot.startTime, slot.endTime, slot.capacity],
+        );
+      }
+    });
+
+    const camp = await loadCampBundle(campId);
+    io.emit('slots:generated', { campId, camp, slotPlan: plan });
+    res.status(201).json({ camp, slotPlan: plan });
+  }),
+);
+
+app.patch(
+  '/api/camps/:id/status',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.campStatusSchema),
+  asyncHandler(async (req, res) => {
+    const status = String(req.body?.status || '').toUpperCase();
+    if (!['DRAFT', 'PUBLISHED', 'COMPLETED', 'CANCELLED'].includes(status)) {
+      throw new ApiError(400, 'Invalid camp status.', 'INVALID_STATUS');
+    }
+    const [result] = await pool.query('UPDATE camps SET status = ? WHERE id = ?', [
+      status,
+      req.params.id,
+    ]);
+    if (!result.affectedRows) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const camp = await loadCampBundle(Number(req.params.id));
+    io.emit('camp:updated', { campId: camp.id, status });
+    res.json({ camp });
+  }),
+);
+
+/* Update descriptive camp fields. Schedule/capacity changes go through
+   /generate-slots because they invalidate existing slot rows. */
+app.patch(
+  '/api/camps/:id',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.campUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.id);
+    const fields = req.body;
+    const columns = {
+      title: 'title',
+      descriptionEn: 'description_en',
+      descriptionKn: 'description_kn',
+      venue: 'venue',
+      address: 'address',
+      city: 'city',
+    };
+    const sets = [];
+    const values = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (fields[key] !== undefined) {
+        sets.push(`${column} = ?`);
+        values.push(fields[key]);
+      }
+    }
+    values.push(campId);
+    const [result] = await pool.query(
+      `UPDATE camps SET ${sets.join(', ')} WHERE id = ?`,
+      values,
+    );
+    if (!result.affectedRows) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const camp = await loadCampBundle(campId);
+    io.emit('camp:updated', { campId, camp });
+    res.json({ camp });
+  }),
+);
+
+/* Delete is only allowed for a camp with no booking history. Once a camp has
+   bookings it is an audit record: cancel it instead of erasing it. */
+app.delete(
+  '/api/camps/:id',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.id);
+    const [[{ total }]] = await pool.query(
+      'SELECT COUNT(*) AS total FROM bookings WHERE camp_id = ?',
+      [campId],
+    );
+    if (Number(total) > 0) {
+      throw new ApiError(
+        409,
+        'This camp has booking history. Cancel it instead of deleting it.',
+        'CAMP_HAS_BOOKINGS',
+        { bookings: Number(total) },
+      );
+    }
+    const [result] = await pool.query('DELETE FROM camps WHERE id = ?', [campId]);
+    if (!result.affectedRows) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    io.emit('camp:deleted', { campId });
+    res.json({ deleted: true, campId });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * PESSIMISTIC BOOKING — THE FOR UPDATE MUTEX
+ * ------------------------------------------------------------------------- */
+
+app.post(
+  '/api/slots/:slotId/book',
+  authenticate,
+  requireRole('PATIENT'),
+  limiters.booking,
+  validateBody(schemas.bookingSchema),
+  asyncHandler(async (req, res) => {
+    const slotId = Number(req.params.slotId);
+    const travelMode = req.body?.travelMode || null;
+    const pledge = Boolean(req.body?.pledge);
+    if (
+      travelMode &&
+      !['WALK', 'AUTO_BUS', 'TWO_WHEELER', 'WITH_FAMILY'].includes(travelMode)
+    ) {
+      throw new ApiError(400, 'Invalid travel mode.', 'INVALID_TRAVEL_MODE');
+    }
+
+    const outcome = await withTransaction(async (conn) => {
+      // STEP 1: Acquire exclusive X-lock on the slot row. Concurrent transactions
+      // for the same slot block here until this transaction commits or rolls back.
+      const [slotRows] = await conn.query(
+        `SELECT id, camp_id, slot_index, start_time, end_time, capacity, booked_count
+         FROM slots WHERE id = ? FOR UPDATE`,
+        [slotId],
+      );
+      if (!slotRows.length) throw new ApiError(404, 'Slot not found.', 'SLOT_NOT_FOUND');
+      const slot = slotRows[0];
+
+      const [campRows] = await conn.query(
+        'SELECT id, title, venue, camp_date, status FROM camps WHERE id = ?',
+        [slot.camp_id],
+      );
+      if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+      const camp = campRows[0];
+      if (camp.status !== 'PUBLISHED') {
+        throw new ApiError(409, 'This camp is not accepting bookings.', 'CAMP_NOT_OPEN');
+      }
+
+      const [userRows] = await conn.query(
+        'SELECT id, name, phone, email FROM users WHERE id = ? AND is_active = 1',
+        [req.user.id],
+      );
+      if (!userRows.length) throw new ApiError(401, 'Patient account inactive.', 'USER_INACTIVE');
+      const patient = userRows[0];
+
+      const [existingRows] = await conn.query(
+        `SELECT * FROM bookings WHERE slot_id = ? AND patient_id = ? FOR UPDATE`,
+        [slotId, patient.id],
+      );
+
+      if (
+        existingRows.length &&
+        ['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(existingRows[0].status)
+      ) {
+        return {
+          kind: 'duplicate',
+          booking: existingRows[0],
+          message: 'You already hold a booking for this slot.',
+        };
+      }
+
+      // One active booking per camp. The generated-column unique index is the
+      // hard guarantee; this read gives the patient a precise error message.
+      const [campActive] = await conn.query(
+        `SELECT id, slot_id FROM bookings
+         WHERE patient_id = ? AND camp_id = ?
+           AND status IN ('CONFIRMED','CHECKED_IN','COMPLETED')
+         FOR UPDATE`,
+        [patient.id, camp.id],
+      );
+      if (campActive.length) {
+        return {
+          kind: 'camp_duplicate',
+          booking: campActive[0],
+          message: 'You already have an active booking at this camp. Reschedule it instead.',
+        };
+      }
+
+      // STEP 2: Deterministic full-slot branch → FIFO waitlist.
+      if (Number(slot.booked_count) >= Number(slot.capacity)) {
+        const [waitingRows] = await conn.query(
+          `SELECT id, position FROM waitlist
+           WHERE slot_id = ? AND status = 'WAITING'
+           ORDER BY created_at ASC, id ASC FOR UPDATE`,
+          [slotId],
+        );
+        const alreadyWaiting = await conn.query(
+          `SELECT * FROM waitlist WHERE slot_id = ? AND patient_id = ? AND status = 'WAITING' LIMIT 1`,
+          [slotId, patient.id],
+        );
+        let waitRow = alreadyWaiting[0][0] || null;
+        if (!waitRow) {
+          const position = waitingRows.length + 1;
+          const [waitInsert] = await conn.query(
+            `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
+             VALUES (?, ?, ?, ?, 'WAITING')`,
+            [slotId, camp.id, patient.id, position],
+          );
+          waitRow = { id: waitInsert.insertId, position, status: 'WAITING' };
+        }
+
+        const message =
+          `CHSC waitlist: ${patient.name}, you are #${waitRow.position} for ${camp.title} at ` +
+          `${formatTime12(slot.start_time)}. We will auto-promote you if a neighbour releases a seat. ` +
+          `No payment or penalty.`;
+        const sms = await insertNotification(conn, {
+          bookingId: null,
+          userId: patient.id,
+          channel: 'SMS',
+          type: 'WAITLIST_JOINED',
+          recipient: patient.phone,
+          message,
+          provider: providerFor('SMS'),
+          status: 'SIMULATED',
+          payload: { slotId, position: waitRow.position },
+        });
+        const email = await insertNotification(conn, {
+          bookingId: null,
+          userId: patient.id,
+          channel: 'EMAIL',
+          type: 'WAITLIST_JOINED',
+          recipient: patient.email,
+          subject: `Waitlist #${waitRow.position} · ${camp.title}`,
+          message,
+          provider: providerFor('EMAIL'),
+          status: 'SIMULATED',
+          payload: { slotId, position: waitRow.position },
+        });
+
+        return {
+          kind: 'waitlisted',
+          waitlist: {
+            id: waitRow.id,
+            slotId,
+            campId: camp.id,
+            position: waitRow.position,
+            status: 'WAITING',
+          },
+          notifications: [sms, email],
+          slot,
+          camp,
+        };
+      }
+
+      // STEP 3: Seat is available while holding the lock → mutate atomically.
+      const [seatUpdate] = await conn.query(
+        `UPDATE slots SET booked_count = booked_count + 1
+         WHERE id = ? AND booked_count < capacity`,
+        [slotId],
+      );
+      if (seatUpdate.affectedRows !== 1) {
+        // Defensive: should be unreachable while holding the X-lock.
+        throw new ApiError(409, 'Seat changed unexpectedly. Please retry.', 'SEAT_RACE_RETRY');
+      }
+
+      let booking;
+      if (existingRows.length && existingRows[0].status === 'CANCELLED') {
+        const qrToken = makeQrToken();
+        const tokenNumber = makeTokenNumber();
+        await conn.query(
+          `UPDATE bookings
+           SET status = 'CONFIRMED', travel_mode = ?, pledge_on_time = ?, qr_token = ?,
+               token_number = ?, booked_at = NOW(), cancelled_at = NULL, checked_in_at = NULL
+           WHERE id = ?`,
+          [travelMode, pledge ? 1 : 0, qrToken, tokenNumber, existingRows[0].id],
+        );
+        booking = {
+          ...existingRows[0],
+          status: 'CONFIRMED',
+          travel_mode: travelMode,
+          pledge_on_time: pledge ? 1 : 0,
+          qr_token: qrToken,
+          token_number: tokenNumber,
+        };
+      } else {
+        const qrToken = makeQrToken();
+        const tokenNumber = makeTokenNumber();
+        const [bookingInsert] = await conn.query(
+          `INSERT INTO bookings
+             (slot_id, camp_id, patient_id, qr_token, token_number, status,
+              travel_mode, pledge_on_time)
+           VALUES (?, ?, ?, ?, ?, 'CONFIRMED', ?, ?)`,
+          [slotId, camp.id, patient.id, qrToken, tokenNumber, travelMode, pledge ? 1 : 0],
+        );
+        booking = {
+          id: bookingInsert.insertId,
+          slot_id: slotId,
+          camp_id: camp.id,
+          patient_id: patient.id,
+          qr_token: qrToken,
+          token_number: tokenNumber,
+          status: 'CONFIRMED',
+          travel_mode: travelMode,
+          pledge_on_time: pledge ? 1 : 0,
+          booked_at: new Date(),
+        };
+      }
+
+      await conn.query(
+        `UPDATE waitlist SET status = 'CANCELLED'
+         WHERE slot_id = ? AND patient_id = ? AND status = 'WAITING'`,
+        [slotId, patient.id],
+      );
+
+      await remindersEngine.scheduleForBooking(conn, {
+        bookingId: booking.id,
+        campDate: camp.camp_date,
+        startTime: slot.start_time,
+      });
+
+      const message =
+        `CHSC confirmed: ${patient.name}, token ${booking.token_number} for ${camp.title} at ` +
+        `${formatTime12(slot.start_time)}. Pass ${booking.qr_token}. Arrive 10 min early. ` +
+        `Zero-penalty release available in My Bookings.`;
+      const sms = await insertNotification(conn, {
+        bookingId: booking.id,
+        userId: patient.id,
+        channel: 'SMS',
+        type: 'BOOKING_CONFIRMED',
+        recipient: patient.phone,
+        message,
+        provider: providerFor('SMS'),
+        status: 'SIMULATED',
+        payload: { slotId, token: booking.qr_token },
+      });
+      const email = await insertNotification(conn, {
+        bookingId: booking.id,
+        userId: patient.id,
+        channel: 'EMAIL',
+        type: 'BOOKING_CONFIRMED',
+        recipient: patient.email,
+        subject: `Your health camp pass · ${booking.token_number}`,
+        message,
+        provider: providerFor('EMAIL'),
+        status: 'SIMULATED',
+        payload: { slotId, token: booking.qr_token },
+      });
+
+      return {
+        kind: 'confirmed',
+        booking,
+        slot: { ...slot, booked_count: Number(slot.booked_count) + 1 },
+        camp,
+        patient,
+        notifications: [sms, email],
+      };
+    });
+
+    if (outcome.kind === 'duplicate') {
+      throw new ApiError(409, outcome.message, 'DUPLICATE_BOOKING', {
+        booking: publicBooking(outcome.booking),
+      });
+    }
+
+    if (outcome.kind === 'camp_duplicate') {
+      throw new ApiError(409, outcome.message, 'ALREADY_BOOKED_IN_CAMP', {
+        booking: publicBooking(outcome.booking),
+      });
+    }
+
+    publishNotifications(outcome.notifications || []);
+    io.emit('slot:updated', {
+      slotId,
+      bookedCount: outcome.kind === 'waitlisted' ? Number(outcome.slot.booked_count) : undefined,
+      action: outcome.kind,
+    });
+
+    if (outcome.kind === 'waitlisted') {
+      io.emit('waitlist:joined', {
+        slotId,
+        position: outcome.waitlist.position,
+        waitlist: outcome.waitlist,
+        at: new Date().toISOString(),
+      });
+      return res.status(202).json({
+        status: 'WAITLISTED',
+        message: `Slot full. You are #${outcome.waitlist.position} in the FIFO waitlist.`,
+        waitlist: outcome.waitlist,
+      });
+    }
+
+    const payload = publicBooking(outcome.booking);
+    io.emit('booking:confirmed', { booking: payload, at: new Date().toISOString() });
+    return res.status(201).json({
+      status: 'CONFIRMED',
+      message: 'Seat locked and confirmed. Queued reminders are now scheduled.',
+      booking: payload,
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * ATOMIC CANCELLATION + FIFO WAITLIST PROMOTION
+ * ------------------------------------------------------------------------- */
+
+app.patch(
+  '/api/bookings/:id/cancel',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const bookingId = Number(req.params.id);
+
+    const outcome = await withTransaction(async (conn) => {
+      const [rows] = await conn.query(
+        `SELECT b.*, s.capacity, s.booked_count, s.start_time, s.end_time,
+                c.title, c.venue, c.camp_date,
+                p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
+         FROM bookings b
+         JOIN slots s ON s.id = b.slot_id
+         JOIN camps c ON c.id = b.camp_id
+         JOIN users p ON p.id = b.patient_id
+         WHERE b.id = ? FOR UPDATE`,
+        [bookingId],
+      );
+      if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+      const booking = rows[0];
+
+      if (
+        !['PATIENT', 'ADMIN', 'ORGANIZER'].includes(req.user.role) ||
+        (req.user.role === 'PATIENT' && booking.patient_id !== req.user.id)
+      ) {
+        throw new ApiError(403, 'You cannot cancel this booking.', 'CANCEL_FORBIDDEN');
+      }
+      if (!['CONFIRMED', 'CHECKED_IN'].includes(booking.status)) {
+        throw new ApiError(409, 'Only an active confirmed booking can be released.', 'NOT_ACTIVE');
+      }
+
+      await conn.query(
+        `UPDATE bookings SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = ?`,
+        [bookingId],
+      );
+      await remindersEngine.cancelForBooking(conn, bookingId);
+      await conn.query(
+        `UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?`,
+        [booking.slot_id],
+      );
+
+      // Skip waiters who already hold an active booking at this camp — the
+      // one-active-booking-per-camp invariant wins over FIFO order.
+      const [waiters] = await conn.query(
+        `SELECT w.*, p.name, p.phone, p.email
+         FROM waitlist w JOIN users p ON p.id = w.patient_id
+         WHERE w.slot_id = ? AND w.status = 'WAITING'
+           AND NOT EXISTS (
+             SELECT 1 FROM bookings b2
+             WHERE b2.patient_id = w.patient_id AND b2.camp_id = w.camp_id
+               AND b2.status IN ('CONFIRMED','CHECKED_IN','COMPLETED')
+           )
+         ORDER BY w.created_at ASC, w.id ASC
+         LIMIT 1 FOR UPDATE`,
+        [booking.slot_id],
+      );
+
+      let promotedBooking = null;
+      let promotedPatient = null;
+      const notifications = [];
+      let autoPromoted = false;
+
+      if (waiters.length) {
+        autoPromoted = true;
+        const waiter = waiters[0];
+        promotedPatient = {
+          id: waiter.patient_id,
+          name: waiter.name,
+          phone: waiter.phone,
+          email: waiter.email,
+        };
+
+        const [existing] = await conn.query(
+          `SELECT * FROM bookings WHERE slot_id = ? AND patient_id = ? FOR UPDATE`,
+          [booking.slot_id, waiter.patient_id],
+        );
+
+        const qrToken = makeQrToken();
+        const tokenNumber = makeTokenNumber();
+        if (existing.length) {
+          await conn.query(
+            `UPDATE bookings SET status='CONFIRMED', qr_token=?, token_number=?, booked_at=NOW(),
+               cancelled_at=NULL, checked_in_at=NULL WHERE id=?`,
+            [qrToken, tokenNumber, existing[0].id],
+          );
+          promotedBooking = {
+            ...existing[0],
+            status: 'CONFIRMED',
+            qr_token: qrToken,
+            token_number: tokenNumber,
+          };
+        } else {
+          const [insert] = await conn.query(
+            `INSERT INTO bookings
+               (slot_id, camp_id, patient_id, qr_token, token_number, status, travel_mode, pledge_on_time)
+             VALUES (?, ?, ?, ?, ?, 'CONFIRMED', NULL, 0)`,
+            [booking.slot_id, booking.camp_id, waiter.patient_id, qrToken, tokenNumber],
+          );
+          promotedBooking = {
+            id: insert.insertId,
+            slot_id: booking.slot_id,
+            camp_id: booking.camp_id,
+            patient_id: waiter.patient_id,
+            qr_token: qrToken,
+            token_number: tokenNumber,
+            status: 'CONFIRMED',
+            travel_mode: null,
+            pledge_on_time: 0,
+            booked_at: new Date(),
+          };
+        }
+
+        await conn.query(
+          `UPDATE slots SET booked_count = booked_count + 1 WHERE id = ? AND booked_count < capacity`,
+          [booking.slot_id],
+        );
+        await conn.query(
+          `UPDATE waitlist SET status='PROMOTED', promoted_at=NOW() WHERE id=?`,
+          [waiter.id],
+        );
+
+        await remindersEngine.scheduleForBooking(conn, {
+          bookingId: promotedBooking.id,
+          campDate: booking.camp_date,
+          startTime: booking.start_time,
+        });
+
+        const message =
+          `Great news ${waiter.name}! A neighbour released a seat. You are now CONFIRMED for ` +
+          `${booking.title} at ${formatTime12(booking.start_time)}. Pass ${qrToken}. ` +
+          `Please arrive 10 minutes early.`;
+        notifications.push(
+          await insertNotification(conn, {
+            bookingId: promotedBooking.id,
+            userId: waiter.patient_id,
+            channel: 'SMS',
+            type: 'WAITLIST_PROMOTED',
+            recipient: waiter.phone,
+            message,
+            provider: providerFor('SMS'),
+            status: 'SIMULATED',
+            payload: { fromWaitlistId: waiter.id, slotId: booking.slot_id },
+          }),
+        );
+        notifications.push(
+          await insertNotification(conn, {
+            bookingId: promotedBooking.id,
+            userId: waiter.patient_id,
+            channel: 'EMAIL',
+            type: 'WAITLIST_PROMOTED',
+            recipient: waiter.email,
+            subject: `You're in! Health camp pass ${tokenNumber}`,
+            message,
+            provider: providerFor('EMAIL'),
+            status: 'SIMULATED',
+            payload: { fromWaitlistId: waiter.id, slotId: booking.slot_id },
+          }),
+        );
+      }
+
+      const cancelMessage =
+        `CHSC: ${booking.patient_name}, your booking for ${booking.title} at ` +
+        `${formatTime12(booking.start_time)} has been released. Thank you for helping a neighbour. ` +
+        `No penalty was applied.`;
+      notifications.push(
+        await insertNotification(conn, {
+          bookingId: booking.id,
+          userId: booking.patient_id,
+          channel: 'SMS',
+          type: 'CANCELLATION',
+          recipient: booking.patient_phone,
+          message: cancelMessage,
+          provider: providerFor('SMS'),
+          status: 'SIMULATED',
+          payload: { autoPromoted },
+        }),
+      );
+
+      return {
+        cancelledBooking: { ...booking, status: 'CANCELLED' },
+        promotedBooking,
+        promotedPatient,
+        autoPromoted,
+        notifications,
+        slotId: booking.slot_id,
+        campId: booking.camp_id,
+      };
+    });
+
+    publishNotifications(outcome.notifications);
+    io.emit('slot:updated', {
+      slotId: outcome.slotId,
+      action: 'cancelled',
+      autoPromoted: outcome.autoPromoted,
+    });
+
+    if (outcome.autoPromoted) {
+      io.emit('waitlist:promoted', {
+        slotId: outcome.slotId,
+        booking: publicBooking(outcome.promotedBooking),
+        patientName: outcome.promotedPatient.name,
+        message: `${outcome.promotedPatient.name} was auto-promoted from the FIFO waitlist.`,
+        at: new Date().toISOString(),
+      });
+    }
+
+    res.json({
+      status: 'CANCELLED',
+      message: outcome.autoPromoted
+        ? 'Seat released and the first waiting neighbour was atomically promoted.'
+        : 'Seat released. No waitlisted patient was pending.',
+      booking: publicBooking(outcome.cancelledBooking),
+      autoPromoted: outcome.autoPromoted,
+      promotedBooking: outcome.autoPromoted ? publicBooking(outcome.promotedBooking) : null,
+      promotedPatient: outcome.autoPromoted ? outcome.promotedPatient : null,
+    });
+  }),
+);
+
+app.patch(
+  '/api/bookings/:id/reschedule',
+  authenticate,
+  validateBody(schemas.rescheduleSchema),
+  asyncHandler(async (req, res) => {
+    const bookingId = Number(req.params.id);
+    const newSlotId = Number(req.body.slotId);
+
+    const outcome = await withTransaction(async (conn) => {
+      const [rows] = await conn.query(
+        `SELECT b.*, c.camp_date, c.status AS camp_status
+         FROM bookings b JOIN camps c ON c.id = b.camp_id
+         WHERE b.id = ? FOR UPDATE`,
+        [bookingId],
+      );
+      if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+      const booking = rows[0];
+
+      if (req.user.role === 'PATIENT' && booking.patient_id !== req.user.id) {
+        throw new ApiError(403, 'You cannot reschedule this booking.', 'RESCHEDULE_FORBIDDEN');
+      }
+      if (booking.status !== 'CONFIRMED') {
+        throw new ApiError(409, 'Only a confirmed booking can be rescheduled.', 'NOT_ACTIVE');
+      }
+      if (Number(booking.slot_id) === newSlotId) {
+        throw new ApiError(409, 'This booking is already on that slot.', 'SAME_SLOT');
+      }
+
+      // Lock both slot rows in ascending id order so two opposite reschedules
+      // can never deadlock each other.
+      const [slotRows] = await conn.query(
+        `SELECT * FROM slots WHERE id IN (?) ORDER BY id ASC FOR UPDATE`,
+        [[booking.slot_id, newSlotId]],
+      );
+      const target = slotRows.find((row) => Number(row.id) === newSlotId);
+      if (!target) throw new ApiError(404, 'Target slot not found.', 'SLOT_NOT_FOUND');
+      if (Number(target.camp_id) !== Number(booking.camp_id)) {
+        throw new ApiError(400, 'A booking can only move within its own camp.', 'CROSS_CAMP_MOVE');
+      }
+      if (Number(target.booked_count) >= Number(target.capacity)) {
+        throw new ApiError(409, 'That slot is full. Pick another slot or join its waitlist.', 'SLOT_FULL', {
+          slot: publicSlot(target),
+        });
+      }
+
+      await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [
+        booking.slot_id,
+      ]);
+      const [moved] = await conn.query(
+        `UPDATE slots SET booked_count = booked_count + 1
+         WHERE id = ? AND booked_count < capacity`,
+        [newSlotId],
+      );
+      if (moved.affectedRows !== 1) {
+        throw new ApiError(409, 'That slot filled while you were moving. Try again.', 'SEAT_RACE_RETRY');
+      }
+
+      await conn.query('UPDATE bookings SET slot_id = ?, booked_at = NOW() WHERE id = ?', [
+        newSlotId,
+        bookingId,
+      ]);
+
+      await remindersEngine.rescheduleForBooking(conn, {
+        bookingId,
+        campDate: booking.camp_date,
+        startTime: target.start_time,
+      });
+
+      return {
+        fromSlotId: Number(booking.slot_id),
+        toSlot: target,
+        campId: Number(booking.camp_id),
+      };
+    });
+
+    io.emit('slot:updated', { slotId: outcome.toSlot.id, action: 'rescheduled' });
+    io.emit('booking:rescheduled', {
+      bookingId,
+      fromSlotId: outcome.fromSlotId,
+      toSlotId: Number(outcome.toSlot.id),
+    });
+
+    res.json({
+      status: 'RESCHEDULED',
+      message: 'Booking moved. Reminders were re-queued for the new slot.',
+      fromSlotId: outcome.fromSlotId,
+      slot: publicSlot(outcome.toSlot),
+      bookingId,
+    });
+  }),
+);
+
+app.get(
+  '/api/bookings/me',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
+              s.start_time, s.end_time
+       FROM bookings b
+       JOIN camps c ON c.id = b.camp_id
+       JOIN slots s ON s.id = b.slot_id
+       WHERE b.patient_id = ?
+       ORDER BY b.booked_at DESC`,
+      [req.user.id],
+    );
+    res.json({ bookings: rows.map(publicBooking) });
+  }),
+);
+
+app.get(
+  '/api/bookings/:id',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
+              s.start_time, s.end_time
+       FROM bookings b
+       JOIN camps c ON c.id = b.camp_id
+       JOIN slots s ON s.id = b.slot_id
+       WHERE b.id = ?`,
+      [req.params.id],
+    );
+    if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+    if (req.user.role === 'PATIENT' && rows[0].patient_id !== req.user.id) {
+      throw new ApiError(403, 'Not your booking.', 'BOOKING_FORBIDDEN');
+    }
+    res.json({
+      booking: publicBooking(rows[0]),
+      waitlistCount: 0,
+      offlinePass: {
+        note: 'Cache this payload for offline QR display. No medical data is present.',
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * QR CHECK-IN + LIVE QUEUE BROADCAST
+ * ------------------------------------------------------------------------- */
+
+app.post(
+  '/api/checkin',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const token = String(req.body?.qrToken || '').trim();
+    if (!token) throw new ApiError(400, 'qrToken is required.', 'VALIDATION');
+
+    const outcome = await withTransaction(async (conn) => {
+      const [rows] = await conn.query(
+        `SELECT b.*, s.start_time, s.end_time, c.title, c.venue, c.camp_date,
+                p.name AS patient_name, p.phone, p.email
+         FROM bookings b
+         JOIN slots s ON s.id = b.slot_id
+         JOIN camps c ON c.id = b.camp_id
+         JOIN users p ON p.id = b.patient_id
+         WHERE (b.qr_token = ? OR b.token_number = ?) FOR UPDATE`,
+        [token, token],
+      );
+      if (!rows.length) throw new ApiError(404, 'QR token not recognised.', 'TOKEN_NOT_FOUND');
+      const booking = rows[0];
+      if (booking.status === 'CANCELLED') {
+        throw new ApiError(409, 'This booking was cancelled.', 'BOOKING_CANCELLED');
+      }
+      if (booking.status === 'NO_SHOW') {
+        throw new ApiError(409, 'This booking is marked NO_SHOW.', 'BOOKING_NO_SHOW');
+      }
+      if (booking.status === 'CHECKED_IN') {
+        return { alreadyCheckedIn: true, booking };
+      }
+
+      await conn.query(
+        `UPDATE bookings SET status='CHECKED_IN', checked_in_at=NOW() WHERE id=?`,
+        [booking.id],
+      );
+      await remindersEngine.cancelForBooking(conn, booking.id);
+      return {
+        alreadyCheckedIn: false,
+        booking: { ...booking, status: 'CHECKED_IN', checked_in_at: new Date() },
+      };
+    });
+
+    const queue = await getQueueSnapshot(outcome.booking.camp_id);
+    const payload = {
+      ...publicBooking(outcome.booking),
+      patientName: outcome.booking.patient_name,
+      campTitle: outcome.booking.title,
+      venue: outcome.booking.venue,
+      startTime: outcome.booking.start_time,
+      endTime: outcome.booking.end_time,
+    };
+    io.to(`camp:${outcome.booking.camp_id}`).emit('queue:updated', queue);
+    io.emit('checkin:new', {
+      booking: payload,
+      queue,
+      alreadyCheckedIn: outcome.alreadyCheckedIn,
+      at: new Date().toISOString(),
+    });
+
+    res.json({
+      status: outcome.alreadyCheckedIn ? 'ALREADY_CHECKED_IN' : 'CHECKED_IN',
+      message: outcome.alreadyCheckedIn
+        ? 'Token was already checked in. Queue unchanged.'
+        : `Token ${payload.tokenNumber} joined the live waiting room.`,
+      booking: payload,
+      queue,
+      clinicChime: !outcome.alreadyCheckedIn,
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * ATTENDANCE — staff can correct a check-in or mark a no-show.
+ * ------------------------------------------------------------------------- */
+
+app.patch(
+  '/api/bookings/:id/attendance',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  validateBody(schemas.attendanceSchema),
+  asyncHandler(async (req, res) => {
+    const bookingId = Number(req.params.id);
+    const next = req.body.status;
+
+    const booking = await withTransaction(async (conn) => {
+      const [rows] = await conn.query(
+        'SELECT * FROM bookings WHERE id = ? FOR UPDATE',
+        [bookingId],
+      );
+      if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+      const row = rows[0];
+
+      const allowed = {
+        CONFIRMED: ['CHECKED_IN', 'NO_SHOW'],
+        NO_SHOW: ['CHECKED_IN'],
+        CHECKED_IN: ['COMPLETED', 'NO_SHOW'],
+        COMPLETED: [],
+        CANCELLED: [],
+      };
+      if (!(allowed[row.status] || []).includes(next)) {
+        throw new ApiError(
+          409,
+          `Cannot move a ${row.status} booking to ${next}.`,
+          'INVALID_ATTENDANCE_TRANSITION',
+          { from: row.status, to: next, allowed: allowed[row.status] || [] },
+        );
+      }
+
+      const now = new Date();
+      if (next === 'CHECKED_IN') {
+        await conn.query(
+          `UPDATE bookings SET status = 'CHECKED_IN', checked_in_at = COALESCE(checked_in_at, NOW()) WHERE id = ?`,
+          [bookingId],
+        );
+        await remindersEngine.cancelForBooking(conn, bookingId);
+      } else if (next === 'NO_SHOW') {
+        await conn.query(
+          `UPDATE bookings SET status = 'NO_SHOW', checked_in_at = NULL WHERE id = ?`,
+          [bookingId],
+        );
+        await remindersEngine.cancelForBooking(conn, bookingId);
+      } else {
+        await conn.query(`UPDATE bookings SET status = 'COMPLETED' WHERE id = ?`, [bookingId]);
+      }
+
+      const checkedInAt = next === 'CHECKED_IN'
+        ? (row.checked_in_at ?? now)
+        : row.checked_in_at;
+      return { ...row, status: next, checked_in_at: checkedInAt };
+    });
+
+    io.emit('attendance:updated', {
+      bookingId,
+      campId: Number(booking.camp_id),
+      status: next,
+    });
+    res.json({ booking: publicBooking(booking), status: next });
+  }),
+);
+
+/* Close a camp day: everyone still CONFIRMED becomes a NO_SHOW, the camp moves
+   to COMPLETED, and any queued nudges are cancelled. Idempotent. */
+app.post(
+  '/api/camps/:campId/close-out',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+
+    const result = await withTransaction(async (conn) => {
+      const [camps] = await conn.query('SELECT id, status FROM camps WHERE id = ? FOR UPDATE', [
+        campId,
+      ]);
+      if (!camps.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+
+      const [noShows] = await conn.query(
+        `UPDATE bookings SET status = 'NO_SHOW'
+         WHERE camp_id = ? AND status = 'CONFIRMED'`,
+        [campId],
+      );
+      await conn.query(
+        `UPDATE reminders r JOIN bookings b ON b.id = r.booking_id
+         SET r.status = 'CANCELLED'
+         WHERE b.camp_id = ? AND r.status IN ('PENDING','SENDING')`,
+        [campId],
+      );
+      await conn.query(`UPDATE camps SET status = 'COMPLETED' WHERE id = ?`, [campId]);
+
+      const [[counts]] = await conn.query(
+        `SELECT
+           SUM(status = 'CHECKED_IN') AS checked_in,
+           SUM(status = 'COMPLETED') AS completed,
+           SUM(status = 'NO_SHOW') AS no_show
+         FROM bookings WHERE camp_id = ?`,
+        [campId],
+      );
+
+      return {
+        noShowMarked: noShows.affectedRows,
+        checkedIn: Number(counts.checked_in || 0),
+        completed: Number(counts.completed || 0),
+        noShow: Number(counts.no_show || 0),
+      };
+    });
+
+    io.emit('camp:closed', { campId, ...result });
+    res.json({ status: 'COMPLETED', campId, ...result });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * STAFF ASSIGNMENTS + LOAD BALANCER
+ * ------------------------------------------------------------------------- */
+app.get(
+  '/api/camps/:campId/staff',
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT sa.*, u.name, u.email, u.phone
+       FROM staff_assignments sa JOIN users u ON u.id = sa.user_id
+       WHERE sa.camp_id = ? ORDER BY sa.role_at_camp, u.name`,
+      [req.params.campId],
+    );
+    res.json({ staff: rows.map(publicStaff) });
+  }),
+);
+
+app.get(
+  '/api/staff/me',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT sa.*, c.title, c.venue, c.camp_date, c.start_time AS camp_start,
+              c.end_time AS camp_end, c.status
+       FROM staff_assignments sa
+       JOIN camps c ON c.id = sa.camp_id
+       WHERE sa.user_id = ?
+       ORDER BY c.camp_date ASC`,
+      [req.user.id],
+    );
+    res.json({
+      assignments: rows.map((row) => ({
+        ...publicStaff({ ...row, name: req.user.name }),
+        campTitle: row.title,
+        venue: row.venue,
+        campDate: row.camp_date,
+        campStart: row.camp_start,
+        campEnd: row.camp_end,
+        campStatus: row.status,
+      })),
+    });
+  }),
+);
+
+app.post(
+  '/api/camps/:campId/staff',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.staffAssignSchema),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+    const {
+      userId,
+      roleAtCamp = 'DOCTOR',
+      shiftStart,
+      shiftEnd,
+      expectedLoadPerHour = 0,
+      maxPatientsPerHour = 20,
+      duties = '',
+    } = req.body || {};
+
+    if (!userId || !shiftStart || !shiftEnd) {
+      throw new ApiError(400, 'userId, shiftStart and shiftEnd are required.', 'VALIDATION');
+    }
+    if (!['DOCTOR', 'VOLUNTEER', 'NURSE', 'COORDINATOR'].includes(roleAtCamp)) {
+      throw new ApiError(400, 'Invalid camp role.', 'INVALID_ROLE');
+    }
+    if (parseTimeToMinutes(shiftEnd) <= parseTimeToMinutes(shiftStart)) {
+      throw new ApiError(400, 'shiftEnd must be after shiftStart.', 'INVALID_SHIFT');
+    }
+
+    const staff = await withTransaction(async (conn) => {
+      // Serialise staffing changes for this humans' calendar on the user row so
+      // two organizers cannot slip overlapping shifts in at the same instant.
+      const [userRows] = await conn.query(
+        'SELECT id, role FROM users WHERE id = ? AND is_active = 1 FOR UPDATE',
+        [userId],
+      );
+      if (!userRows.length) throw new ApiError(404, 'Staff user not found.', 'USER_NOT_FOUND');
+
+      const [campRows] = await conn.query('SELECT id, camp_date FROM camps WHERE id = ?', [campId]);
+      if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+      const campDate = campRows[0].camp_date;
+
+      const [sameCamp] = await conn.query(
+        'SELECT id FROM staff_assignments WHERE camp_id = ? AND user_id = ? LIMIT 1 FOR UPDATE',
+        [campId, Number(userId)],
+      );
+      if (sameCamp.length) {
+        throw new ApiError(409, 'This user is already assigned to the camp.', 'STAFF_ALREADY_ASSIGNED');
+      }
+
+      // Half-open interval overlap: [start, end) ∩ [start, end) ≠ ∅
+      const [conflicts] = await conn.query(
+        `SELECT sa.id, sa.shift_start, sa.shift_end, c.id AS camp_id, c.title, c.camp_date
+         FROM staff_assignments sa
+         JOIN camps c ON c.id = sa.camp_id
+         WHERE sa.user_id = ? AND c.camp_date = ? AND sa.camp_id <> ?
+           AND sa.shift_start < ? AND sa.shift_end > ?
+         FOR UPDATE`,
+        [Number(userId), campDate, campId, shiftEnd, shiftStart],
+      );
+      if (conflicts.length) {
+        throw new ApiError(
+          409,
+          'This staff member is already assigned to an overlapping shift that day.',
+          'STAFF_OVERLAP',
+          {
+            conflicts: conflicts.map((row) => ({
+              assignmentId: row.id,
+              campId: row.camp_id,
+              campTitle: row.title,
+              shiftStart: row.shift_start,
+              shiftEnd: row.shift_end,
+            })),
+          },
+        );
+      }
+
+      const [insert] = await conn.query(
+        `INSERT INTO staff_assignments
+           (camp_id, user_id, role_at_camp, shift_start, shift_end,
+            expected_load_per_hour, max_patients_per_hour, duties)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          campId,
+          Number(userId),
+          roleAtCamp,
+          shiftStart,
+          shiftEnd,
+          Number(expectedLoadPerHour),
+          Number(maxPatientsPerHour),
+          String(duties),
+        ],
+      );
+      const [rows] = await conn.query(
+        `SELECT sa.*, u.name, u.email, u.phone
+         FROM staff_assignments sa JOIN users u ON u.id = sa.user_id WHERE sa.id = ?`,
+        [insert.insertId],
+      );
+      return publicStaff(rows[0]);
+    });
+
+    io.emit('staff:assigned', { campId, staff });
+    res.status(201).json({
+      staff,
+      warning: staff.loadWarning
+        ? {
+            severity: 'CLINICAL_LOAD',
+            message: `${staff.name} assigned ${staff.expectedLoadPerHour} patients/hr — exceeds ${staff.maxPatientsPerHour}/hr safe threshold. Rebalance the shift or add another doctor.`,
+          }
+        : null,
+    });
+  }),
+);
+
+app.delete(
+  '/api/staff/:id',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const [result] = await pool.query('DELETE FROM staff_assignments WHERE id = ?', [req.params.id]);
+    if (!result.affectedRows) throw new ApiError(404, 'Assignment not found.', 'STAFF_NOT_FOUND');
+    io.emit('staff:removed', { staffId: Number(req.params.id) });
+    res.json({ deleted: true, staffId: Number(req.params.id) });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * ADMIN ANALYTICS, CAPACITY ADVISOR, USER MANAGEMENT, NOTIFICATIONS, CSV
+ * ------------------------------------------------------------------------- */
+
+app.get(
+  '/api/admin/analytics',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (_req, res) => {
+    res.json(await buildAnalytics());
+  }),
+);
+
+app.get(
+  '/api/admin/capacity-advisor',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (req, res) => {
+    const physical = Number(req.query.physicalCapacity || 100);
+    const alpha = req.query.alphaMax !== undefined ? Number(req.query.alphaMax) : ALPHA_MAX;
+    res.json(await buildCapacityAdvisor(physical, alpha));
+  }),
+);
+
+app.get(
+  '/api/admin/notifications',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (req, res) => {
+    const paging = parsePagination(req.query);
+    if (!paging) throw new ApiError(400, 'Invalid pagination.', 'INVALID_PAGINATION');
+    const [rows] = await pool.query(
+      'SELECT * FROM notifications_log ORDER BY sent_at DESC, id DESC LIMIT ? OFFSET ?',
+      [paging.limit, paging.offset],
+    );
+    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM notifications_log');
+    res.json({
+      notifications: rows.map(publicNotification),
+      pagination: buildPagination(Number(total), paging),
+    });
+  }),
+);
+
+app.get(
+  '/api/admin/users',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const paging = parsePagination(req.query);
+    if (!paging) throw new ApiError(400, 'Invalid pagination.', 'INVALID_PAGINATION');
+    const [rows] = await pool.query(
+      `SELECT id, name, email, phone, role, age_group, preferred_language, is_active, created_at
+       FROM users ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      [paging.limit, paging.offset],
+    );
+    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM users');
+    res.json({
+      users: rows.map(safeUser),
+      pagination: buildPagination(Number(total), paging),
+    });
+  }),
+);
+
+app.patch(
+  '/api/admin/users/:id/role',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const role = String(req.body?.role || '').toUpperCase();
+    if (!['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'].includes(role)) {
+      throw new ApiError(400, 'Invalid role.', 'INVALID_ROLE');
+    }
+    if (Number(req.params.id) === req.user.id && role !== 'ADMIN') {
+      throw new ApiError(409, 'You cannot remove your own admin role.', 'SELF_DEMOTION');
+    }
+    const [result] = await pool.query('UPDATE users SET role = ? WHERE id = ?', [
+      role,
+      req.params.id,
+    ]);
+    if (!result.affectedRows) throw new ApiError(404, 'User not found.', 'USER_NOT_FOUND');
+    const [rows] = await pool.query(
+      `SELECT id, name, email, phone, role, age_group, preferred_language, is_active, created_at
+       FROM users WHERE id = ?`,
+      [req.params.id],
+    );
+    io.emit('admin:users-changed', { reason: 'role', userId: Number(req.params.id) });
+    res.json({ user: safeUser(rows[0]) });
+  }),
+);
+
+app.patch(
+  '/api/admin/users/:id/status',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const active = req.body?.isActive ? 1 : 0;
+    if (Number(req.params.id) === req.user.id && !active) {
+      throw new ApiError(409, 'You cannot deactivate your own account.', 'SELF_DEACTIVATION');
+    }
+    const [result] = await pool.query('UPDATE users SET is_active = ? WHERE id = ?', [
+      active,
+      req.params.id,
+    ]);
+    if (!result.affectedRows) throw new ApiError(404, 'User not found.', 'USER_NOT_FOUND');
+    io.emit('admin:users-changed', { reason: 'status', userId: Number(req.params.id) });
+    res.json({ userId: Number(req.params.id), isActive: Boolean(active) });
+  }),
+);
+
+app.post(
+  '/api/admin/reminders/run',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (_req, res) => {
+    const result = await runReminderSweep('manual');
+    res.json({
+      ...result,
+      note: 'Reminders are claimed with SELECT … FOR UPDATE SKIP LOCKED; a booking/type pair can only be sent once per claim and retries back off exponentially.',
+    });
+  }),
+);
+
+app.get(
+  '/api/admin/reports/export.csv',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (_req, res) => {
+    const [rows] = await pool.query(
+      `SELECT c.title, c.venue, c.camp_date, c.status,
+              COALESCE(SUM(s.capacity), 0) AS capacity,
+              COALESCE(SUM(s.booked_count), 0) AS booked,
+              SUM(b.status = 'CHECKED_IN') AS attended,
+              SUM(b.status = 'NO_SHOW') AS no_shows
+       FROM camps c
+       LEFT JOIN slots s ON s.camp_id = c.id
+       LEFT JOIN bookings b ON b.camp_id = c.id
+       GROUP BY c.id, c.title, c.venue, c.camp_date, c.status
+       ORDER BY c.camp_date DESC`,
+    );
+    const header = 'Camp,Venue,Date,Status,Capacity,Booked,Attended,No-Shows,Attendance Rate %';
+    const lines = rows.map((row) => {
+      const checked = Number(row.attended || 0);
+      const noShow = Number(row.no_shows || 0);
+      const rate = checked + noShow ? ((checked / (checked + noShow)) * 100).toFixed(1) : '0.0';
+      return [
+        `"${String(row.title).replaceAll('"', '""')}"`,
+        `"${String(row.venue).replaceAll('"', '""')}"`,
+        row.camp_date,
+        row.status,
+        row.capacity,
+        row.booked,
+        checked,
+        noShow,
+        rate,
+      ].join(',');
+    });
+    const csv = `\ufeff${header}\n${lines.join('\n')}`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="CHSC_Report_${todayIso()}.csv"`,
+    );
+    res.send(csv);
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * PRIVACY: RIGHT TO ERASURE (DPDP Act 2023, data minimisation)
+ * ------------------------------------------------------------------------- */
+
+app.delete(
+  '/api/users/me/purge',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const outcome = await withTransaction(async (conn) => {
+      const [users] = await conn.query('SELECT id, role FROM users WHERE id = ? FOR UPDATE', [
+        req.user.id,
+      ]);
+      if (!users.length) throw new ApiError(404, 'User not found.', 'USER_NOT_FOUND');
+
+      const [active] = await conn.query(
+        `SELECT id, slot_id, status FROM bookings
+         WHERE patient_id = ? AND status IN ('CONFIRMED','CHECKED_IN') FOR UPDATE`,
+        [req.user.id],
+      );
+
+      for (const booking of active) {
+        await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [
+          booking.slot_id,
+        ]);
+      }
+      await conn.query('UPDATE waitlist SET status = "CANCELLED" WHERE patient_id = ?', [
+        req.user.id,
+      ]);
+      const [result] = await conn.query('DELETE FROM users WHERE id = ?', [req.user.id]);
+
+      return {
+        deleted: result.affectedRows === 1,
+        activeBookingsReleased: active.length,
+        purgedUserId: req.user.id,
+      };
+    });
+
+    io.emit('privacy:purged', {
+      userId: outcome.purgedUserId,
+      at: new Date().toISOString(),
+      message: 'Personal data purged; active seats released.',
+    });
+    res.json({
+      ...outcome,
+      message:
+        'Your personal data has been purged. Only non-identifying camp capacity counters remain.',
+      legalNote:
+        'Data minimisation: CHSC never stores medical history, diagnosis, prescriptions or reports.',
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * DEMO OPERATIONS (no destructive SQL; safe localhost helpers)
+ * ------------------------------------------------------------------------- */
+
+app.post(
+  '/api/demo/rush',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.body?.campId || 1);
+    const [slots] = await pool.query(
+      `SELECT id FROM slots WHERE camp_id = ? AND booked_count < capacity
+       ORDER BY slot_index LIMIT 5`,
+      [campId],
+    );
+    const updated = [];
+    for (const slot of slots) {
+      const increment = Math.min(1, Math.ceil(Math.random() * 2));
+      await pool.query(
+        `UPDATE slots SET booked_count = LEAST(capacity, booked_count + ?) WHERE id = ?`,
+        [increment, slot.id],
+      );
+      updated.push(slot.id);
+    }
+    io.emit('demo:rush', { campId, slots: updated, at: new Date().toISOString() });
+    res.json({
+      campId,
+      slotsTouched: updated,
+      note: 'Demo rush adds synthetic demand to available slots only; capacity check constraint is preserved.',
+    });
+  }),
+);
+
+app.post(
+  '/api/demo/reset-notice',
+  asyncHandler(async (_req, res) => {
+    if (!DEMO_MODE) throw new ApiError(403, 'Demo mode disabled.', 'DEMO_DISABLED');
+    res.json({
+      reset: 'Frontend local-state reset is authoritative for offline screenshots.',
+      sqlHint:
+        'For a full database reset, run: mysql -u root -p < database/schema.sql',
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * SOCKET.IO
+ * ------------------------------------------------------------------------- */
+
+io.on('connection', (socket) => {
+  socket.emit('engine:hello', {
+    service: 'CHSC Realtime Engine',
+    socketId: socket.id,
+    at: new Date().toISOString(),
+  });
+
+  socket.on('camp:join', (campId) => {
+    socket.join(`camp:${campId}`);
+    socket.emit('camp:joined', { campId: Number(campId) });
+  });
+
+  socket.on('camp:leave', (campId) => {
+    socket.leave(`camp:${campId}`);
+  });
+
+  socket.on('queue:ping', async (campId, callback) => {
+    try {
+      const queue = await getQueueSnapshot(campId);
+      socket.emit('queue:updated', queue);
+      if (typeof callback === 'function') callback({ ok: true, queue });
+    } catch (error) {
+      if (typeof callback === 'function') callback({ ok: false, error: error.message });
+    }
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * OPTIONAL STATIC FRONTEND + ERROR HANDLING
+ * ------------------------------------------------------------------------- */
+
+const distDir = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    return res.sendFile(path.join(distDir, 'index.html'));
+  });
+}
+
+app.use((req, _res, next) => {
+  next(new ApiError(404, `Route not found: ${req.method} ${req.path}`, 'NOT_FOUND'));
+});
+
+app.use((error, _req, res, _next) => {
+  const status = error.status || (error.code === 'ER_DUP_ENTRY' ? 409 : 500);
+  const databaseOffline =
+    error.code === 'ECONNREFUSED' ||
+    error.code === 'PROTOCOL_CONNECTION_LOST' ||
+    error.code === 'ER_ACCESS_DENIED_ERROR' ||
+    error.code === 'ER_BAD_DB_ERROR';
+
+  if (status >= 500) {
+    console.error('[CHSC server error]', error);
+  }
+
+  // Never leak raw SQL from a unique-key violation.
+  let message = error.message || 'Unexpected server error.';
+  let code = error.code || 'SERVER_ERROR';
+  if (error.code === 'ER_DUP_ENTRY') {
+    const raw = String(error.message || '');
+    message = 'That record already exists.';
+    code = 'DUPLICATE_RECORD';
+    if (raw.includes('uq_one_active_booking_per_camp')) {
+      message = 'You already have an active booking at this camp. Reschedule it instead.';
+      code = 'ALREADY_BOOKED_IN_CAMP';
+    } else if (raw.includes('uq_slot_patient')) {
+      message = 'You already hold a booking for this slot.';
+      code = 'DUPLICATE_BOOKING';
+    } else if (raw.includes('uq_staff_camp_user')) {
+      message = 'This user is already assigned to the camp.';
+      code = 'STAFF_ALREADY_ASSIGNED';
+    } else if (raw.includes('uq_users_email') || raw.includes('uq_users_phone')) {
+      message = 'Email or phone is already registered.';
+      code = 'USER_EXISTS';
+    }
+  }
+
+  res.status(databaseOffline ? 503 : status).json({
+    ok: false,
+    error: databaseOffline
+      ? 'MySQL is offline. The React local-state engine remains fully usable.'
+      : message,
+    code: databaseOffline ? 'DB_OFFLINE' : code,
+    requestId: _req.id,
+    details: databaseOffline
+      ? { hint: 'Start MySQL, run database/schema.sql, then check backend/.env.' }
+      : error.details || null,
+  });
+});
+
+if (require.main === module) {
+  server.listen(PORT, () => {
+  console.log('');
+  console.log('  ╔══════════════════════════════════════════════════════════════╗');
+  console.log('  ║  CHSC · Community Health Screening Camp Scheduler            ║');
+  console.log('  ║  CMRIT Bengaluru · ISE Mini Project                          ║');
+  console.log('  ╚══════════════════════════════════════════════════════════════╝');
+  console.log(`  API        : http://localhost:${PORT}/api/health`);
+  console.log(`  Socket.io  : ws://localhost:${PORT}`);
+  console.log(`  Frontend   : ${FRONTEND_ORIGIN}`);
+  console.log(`  Demo mode  : ${DEMO_MODE ? 'ON' : 'OFF'}`);
+  console.log(`  DB target  : ${process.env.DB_USER || 'root'}@${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}/${process.env.DB_NAME || 'community_health_scheduler'}`);
+  console.log('');
+  pool
+    .query('SELECT 1')
+    .then(() => console.log('  ✓ MySQL pool connected. Live API is ready.'))
+    .catch((error) => {
+      console.log(`  ⚠ MySQL not reachable (${error.code || error.message}).`);
+      console.log('    The frontend will automatically use its deterministic local-state engine.');
+    });
+  });
+}
+
+process.on('SIGINT', async () => {
+  console.log('\n[CHSC] Shutting down gracefully...');
+  server.close(async () => {
+    try {
+      await pool.end();
+    } finally {
+      process.exit(0);
+    }
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.warn('[CHSC unhandled rejection]', reason);
+});
+
+module.exports = {
+  app,
+  server,
+  pool,
+  io,
+  buildSlotPlan,
+  buildCapacityAdvisor,
+  loadCampBundle,
+  loadCampCollection,
+  publicSlot,
+  remindersEngine,
+  providers,
+  limiters,
+};

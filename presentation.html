@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CHSC — Academic Review-2 Presentation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Inter, sans-serif; background: #0B1220; color: #F1F5F9; }
+  .reveal { width: 100vw; height: 100vh; overflow: hidden; position: relative; }
+  .slide { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; display: none; padding: 40px 60px; }
+  .slide.active { display: block; }
+  .slide h1 { font-size: 34px; margin-bottom: 12px; color: #10b981; font-weight: 700; letter-spacing: -0.02em; }
+  .slide h2 { font-size: 24px; color: #F1F5F9; margin-bottom: 8px; font-weight: 600; }
+  .slide h3 { font-size: 18px; color: #10b981; margin: 16px 0 8px; font-weight: 600; }
+  .slide p { font-size: 15px; line-height: 1.6; color: #CBD5E1; margin-bottom: 10px; }
+  .slide ul { margin-left: 20px; margin-bottom: 12px; }
+  .slide ul li { color: #CBD5E1; line-height: 1.6; margin-bottom: 6px; }
+  .slide .footer { position: absolute; bottom: 30px; left: 60px; right: 60px; font-size: 12px; color: #64748B; border-top: 1px solid rgba(148,163,184,.14); padding-top: 8px; }
+  .slide .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 20px; }
+  .card { background: #111C2E; border: 1px solid rgba(148,163,184,.14); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+  .card h4 { color: #10b981; font-size: 14px; margin-bottom: 6px; }
+  .card p { font-size: 13px; color: #CBD5E1; line-height: 1.5; }
+  .badge { display: inline-block; background: #064E3B; color: #10b981; border: 1px solid #10b981; border-radius: 999px; padding: 2px 10px; font-size: 11px; margin-right: 6px; margin-bottom: 6px; }
+  .tech-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  .tech-table th { text-align: left; color: #10b981; padding: 6px 10px; border-bottom: 1px solid rgba(148,163,184,.14); }
+  .tech-table td { padding: 6px 10px; border-bottom: 1px solid rgba(148,163,184,.14); color: #CBD5E1; }
+  .nav { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
+  .nav button { background: #111C2E; border: 1px solid #10b981; color: #10b981; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .nav button:hover { background: #064E3B; }
+  .progress { position: absolute; top: 0; left: 0; height: 4px; background: #10b981; width: 0%; transition: width 0.3s; }
+  .emerald { color: #10b981; }
+  .mint { color: #34d399; }
+  .red { color: #dc2626; }
+  .amber { color: #f59e0b; }
+  .blue { color: #2563eb; }
+  code { background: #16223A; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #a5f3fc; }
+</style>
+</head>
+<body>
+<div class="reveal">
+  <div class="progress" id="progress"></div>
+
+  <!-- Slide 1: Title -->
+  <div class="slide active" id="s0">
+    <div style="height: 20vh;"></div>
+    <h1>CHSC</h1>
+    <div style="font-size: 20px; color: #10b981; margin-bottom: 20px;">Community Health Screening Camp Scheduler</div>
+    <p style="font-size: 16px; color: #CBD5E1; max-width: 600px;">A full-stack health-tech platform for centralized community health screening camp management — connecting patients, organizers, doctors, volunteers, and administrators.</p>
+    <div style="margin-top: 40px;">
+      <div class="badge">Implementation: 10 marks</div>
+      <div class="badge">Data Collection: 8 marks</div>
+      <div class="badge">Total: 18 marks</div>
+    </div>
+    <div class="footer">Third Semester Project Review – 2 · Saturday, 21 November 2026 · 3:00–4:00 PM · CMR Institute of Technology, Bengaluru · Dept. of ISE</div>
+  </div>
+
+  <!-- Slide 2: Problem Statement -->
+  <div class="slide" id="s1">
+    <h1>Problem Statement</h1>
+    <p>Community health screening camps are coordinated through fragmented manual processes:</p>
+    <ul>
+      <li><strong>No centralized booking</strong> — patients call or walk in; paper registers at the venue</li>
+      <li><strong>Overbooking and empty seats</strong> — no real-time capacity tracking</li>
+      <li><strong>No automated reminders</strong> — high no-show rates, wasted capacity</li>
+      <li><strong>Staff conflicts</strong> — doctors and volunteers double-booked across camps</li>
+      <li><strong>No attendance data</strong> — no visibility into no-show rates or slot utilization</li>
+    </ul>
+    <div class="two-col">
+      <div class="card">
+        <h4>Today (Manual)</h4>
+        <p>Phone/WhatsApp coordination · paper registers · no slot visibility · no reminders · no analytics</p>
+      </div>
+      <div class="card">
+        <h4>With CHSC</h4>
+        <p>One web platform · real-time capacity · SMS/email reminders · QR check-in · live queue TV · analytics + CSV export</p>
+      </div>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · Problem Statement</div>
+  </div>
+
+  <!-- Slide 3: Proposed Solution -->
+  <div class="slide" id="s2">
+    <h1>Proposed Solution</h1>
+    <p>A centralized web platform with four role-based dashboards:</p>
+    <div class="two-col">
+      <div class="card">
+        <h4><span class="badge">Patient</span> Booking Portal</h4>
+        <p>Discover camps → pick slot → confirm → QR pass → reminders (24h & 2h) → cancel/reschedule</p>
+      </div>
+      <div class="card">
+        <h4><span class="badge">Organizer</span> Camp Management</h4>
+        <p>Create camps, auto-generate slots, assign staff, monitor capacity and bookings</p>
+      </div>
+      <div class="card">
+        <h4><span class="badge">Doctor / Volunteer</span> Camp Day</h4>
+        <p>QR check-in, live waiting-room TV, attendance recording, no-show processing</p>
+      </div>
+      <div class="card">
+        <h4><span class="badge">Admin</span> Governance</h4>
+        <p>Analytics, capacity advisor, CSV export, user management, reminder audit log</p>
+      </div>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · Proposed Solution</div>
+  </div>
+
+  <!-- Slide 4: System Architecture -->
+  <div class="slide" id="s3">
+    <h1>System Architecture</h1>
+    <div class="card" style="max-width: 700px;">
+      <p style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.8; color: #a5f3fc;">
+        ┌─────────────────────────────────────────────────────────────┐<br>
+        │              Frontend (React 18 + Vite 5)                    │<br>
+        │  Port 5173 · Recharts · socket.io-client · inline SVG QR     │<br>
+        └─────────────────────────────────────────────────────────────┘<br>
+                         │  HTTPS / WSS<br>
+                         ▼<br>
+        ┌─────────────────────────────────────────────────────────────┐<br>
+        │              Backend (Node.js + Express)                    │<br>
+        │  Port 4000 · JWT · bcrypt · zod · rate-limit · node-cron   │<br>
+        │  Socket.io · Nodemailer · SMS mock                          │<br>
+        └─────────────────────────────────────────────────────────────┘<br>
+                         │  mysql2/promise<br>
+                         ▼<br>
+        ┌─────────────────────────────────────────────────────────────┐<br>
+        │            Database (MySQL 8, InnoDB)                       │<br>
+        │  SELECT … FOR UPDATE row locks · CHECK constraints · 8 tables│<br>
+        └─────────────────────────────────────────────────────────────┘
+      </p>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · System Architecture</div>
+  </div>
+
+  <!-- Slide 5: Technology Stack -->
+  <div class="slide" id="s4">
+    <h1>Technology Stack</h1>
+    <table class="tech-table">
+      <thead><tr><th>Layer</th><th>Technology</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>Frontend</td><td>React 18, Vite 5</td><td>UI framework + build tool</td></tr>
+        <tr><td>Styling</td><td>Custom CSS tokens</td><td>Emerald brand, dark/light themes</td></tr>
+        <tr><td>Charts</td><td>Recharts</td><td>Analytics visualizations</td></tr>
+        <tr><td>Real-time</td><td>socket.io-client</td><td>Live queue, gateway events</td></tr>
+        <tr><td>Backend</td><td>Node.js, Express</td><td>REST API server</td></tr>
+        <tr><td>Auth</td><td>JWT, bcryptjs</td><td>Stateless sessions, password hashing</td></tr>
+        <tr><td>Validation</td><td>Zod</td><td>Request schema validation</td></tr>
+        <tr><td>Database</td><td>MySQL 8, InnoDB</td><td>Row locks, CHECK constraints</td></tr>
+        <tr><td>Scheduling</td><td>node-cron</td><td>Reminder sweeps (24h + 2h)</td></tr>
+        <tr><td>Email/SMS</td><td>Nodemailer, Fast2SMS mock</td><td>Sandboxed reminder delivery</td></tr>
+      </tbody>
+    </table>
+    <div class="footer">CHSC — Academic Review-2 · Technology Stack</div>
+  </div>
+
+  <!-- Slide 6: Booking Concurrency -->
+  <div class="slide" id="s5">
+    <h1>Booking Concurrency — Zero Overbooking</h1>
+    <p>How zero overbooking is guaranteed:</p>
+    <ol>
+      <li>Booking begins a transaction at <code>READ COMMITTED</code> isolation</li>
+      <li><code>SELECT capacity, booked_count FROM slots WHERE id = ? FOR UPDATE</code> acquires an exclusive X-lock</li>
+      <li>Concurrent requests for the same slot block until the first transaction commits</li>
+      <li>If <code>booked_count < capacity</code>: increment and insert booking; else join FIFO waitlist</li>
+      <li>MySQL CHECK constraint <code>booked_count <= capacity</code> is the database backstop</li>
+    </ol>
+    <div class="card">
+      <h4>Stress Test: 50 parallel bookings vs 10 seats</h4>
+      <p class="emerald" style="font-size: 16px; font-weight: 700;">✓ Exactly 10 confirmed · 40 waitlisted (FIFO positions 1–40) · 0 overbooked · 0 server errors</p>
+      <p>Proof: <code>backend/concurrency-test.js</code> — runs against real MySQL InnoDB row locks.</p>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · Booking Concurrency</div>
+  </div>
+
+  <!-- Slide 7: Data Collection (8 marks) -->
+  <div class="slide" id="s6">
+    <h1>Data Collection — 10 Categories (8 marks)</h1>
+    <p>For every category we document: what, why, origin, validation, storage, usage.</p>
+    <div class="two-col">
+      <div class="card">
+        <h4>Collected:</h4>
+        <ul style="list-style:none; padding-left:0;">
+          <li>• Patient registration (name, phone, email, age group)</li>
+          <li>• Camp information (venue, date, capacity)</li>
+          <li>• Venue & scheduling (time window, slot duration)</li>
+          <li>• Slot capacity (per-slot seats, booked count)</li>
+          <li>• Booking records (QR token, token number, status)</li>
+          <li>• Booking status (CONFIRMED, CANCELLED, CHECKED_IN, NO_SHOW)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Also collected:</h4>
+        <ul style="list-style:none; padding-left:0;">
+          <li>• Staff assignments (role, shift, load)</li>
+          <li>• Attendance records (check-in timestamps)</li>
+          <li>• No-show records (status transitions)</li>
+          <li>• Reminder delivery records (channel, provider, status)</li>
+        </ul>
+        <div style="margin-top:12px;">
+          <p style="font-size: 12px; color: #64748B;"><strong>Privacy:</strong> No medical history. DPDP-aligned erasure. All current data is seeded demonstration data.</p>
+        </div>
+      </div>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · Data Collection</div>
+  </div>
+
+  <!-- Slide 8: Analytics -->
+  <div class="slide" id="s7">
+    <h1>Analytics & Visualizations</h1>
+    <p>Derived from live MySQL aggregate queries via Recharts:</p>
+    <div class="two-col">
+      <div class="card">
+        <h4>KPI Cards</h4>
+        <p>Total registered · attendance rate · waitlist promotions · total bookings · no-show rate</p>
+      </div>
+      <div class="card">
+        <h4>Bookings vs Capacity</h4>
+        <p>Bar chart: booked seats vs slot capacity per camp</p>
+      </div>
+      <div class="card">
+        <h4>Attendance vs No-Show</h4>
+        <p>Bar chart: per completed camp</p>
+      </div>
+      <div class="card">
+        <h4>Hourly Utilisation</h4>
+        <p>Line chart: fill rate by hour of day</p>
+      </div>
+      <div class="card">
+        <h4>Capacity Advisor</h4>
+        <p><code>min(ceil(C_phys/(1−p)), floor(C_phys×(1+α_max)))</code> — rule-based, NOT AI/ML</p>
+      </div>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · Analytics</div>
+  </div>
+
+  <!-- Slide 9: Testing Evidence -->
+  <div class="slide" id="s8">
+    <h1>Testing Evidence — 67/67 Passing</h1>
+    <table class="tech-table">
+      <thead><tr><th>Category</th><th>Tests</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Authentication</td><td>5</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Authorization (roles)</td><td>2</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Validation (Zod)</td><td>8</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Camp management</td><td>6</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Slot management</td><td>6</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Booking / cancellation</td><td>8</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Rescheduling</td><td>2</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Concurrency (50 vs 10)</td><td>3</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Staff conflicts</td><td>7</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Reminders (idempotent)</td><td>7</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Attendance / no-shows</td><td>7</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td>Analytics / CSV export</td><td>6</td><td class="emerald">✓ Pass</td></tr>
+        <tr><td><strong>Total</strong></td><td><strong>67</strong></td><td class="emerald">✓ All pass</td></tr>
+      </tbody>
+    </table>
+    <div class="footer">CHSC — Academic Review-2 · Testing</div>
+  </div>
+
+  <!-- Slide 10: Demo Flow -->
+  <div class="slide" id="s9">
+    <h1>Live Demonstration Sequence (5 min)</h1>
+    <table class="tech-table">
+      <thead><tr><th>Time</th><th>Action</td><th>What to show</th></tr></thead>
+      <tbody>
+        <tr><td>0:00–0:30</td><td>Login as Patient</td><td>Demo role buttons, Mode A indicator</td></tr>
+        <tr><td>0:30–1:00</td><td>Browse camps</td><td>Availability badges, 3-step booking</td></tr>
+        <tr><td>1:00–1:30</td><td>Book a slot</td><td>Travel mode, pledge, confirm</td></tr>
+        <tr><td>1:30–2:00</td><td>Confirmation</td><td>QR Health Passport, confetti</td></tr>
+        <tr><td>2:00–2:30</td><td>My Bookings</td><td>Cancel / Reschedule / Calendar</td></tr>
+        <tr><td>2:30–3:00</td><td>Login as Organizer</td><td>Create camp, assign staff, load warning</td></tr>
+        <tr><td>3:00–3:30</td><td>Admin analytics</td><td>KPIs, charts, Capacity Advisor, CSV</td></tr>
+        <tr><td>3:30–4:00</td><td>Concurrency proof</td><td><code>node concurrency-test.js</code> → 10/40/0</td></tr>
+        <tr><td>4:00–5:00</td><td>Q&A</td><td>Viva questions & answers</td></tr>
+      </tbody>
+    </table>
+    <div class="footer">CHSC — Academic Review-2 · Demonstration</div>
+  </div>
+
+  <!-- Slide 11: Key Strengths -->
+  <div class="slide" id="s10">
+    <h1>Key Engineering Strengths</h1>
+    <div class="two-col">
+      <div class="card">
+        <h4>Reliability</h4>
+        <ul style="list-style:none; padding-left:0;">
+          <li>• Zero overbooking under concurrent load</li>
+          <li>• Atomic cancellation → FIFO promotion</li>
+          <li>• ACID transactions with row locks</li>
+          <li>• Idempotent reminder delivery</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Data Integrity</h4>
+        <ul style="list-style:none; padding-left:0;">
+          <li>• Unique indexes (one booking per patient per camp)</li>
+          <li>• Foreign keys with CASCADE/SET NULL</li>
+          <li>• CHECK constraints on all business rules</li>
+          <li>• 67/67 tests passing</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Privacy</h4>
+        <ul style="list-style:none; padding-left:0;">
+          <li>• Data minimisation (no medical history)</li>
+          <li>• DPDP-aligned right to erasure</li>
+          <li>• SIMULATED badges on demo data</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Honesty</h4>
+        <ul style="list-style:none; padding-left:0;">
+          <li>• Capacity Advisor = rule-based heuristic, not AI</li>
+          <li>• No fabricated patient records</li>
+          <li>• Demo data clearly labeled</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer">CHSC — Academic Review-2 · Key Strengths</div>
+  </div>
+
+  <div class="nav">
+    <button onclick="prevSlide()">← Prev</button>
+    <span id="slideNum">1 / 11</span>
+    <button onclick="nextSlide()">Next →</button>
+  </div>
+  <div class="footer" style="position:absolute; top:30px; right:60px; font-size:12px; color:#64748B;">Press → / ← to navigate · ESC for overview</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  let current = 0;
+  function showSlide(n) {
+    slides.forEach((s, i) => s.classList.toggle('active', i === n));
+    document.getElementById('progress').style.width = ((n / (slides.length - 1)) * 100) + '%';
+    document.getElementById('slideNum').textContent = (n + 1) + ' / ' + slides.length;
+  }
+  function nextSlide() { if (current < slides.length - 1) { current++; showSlide(current); } }
+  function prevSlide() { if (current > 0) { current--; showSlide(current); } }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ') nextSlide();
+    else if (e.key === 'ArrowLeft') prevSlide();
+  });
+  showSlide(0);
+</script>
+</div>
+</body>
+</html>

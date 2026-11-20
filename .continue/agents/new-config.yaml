@@ -1,0 +1,8 @@
+- name: GLM 5.2 Cloud
+    provider: ollama
+    model: glm-5.2:cloud
+    apiBase: http://localhost:11434
+    roles:
+      - chat
+      - edit
+      - apply
