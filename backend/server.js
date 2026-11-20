@@ -744,6 +744,7 @@ async function buildAnalytics() {
     capacity: Number(camp.slot_capacity || camp.total_capacity || 0),
     date: camp.camp_date,
     status: camp.status,
+    provenance: 'seeded',
   }));
 
   const attendanceVsNoShow = campRows
@@ -754,6 +755,7 @@ async function buildAnalytics() {
         camp: camp.venue.split(' ')[0],
         attended: Number(counts.CHECKED_IN || 0) + Number(counts.COMPLETED || 0),
         noShow: Number(counts.NO_SHOW || 0),
+        provenance: 'seeded',
       };
     });
 
@@ -764,6 +766,7 @@ async function buildAnalytics() {
       : 0,
     booked: Number(row.booked),
     capacity: Number(row.capacity),
+    provenance: 'seeded',
   }));
 
   let attended = 0;
@@ -795,6 +798,8 @@ async function buildAnalytics() {
       generatedAt: new Date().toISOString(),
       engine: 'MySQL aggregate queries',
       isolation: 'READ COMMITTED + explicit row locks for writes',
+      provenance: 'seeded',
+      note: 'All analytics values are derived from seeded demonstration data. No field-collected patient data is present.',
     },
   };
 }

@@ -118,7 +118,7 @@ export default function Analytics() {
           <div className="bento chart-bento">
             <InView once>
               <Card className="bento-2">
-                <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" />
+                <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone="sim">Seeded demo data</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.bookingsVsCapacity || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -136,7 +136,7 @@ export default function Analytics() {
             </InView>
             <InView once delay={100}>
               <Card className="bento-2">
-                <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" />
+                <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone="sim">Seeded demo data</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.attendanceVsNoShow || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -154,7 +154,7 @@ export default function Analytics() {
             </InView>
             <InView once delay={200}>
               <Card>
-                <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" />
+                <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone="sim">Seeded demo data</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={260}>
                     <AreaChart data={charts.hourlyUtilisation || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
