@@ -12,6 +12,8 @@ export default function StaffDay() {
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [offlineQueue, setOfflineQueue] = useState([]);
   const camps = useFetch(() => api.camps(), []);
   const [campId, setCampId] = useState(null);
   const [queue, setQueue] = useState(null);
@@ -20,15 +22,48 @@ export default function StaffDay() {
   async function doCheckin() {
     if (!token.trim()) return;
     setBusy(true);
+    const t = token.toUpperCase();
     try {
-      const res = await api.checkin(token.toUpperCase());
+      if (!isOnline) {
+        const pending = { id: Date.now(), token: t, scannedAt: new Date().toISOString(), status: 'PENDING_SYNC' };
+        setOfflineQueue((q) => [...q, pending]);
+        setResult({ offline: true, tokenNumber: t, message: 'Offline — scanned locally, will sync when back online.' });
+        toast('Offline: queued for sync', 'warn', 'Token ' + t);
+        setToken('');
+        setBusy(false);
+        return;
+      }
+      const res = await api.checkin(t);
       setResult(res);
-      pushGateway({ channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'camp staff', message: `Token ${res.booking?.tokenNumber || token} checked in.`, status: res.simulated ? 'SIMULATED' : 'SENT', provider: res.simulated ? 'Local Engine' : 'Socket.io', bookingId: res.booking?.id });
+      pushGateway({ channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'camp staff', message: `Token ${res.booking?.tokenNumber || t} checked in.`, status: res.simulated ? 'SIMULATED' : 'SENT', provider: res.simulated ? 'Local Engine' : 'Socket.io', bookingId: res.booking?.id });
       await loadQueue();
-      toast(res.message, 'ok', `Token ${res.booking?.tokenNumber || token} checked in.`);
+      toast(res.message, 'ok', `Token ${res.booking?.tokenNumber || t} checked in.`);
     } catch (err) { setResult({ error: err.message }); toast(err.message, 'bad'); }
     finally { setBusy(false); }
   }
+
+  async function syncOffline() {
+    if (offlineQueue.length === 0 || !isOnline) return;
+    const q = [...offlineQueue];
+    setOfflineQueue([]);
+    for (const item of q) {
+      try {
+        const res = await api.checkin(item.token);
+        toast('Synced: ' + (res.booking?.tokenNumber || item.token), 'ok');
+      } catch (err) {
+        setOfflineQueue((cur) => [...cur, { ...item, status: 'SYNC_FAILED' }]);
+      }
+    }
+    await loadQueue();
+  }
+
+  useEffect(() => {
+    const onOnline = () => { setIsOnline(true); syncOffline(); };
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
+  }, [isOnline, offlineQueue, syncOffline]);
 
   async function loadQueue() {
     if (!campId) return;
@@ -72,6 +107,14 @@ export default function StaffDay() {
         <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}>
           <Card>
             <CardHead icon="qr" title="QR Check-In Scanner" sub="Token verifier · Socket.io queue broadcaster" />
+            <div className="checkin-status">
+              <span className={isOnline ? 'online-dot' : 'offline-dot'}></span>
+              {isOnline ? 'Online' : 'Offline — scans queued locally'}
+              {offlineQueue.length > 0 && <span className="muted small">· {offlineQueue.length} pending sync</span>}
+              {!isOnline && offlineQueue.length > 0 && (
+                <Button size="sm" icon="refresh" onClick={syncOffline}>Sync now</Button>
+              )}
+            </div>
             <form className="checkin-form" onSubmit={(e) => { e.preventDefault(); doCheckin(); }}>
               <div className="checkin-input">
                 <Icon name="qr" size={14} />
