@@ -662,12 +662,12 @@ async function getQueueSnapshot(campId) {
      FROM bookings b
      JOIN users u ON u.id = b.patient_id
      JOIN slots s ON s.id = b.slot_id
-     WHERE b.camp_id = ? AND b.status = 'CHECKED_IN'
-     ORDER BY b.checked_in_at ASC, b.id ASC`,
-    [campId],
-  );
+         WHERE b.camp_id = ? AND b.status = 'CHECKED_IN'
+         ORDER BY b.checked_in_at ASC, b.id ASC`,
+      [campId],
+    );
 
-  const now = Date.now();
+    const now = Date.now();
   const checkedIn = rows.map((row) => {
     const checked = row.checked_in_at ? new Date(row.checked_in_at).getTime() : now;
     return {
@@ -2227,9 +2227,40 @@ app.get(
        JOIN users u ON u.id = b.patient_id
        JOIN slots s ON s.id = b.slot_id
        WHERE b.camp_id = ? AND b.status = 'CHECKED_IN'
-       ORDER BY b.checked_in_at ASC, b.id ASC`,
+        ORDER BY b.checked_in_at ASC, b.id ASC`,
       [campId],
     );
+
+    // Explainable no-show risk score (rule-based heuristic, NOT AI prediction)
+    const [history] = await pool.query(
+      `SELECT patient_id,
+              SUM(status = 'NO_SHOW') AS no_shows,
+              SUM(status IN ('CHECKED_IN','NO_SHOW')) AS total
+       FROM bookings
+       GROUP BY patient_id`,
+    );
+    const riskByPatient = {};
+    for (const h of history) {
+      const total = Number(h.total || 0);
+      const noShows = Number(h.no_shows || 0);
+      const score = total ? noShows / total : null;
+      let level = 'Low';
+      let reason = 'No prior booking history';
+      if (score !== null) {
+        if (score > 0.6) level = 'High';
+        else if (score > 0.3) level = 'Medium';
+        reason = `${noShows} no-show in ${total} past booking${total === 1 ? '' : 's'}`;
+      }
+      riskByPatient[Number(h.patient_id)] = { level, score, reason };
+    }
+    const [patientIds] = await pool.query(
+      `SELECT b.id AS booking_id, b.patient_id FROM bookings b WHERE b.camp_id = ? AND b.status = 'CHECKED_IN'`,
+      [campId],
+    );
+    const riskMap = {};
+    for (const p of patientIds) {
+      riskMap[p.booking_id] = riskByPatient[Number(p.patient_id)] || { level: 'Low', score: null, reason: 'No prior booking history' };
+    }
 
     // Staff status with load warnings
     const [staff] = await pool.query(
@@ -2275,13 +2306,17 @@ app.get(
     return res.json({
       camp: { id: camp.id, title: camp.title, venue: camp.venue, campDate: camp.camp_date, status: camp.status },
       slots: slotBoard,
-      checkedIn: checkedIn.map((row) => ({
-        id: row.id,
-        tokenNumber: row.token_number,
-        patientName: row.patient_name,
-        checkedInAt: row.checked_in_at,
-        slot: `${row.start_time} – ${row.end_time}`,
-      })),
+      checkedIn: checkedIn.map((row) => {
+        const risk = riskMap[row.id] || { level: 'Low', score: null, reason: 'No prior booking history' };
+        return {
+          id: row.id,
+          tokenNumber: row.token_number,
+          patientName: row.patient_name,
+          checkedInAt: row.checked_in_at,
+          slot: `${row.start_time} – ${row.end_time}`,
+          noShowRisk: risk,
+        };
+      }),
       staff: staffBoard,
       stats: {
         checkedIn: Number(stats.checked_in || 0),

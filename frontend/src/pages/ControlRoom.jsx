@@ -122,9 +122,14 @@ export default function ControlRoom() {
               <div key={c.id} className="checkin-row">
                 <div className="checkin-token">{c.tokenNumber}</div>
                 <div className="checkin-patient">{c.patientName}</div>
-                <div className="checkin-slot">{c.slot}</div>
-                <Badge tone="ok">Checked in</Badge>
-              </div>
+                 <div className="checkin-slot">{c.slot}</div>
+                 <Badge tone="ok">Checked in</Badge>
+                 {c.noShowRisk && (
+                   <Badge tone={c.noShowRisk.level === 'High' ? 'bad' : c.noShowRisk.level === 'Medium' ? 'warn' : 'ok'}>
+                     No-show {c.noShowRisk.level}
+                   </Badge>
+                 )}
+               </div>
             ))}
           </div>
         </Card>
