@@ -2608,16 +2608,30 @@ app.post(
   requireRole('ORGANIZER', 'ADMIN'),
   asyncHandler(async (req, res) => {
     const campId = Number(req.body?.campId || 1);
-    const [slots] = await pool.query(
+    const [camps] = await pool.query('SELECT id, status FROM camps WHERE id = ?', [campId]);
+    if (!camps.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    if (camps[0].status !== 'PUBLISHED') throw new ApiError(409, 'Camp must be PUBLISHED for the demo.', 'CAMP_NOT_OPEN');
+
+    // Find or create an empty capacity-10 slot for the race.
+    let [slots] = await pool.query(
       `SELECT id, capacity, booked_count FROM slots
        WHERE camp_id = ? AND capacity = 10 AND booked_count = 0
        ORDER BY id LIMIT 1`,
       [campId],
     );
+    let slotId;
     if (!slots.length) {
-      throw new ApiError(404, 'No empty capacity-10 slot found for this camp.', 'NO_DEMO_SLOT');
+      const maxIdx = await pool.query('SELECT COALESCE(MAX(slot_index), 0) AS m FROM slots WHERE camp_id = ?', [campId]);
+      const nextIndex = Number(maxIdx[0][0].m) + 1;
+      const [insert] = await pool.query(
+        `INSERT INTO slots (camp_id, slot_index, start_time, end_time, capacity, booked_count)
+         VALUES (?, ?, '08:00:00', '08:30:00', 10, 0)`,
+        [campId, nextIndex],
+      );
+      slotId = insert.insertId;
+    } else {
+      slotId = slots[0].id;
     }
-    const slotId = slots[0].id;
 
     // Create 50 distinct patients.
     const patients = [];
@@ -2644,6 +2658,8 @@ app.post(
           if (!rows.length) return { status: 404, patientId };
           const slot = rows[0];
           if (Number(slot.booked_count) >= Number(slot.capacity)) {
+            const [u] = await conn.query('SELECT phone FROM users WHERE id = ?', [patientId]);
+            const recipientPhone = u.length ? u[0].phone : '0000000000';
             const [w] = await conn.query(
               `SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
               [slotId],
@@ -2657,12 +2673,14 @@ app.post(
             await conn.query(
               `INSERT INTO notifications_log
                (booking_id, user_id, channel, type, recipient, message, provider, status)
-               VALUES (NULL, ?, 'SMS', 'WAITLIST_JOINED', ?, ?, 'Demo', 'SIMULATED', NULL)`,
-              [patientId, phone, `Waitlist #${position}`],
+               VALUES (NULL, ?, 'SMS', 'WAITLIST_JOINED', ?, ?, 'Demo', 'SIMULATED')`,
+              [patientId, recipientPhone, `Waitlist #${position}`],
             );
             return { status: 202, patientId, position };
           }
           await conn.query(`UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?`, [slotId]);
+          const [u] = await conn.query('SELECT phone FROM users WHERE id = ?', [patientId]);
+          const recipientPhone = u.length ? u[0].phone : '0000000000';
           const qr = `CHSC-BLR-${crypto.randomInt(100000, 999999)}`;
           const tn = `A-${crypto.randomInt(100000, 999999)}`;
           await conn.query(
@@ -2670,12 +2688,12 @@ app.post(
              VALUES (?, ?, ?, ?, ?, 'CONFIRMED')`,
             [slotId, campId, patientId, qr, tn],
           );
-          await conn.query(
-            `INSERT INTO notifications_log
-             (booking_id, user_id, channel, type, recipient, message, provider, status)
-             VALUES (LAST_INSERT_ID(), ?, 'SMS', 'BOOKING_CONFIRMED', ?, ?, 'Demo', 'SIMULATED', NULL)`,
-            [patientId, phone, `Confirmed ${tn}`],
-          );
+            await conn.query(
+              `INSERT INTO notifications_log
+               (booking_id, user_id, channel, type, recipient, message, provider, status)
+               VALUES (LAST_INSERT_ID(), ?, 'SMS', 'BOOKING_CONFIRMED', ?, ?, 'Demo', 'SIMULATED')`,
+              [patientId, recipientPhone, `Confirmed ${tn}`],
+            );
           return { status: 201, patientId };
         }),
       ),
