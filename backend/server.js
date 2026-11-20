@@ -2597,6 +2597,131 @@ app.post(
 );
 
 /* ---------------------------------------------------------------------------
+ * LIVE CONCURRENCY PROOF — 50 simultaneous bookings vs one capacity-10 slot
+ * Runs the race inside the server (no HTTP rate limits) using real
+ * SELECT ... FOR UPDATE transactions. Returns the live result for the demo page.
+ * ------------------------------------------------------------------------- */
+
+app.post(
+  '/api/demo/concurrency',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.body?.campId || 1);
+    const [slots] = await pool.query(
+      `SELECT id, capacity, booked_count FROM slots
+       WHERE camp_id = ? AND capacity = 10 AND booked_count = 0
+       ORDER BY id LIMIT 1`,
+      [campId],
+    );
+    if (!slots.length) {
+      throw new ApiError(404, 'No empty capacity-10 slot found for this camp.', 'NO_DEMO_SLOT');
+    }
+    const slotId = slots[0].id;
+
+    // Create 50 distinct patients.
+    const patients = [];
+    for (let i = 0; i < 50; i += 1) {
+      const email = `race.${Date.now()}.${i}@test.local`;
+      const phone = `9${String(Math.floor(1e8 + Math.random() * 9e8))}`;
+      const hash = await bcrypt.hash('Race@1234', 4);
+      const [result] = await pool.query(
+        `INSERT INTO users (name, email, phone, password_hash, role)
+         VALUES (?, ?, ?, ?, 'PATIENT')`,
+        [`Race Patient ${i + 1}`, email, phone, hash],
+      );
+      patients.push(result.insertId);
+    }
+
+    // Run 50 concurrent booking transactions against the same slot row.
+    const results = await Promise.all(
+      patients.map((patientId) =>
+        withTransaction(async (conn) => {
+          const [rows] = await conn.query(
+            `SELECT id, camp_id, capacity, booked_count FROM slots WHERE id = ? FOR UPDATE`,
+            [slotId],
+          );
+          if (!rows.length) return { status: 404, patientId };
+          const slot = rows[0];
+          if (Number(slot.booked_count) >= Number(slot.capacity)) {
+            const [w] = await conn.query(
+              `SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+              [slotId],
+            );
+            const position = Number(w[0].n) + 1;
+            await conn.query(
+              `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
+               VALUES (?, ?, ?, ?, 'WAITING')`,
+              [slotId, campId, patientId, position],
+            );
+            await conn.query(
+              `INSERT INTO notifications_log
+               (booking_id, user_id, channel, type, recipient, message, provider, status)
+               VALUES (NULL, ?, 'SMS', 'WAITLIST_JOINED', ?, ?, 'Demo', 'SIMULATED', NULL)`,
+              [patientId, phone, `Waitlist #${position}`],
+            );
+            return { status: 202, patientId, position };
+          }
+          await conn.query(`UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?`, [slotId]);
+          const qr = `CHSC-BLR-${crypto.randomInt(100000, 999999)}`;
+          const tn = `A-${crypto.randomInt(100000, 999999)}`;
+          await conn.query(
+            `INSERT INTO bookings (slot_id, camp_id, patient_id, qr_token, token_number, status)
+             VALUES (?, ?, ?, ?, ?, 'CONFIRMED')`,
+            [slotId, campId, patientId, qr, tn],
+          );
+          await conn.query(
+            `INSERT INTO notifications_log
+             (booking_id, user_id, channel, type, recipient, message, provider, status)
+             VALUES (LAST_INSERT_ID(), ?, 'SMS', 'BOOKING_CONFIRMED', ?, ?, 'Demo', 'SIMULATED', NULL)`,
+            [patientId, phone, `Confirmed ${tn}`],
+          );
+          return { status: 201, patientId };
+        }),
+      ),
+    );
+
+    const confirmed = results.filter((r) => r.status === 201);
+    const waitlisted = results.filter((r) => r.status === 202);
+    const errors = results.filter((r) => r.status >= 500);
+
+    const [[slotRow]] = await pool.query(
+      'SELECT booked_count, capacity FROM slots WHERE id = ?',
+      [slotId],
+    );
+    const [[confirmedCount]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM bookings WHERE slot_id = ? AND status = 'CONFIRMED'`,
+      [slotId],
+    );
+    const [[waitingCount]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+      [slotId],
+    );
+    const positions = waitlisted.map((r) => r.position).sort((a, b) => a - b);
+
+    return res.json({
+      slotId,
+      capacity: 10,
+      totalRequests: 50,
+      confirmed: confirmed.length,
+      waitlisted: waitlisted.length,
+      errors: errors.length,
+      positions,
+      db: {
+        booked_count: Number(slotRow.booked_count),
+        capacity: Number(slotRow.capacity),
+        confirmedBookings: Number(confirmedCount.total),
+        waitingBookings: Number(waitingCount.total),
+      },
+      zeroOverbooked:
+        Number(slotRow.booked_count) <= 10 &&
+        Number(confirmedCount.total) === 10 &&
+        Number(waitingCount.total) === 40,
+    });
+  }),
+);
+
+/* ---------------------------------------------------------------------------
  * SOCKET.IO
  * ------------------------------------------------------------------------- */
 

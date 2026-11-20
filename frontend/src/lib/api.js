@@ -97,6 +97,7 @@ export const api = {
   setUserStatus: (id, isActive) => withFallback(() => call(`/api/admin/users/${id}/status`, { method: 'PATCH', body: { isActive } }), () => engine.setUserStatus(id, isActive)),
   runReminders: () => withFallback(() => call('/api/admin/reminders/run', { method: 'POST' }), () => engine.runReminders()),
   rush: (campId) => withFallback(() => call('/api/demo/rush', { method: 'POST', body: { campId } }), () => engine.rush(campId)),
+  concurrency: (campId) => withFallback(() => call('/api/demo/concurrency', { method: 'POST', body: { campId } }), () => engine.concurrency(campId)),
   purgeMe: () => withFallback(() => call('/api/users/me/purge', { method: 'DELETE' }), () => engine.purgeMe(currentUser)),
   exportCsvUrl: () => `${BASE}/api/admin/reports/export.csv`,
 };

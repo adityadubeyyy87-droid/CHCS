@@ -377,6 +377,31 @@ const engine = {
     return { campId: Number(campId), slotsTouched: slots.map((s) => s.id), note: 'Synthetic demand added to available slots only; capacity constraint preserved.', simulated: true };
   },
 
+  async concurrency(campId) {
+    // Deterministic Mode-B mirror of the 50-way concurrency proof.
+    const slot = DB.slots.find((s) => s.campId === Number(campId) && s.capacity === 10 && s.bookedCount === 0);
+    if (!slot) return { error: 'No empty capacity-10 slot found.', simulated: true };
+    const confirmed = 10;
+    const waitlisted = 40;
+    const positions = Array.from({ length: 40 }, (_, i) => i + 1);
+    slot.bookedCount = 10;
+    for (let i = 0; i < waitlisted; i += 1) {
+      DB.waitlist.push({ id: seq.waitlist++, slotId: slot.id, campId: Number(campId), patientId: 1000 + i, position: i + 1, status: 'WAITING' });
+    }
+    return {
+      slotId: slot.id,
+      capacity: 10,
+      totalRequests: 50,
+      confirmed,
+      waitlisted,
+      errors: 0,
+      positions,
+      db: { booked_count: 10, capacity: 10, confirmedBookings: 10, waitingBookings: 40 },
+      zeroOverbooked: true,
+      simulated: true,
+    };
+  },
+
   async createCamp(payload, user) {
     if (!['ORGANIZER', 'ADMIN'].includes(user.role)) throw new Error('Only organizers create camps.');
     const plan = buildPlan(payload.startTime, payload.endTime, payload.slotDurationMins, payload.totalCapacity);

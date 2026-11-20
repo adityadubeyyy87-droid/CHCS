@@ -15,6 +15,7 @@ import StaffDay from './pages/StaffDay.jsx';
 import Manage from './pages/Manage.jsx';
 import { LiveQueuePage } from './components/LiveQueueTV.jsx';
 import Analytics from './pages/Analytics.jsx';
+import ConcurrencyProof from './pages/ConcurrencyProof.jsx';
 import Notifications from './pages/Notifications.jsx';
 import Settings from './pages/Settings.jsx';
 import { startAudio } from './lib/audio.js';
@@ -27,6 +28,7 @@ const PAGES = {
   liveQueue: LiveQueuePage,
   manage: Manage,
   analytics: Analytics,
+  concurrencyProof: ConcurrencyProof,
   notifications: Notifications,
   settings: Settings,
 };

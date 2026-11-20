@@ -15,6 +15,7 @@ const NAV = [
   { id: 'liveQueue', icon: 'radio', labelKey: 'nav.liveQueue', label: 'Live Queue', roles: ['DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'] },
   { id: 'manage', icon: 'clipboard', labelKey: 'nav.manage', label: 'Camp Management', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'analytics', icon: 'chart', labelKey: 'nav.analytics', label: 'Analytics', roles: ['ORGANIZER', 'ADMIN'] },
+  { id: 'concurrencyProof', icon: 'zap', labelKey: 'nav.concurrencyProof', label: 'Concurrency Proof', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'notifications', icon: 'bell', labelKey: 'nav.notifications', label: 'Notifications', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
   { id: 'settings', icon: 'gear', labelKey: 'nav.settings', label: 'Settings', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
 ];
@@ -22,7 +23,7 @@ const NAV = [
 const PAGE_TITLES = {
   overview: 'Overview', discover: 'Find Health Camps', myBookings: 'My Appointments',
   staffDay: 'Camp Day', liveQueue: 'Live Queue TV', manage: 'Camp Management',
-  analytics: 'Executive Analytics', notifications: 'Notification Center', settings: 'Settings',
+  analytics: 'Executive Analytics', concurrencyProof: 'Concurrency Proof', notifications: 'Notification Center', settings: 'Settings',
 };
 
 export default function Shell({ children }) {
