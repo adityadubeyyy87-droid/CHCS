@@ -2239,9 +2239,9 @@ app.get(
        FROM staff_assignments sa
        JOIN users u ON u.id = sa.user_id
        WHERE sa.camp_id = ?
-       ORDER BY sa.role_at_camp, u.name`,
+        ORDER BY sa.role_at_camp, u.name`,
       [campId],
-    ]);
+    );
     const staffBoard = staff.map((s) => ({
       id: s.id,
       userId: s.user_id,
