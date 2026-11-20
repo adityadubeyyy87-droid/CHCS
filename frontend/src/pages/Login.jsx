@@ -1,6 +1,5 @@
-// Login.jsx — Biophilic Future authentication with motion primitives:
-// TextShimmer hero text, GlowEffect behind 3D hero, Magnetic buttons,
-// InView staggered form entries.
+// Login.jsx — Biophilic Clinical Precision authentication with motion primitives:
+// InView staggered form entries, Magnetic buttons.
 import React, { useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
@@ -8,7 +7,6 @@ import { Badge, Button, Field, Icon, Input, Select, Sci } from '../components/ui
 import Hero3D from '../components/Hero3D.jsx';
 import {
   TextShimmer,
-  GlowEffect,
   Magnetic,
   InView,
   AnimatedNumber,
@@ -72,14 +70,6 @@ export default function Login() {
       {/* Left: 3D Hero + Brand */}
       <aside className="auth-brand h-full w-full lg:w-1/2 flex flex-col">
         <div className="relative w-full h-full flex-1 flex items-center justify-center px-8 py-12 lg:px-12">
-          <div className="absolute inset-0 -z-10 rounded-3xl bg-surface-2/50 blur-[20px]" />
-          <GlowEffect
-            colors={['rgba(16, 185, 129, 0.4)', 'rgba(37, 99, 235, 0.2)', 'rgba(245, 158, 11, 0.2)']}
-            mode="rotate"
-            blur="strong"
-            scale={1.5}
-            duration={6}
-          />
           <div className="z-10 w-full max-w-lg flex flex-col items-center text-center space-y-6">
             <div className="relative">
               <Hero3D width={320} height={280} />
@@ -88,9 +78,9 @@ export default function Login() {
               <TextShimmer
                 children="BIOPHILIC FUTURE · INTELLIGENT HEALTHCARE"
                 duration={3}
-                className="text-xs font-semibold tracking-widest text-transparent bg-clip-text bg-[length:200%_auto] animate-[shimmer_3s_infinite]"
+                className="text-xs font-semibold tracking-widest text-emerald-400"
               />
-              <h1 className="grad-text text-4xl lg:text-5xl font-extrabold leading-tight tracking-tight">
+              <h1 className="text-4xl lg:text-5xl font-extrabold leading-tight tracking-tight">
                 Care that reaches every<br />
                 neighbour.
               </h1>

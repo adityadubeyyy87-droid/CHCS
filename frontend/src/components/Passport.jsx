@@ -110,7 +110,7 @@ export function Passport({ booking, onClose, embedded = false, celebrated = fals
           <li>Carry any photo ID. Screening is free — no payment is ever requested.</li>
           <li>Plans changed? One-tap release in My Appointments lets a waiting neighbour take your seat.</li>
         </ul>
-        <div className={cls('passport-seal', seal && 'holo-seal')} aria-hidden="true">
+        <div className={cls('passport-seal', seal && 'seal-active')} aria-hidden="true">
           <svg viewBox="0 0 64 64" width="64" height="64">
             <circle cx="32" cy="32" r="29" fill="none" stroke="#059669" strokeWidth="2.4" strokeDasharray="3.4 3" />
             <path d="M20 33.5 28 41l16.5-18" fill="none" stroke="#059669" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />

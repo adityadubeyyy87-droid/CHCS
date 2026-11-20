@@ -1,6 +1,5 @@
-// Overview.jsx — Biophilic Future dashboard with motion primitives:
+// Overview.jsx — Biophilic Clinical Precision dashboard with motion primitives:
 // AnimatedNumber KPI counters, InView staggered cards, Spotlight hero.
-// Built to impress a project reviewer.
 import React, { useEffect, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
@@ -12,7 +11,6 @@ import HealthViz3D from '../components/HealthViz3D.jsx';
 import {
   AnimatedNumber,
   InView,
-  GlowEffect,
   Spotlight,
 } from '../components/motion';
 import { fmtDate, fmtTime12, dayTone, slotTone } from '../lib/format.js';
@@ -37,18 +35,11 @@ export default function Overview() {
   return (
     <div className="bento overview-bento gap-6">
       {/* Hero banner */}
-      <Card className="hero-card entrance card-tilt" style={{ gridColumn: '1 / -1' }}>
+      <Card className="hero-card entrance" style={{ gridColumn: '1 / -1' }}>
         <div className="hero-wrap">
-          <GlowEffect
-            colors={['rgba(16, 185, 129, 0.2)', 'rgba(37, 99, 235, 0.1)']}
-            mode="breathe"
-            blur="strong"
-            scale={1.3}
-            duration={8}
-          />
           <div className="hero-text max-w-[52ch]">
             <p className="hero-kicker">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
-            <h1 className="grad-text text-3xl lg:text-4xl font-extrabold leading-tight tracking-tight">
+            <h1 className="text-3xl lg:text-4xl font-extrabold leading-tight tracking-tight">
               {user.role === 'PATIENT' ? 'Your health, one booking away.' : user.role === 'ADMIN' ? 'Command center — system pulse.' : 'Operations desk — camps in flight.'}
             </h1>
             <p className="hero-sub text-muted max-w-[44ch]">
@@ -68,7 +59,7 @@ export default function Overview() {
           <div className="hero-stats flex flex-wrap gap-3 mt-6 lg:mt-0">
             {STATS.map((s) => (
               <InView key={s.label} once>
-                <div className="stat-card entrance card-tilt">
+                <div className="stat-card entrance">
                   <div className="stat-orb">
                     <Icon name={s.icon} size={20} className="icon" />
                   </div>
@@ -88,7 +79,7 @@ export default function Overview() {
         <Card className="next-appointment entrance card-tilt">
           <CardHead icon="ticket" title="Next appointment" sub={myNext ? 'Show this pass at the venue' : 'Nothing booked yet'} />
           {mine.loading ? <Skeleton h={140} /> : myNext ? (
-            <button className="mini-pass holo" onClick={() => setPass(myNext)}>
+            <button className="mini-pass" onClick={() => setPass(myNext)}>
               <div className="mini-pass-main">
                 <strong className="mono">{myNext.tokenNumber}</strong>
                 <span>{myNext.campTitle}</span>

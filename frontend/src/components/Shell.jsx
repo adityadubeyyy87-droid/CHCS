@@ -1,6 +1,6 @@
-// Shell.jsx — Biophilic Future shell: floating glass sidebar, top bar,
-// global search, notification center, EN/ಕನ್ನಡ switch, theme toggle,
-// science X-ray toggle, profile menu, toasts, mode indicator.
+// Shell.jsx — Biophilic Clinical Precision shell: hairline sidebar,
+// top bar, global search, notification center, EN/ಕನ್ನಡ switch,
+// theme toggle, science X-ray toggle, profile menu, toasts, mode indicator.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
@@ -67,10 +67,6 @@ export default function Shell({ children }) {
 
   return (
     <div className={cls('shell', collapsed && 'shell-collapsed', screenshotMode && 'screenshot-active')} data-theme={theme}>
-      <div className="orbit">
-        <span className="orbit-blob"></span>
-        <span className="orbit-blob"></span>
-      </div>
       <a href="#main" className="skip-link">Skip to main content</a>
       <aside className="sidebar" ref={navRef}>
         <div className="brand">
@@ -83,7 +79,7 @@ export default function Shell({ children }) {
           </span>
           {!collapsed && (
             <span className="brand-name">
-              <strong className="grad-text">CHSC</strong>
+              <strong>CHSC</strong>
               <small>Camp Scheduler</small>
             </span>
           )}

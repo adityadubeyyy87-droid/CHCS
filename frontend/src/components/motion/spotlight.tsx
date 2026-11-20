@@ -1,4 +1,4 @@
-// Spotlight.tsx — Motion Primitive: mouse-following spotlight effect
+// Spotlight.tsx — Motion Primitive: mouse-following focus ring (no glow).
 'use client';
 
 import React, { useRef } from 'react';
@@ -15,8 +15,8 @@ export type SpotlightProps = {
 export function Spotlight({
   children,
   className,
-  color = 'rgba(16, 185, 129, 0.15)',
-  size = 400,
+  color = 'rgba(16, 185, 129, 0.35)',
+  size = 120,
   intensity = 1,
 }: SpotlightProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -24,8 +24,8 @@ export function Spotlight({
   const x = useMotionValue(0);
   const y = useMotionValue(0);
 
-  const xSpring = useSpring(x);
-  const ySpring = useSpring(y);
+  const xSpring = useSpring(x, { damping: 22, stiffness: 300 });
+  const ySpring = useSpring(y, { damping: 22, stiffness: 300 });
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!ref.current) return;
@@ -57,8 +57,9 @@ export function Spotlight({
           y: ySpring,
           width: size,
           height: size,
-          background: `radial-gradient(circle at 50% 50%, ${color}, transparent 70%)`,
-          filter: `blur(${size / 4}px)`,
+          border: `1px solid ${color}`,
+          borderRadius: '50%',
+          background: 'transparent',
           opacity: intensity,
           position: 'absolute',
           pointerEvents: 'none',

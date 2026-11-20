@@ -76,8 +76,8 @@ export default function CommandPalette() {
       aria-label="Command palette"
       onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
     >
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" />
-      <div className="relative z-[201] w-full max-w-lg mx-4 glass rounded-2xl shadow-2xl border border-white/10 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
+      <div className="fixed inset-0 bg-black/50" />
+      <div className="relative z-[201] w-full max-w-lg mx-4 rounded-2xl shadow-2xl border border-white/10 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
         <div className="p-5 border-b border-white/5">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-400">

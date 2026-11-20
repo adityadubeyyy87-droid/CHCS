@@ -82,7 +82,7 @@ export default function Discover() {
         <div className="confirm-head">
           <span className="confirm-check" aria-hidden="true"><Icon name="check" size={26} /></span>
           <div>
-            <h2 className="grad-text">You're booked, {booking.patientName?.split(' ')[0] || user.name.split(' ')[0]}.</h2>
+            <h2>You're booked, {booking.patientName?.split(' ')[0] || user.name.split(' ')[0]}.</h2>
             <p className="muted">Token <strong className="mono">{booking.tokenNumber}</strong> · reference <strong className="mono">{booking.qrToken}</strong></p>
           </div>
         </div>
