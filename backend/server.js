@@ -249,6 +249,7 @@ function publicBooking(row) {
     bookedAt: row.booked_at,
     checkedInAt: row.checked_in_at,
     cancelledAt: row.cancelled_at,
+    waitlistPosition: row.waitlist_position !== undefined ? Number(row.waitlist_position) : undefined,
     campTitle: row.camp_title || undefined,
     campDate: row.camp_date || undefined,
     venue: row.venue || undefined,
@@ -1731,7 +1732,7 @@ app.patch(
           [booking.slot_id],
         );
         await conn.query(
-          `UPDATE waitlist SET status='PROMOTED', promoted_at=NOW() WHERE id=?`,
+          `UPDATE waitlist SET status='PROMOTED', promoted_at=NOW(), promotion_expires_at=DATE_ADD(NOW(), INTERVAL 15 MINUTE) WHERE id=?`,
           [waiter.id],
         );
 
@@ -1931,10 +1932,11 @@ app.get(
   asyncHandler(async (req, res) => {
     const [rows] = await pool.query(
       `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
-              s.start_time, s.end_time
+              s.start_time, s.end_time, w.position AS waitlist_position
        FROM bookings b
        JOIN camps c ON c.id = b.camp_id
        JOIN slots s ON s.id = b.slot_id
+       LEFT JOIN waitlist w ON w.slot_id = b.slot_id AND w.patient_id = b.patient_id AND w.status = 'WAITING'
        WHERE b.patient_id = ?
        ORDER BY b.booked_at DESC`,
       [req.user.id],

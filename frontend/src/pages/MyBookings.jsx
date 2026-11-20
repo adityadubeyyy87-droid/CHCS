@@ -95,6 +95,7 @@ export default function MyBookings() {
                     <div className="booking-when">{fmtDate(b.campDate)} · {fmtTime12(b.startTime)}–{fmtTime12(b.endTime)}</div>
                     <div className="booking-meta">
                       <Badge status={b.status}>{b.status.replace('_', ' ')}</Badge>
+                      {b.status === 'WAITLISTED' && b.waitlistPosition && <span className="qr-hint">Position #{b.waitlistPosition}</span>}
                       {b.status === 'CONFIRMED' && <span className="qr-hint">QR: {b.qrToken}</span>}
                     </div>
                   </div>

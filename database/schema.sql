@@ -158,6 +158,7 @@ CREATE TABLE waitlist (
   status      ENUM('WAITING','PROMOTED','CANCELLED','EXPIRED') NOT NULL DEFAULT 'WAITING',
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   promoted_at TIMESTAMP NULL,
+  promotion_expires_at TIMESTAMP NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_wait_slot_patient (slot_id, patient_id),
   KEY idx_wait_fifo (slot_id, status, created_at, id),
