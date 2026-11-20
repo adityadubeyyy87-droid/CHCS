@@ -16,6 +16,7 @@ import Manage from './pages/Manage.jsx';
 import { LiveQueuePage } from './components/LiveQueueTV.jsx';
 import Analytics from './pages/Analytics.jsx';
 import ConcurrencyProof from './pages/ConcurrencyProof.jsx';
+import ControlRoom from './pages/ControlRoom.jsx';
 import Notifications from './pages/Notifications.jsx';
 import Settings from './pages/Settings.jsx';
 import { startAudio } from './lib/audio.js';
@@ -29,6 +30,7 @@ const PAGES = {
   manage: Manage,
   analytics: Analytics,
   concurrencyProof: ConcurrencyProof,
+  controlRoom: ControlRoom,
   notifications: Notifications,
   settings: Settings,
 };

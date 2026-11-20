@@ -402,6 +402,57 @@ const engine = {
     };
   },
 
+  async controlRoom(campId) {
+    const camp = DB.camps.find((c) => c.id === Number(campId));
+    if (!camp) return { error: 'Camp not found.', simulated: true };
+    const slots = DB.slots.filter((s) => s.campId === Number(campId)).sort((a, b) => a.slotIndex - b.slotIndex);
+    const slotBoard = slots.map((s) => ({
+      id: s.id,
+      slotIndex: s.slotIndex,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      capacity: s.capacity,
+      booked: s.bookedCount,
+      remaining: s.capacity - s.bookedCount,
+      fillPct: s.capacity ? Math.round((s.bookedCount / s.capacity) * 100) : 0,
+    }));
+    const checkedIn = DB.bookings
+      .filter((b) => b.campId === Number(campId) && b.status === 'CHECKED_IN')
+      .sort((a, b) => new Date(a.checkedInAt) - new Date(b.checkedInAt))
+      .map((b) => {
+        const u = DB.users.find((x) => x.id === b.patientId);
+        const s = DB.slots.find((x) => x.id === b.slotId);
+        return {
+          id: b.id,
+          tokenNumber: b.tokenNumber,
+          patientName: u ? u.name : 'Patient',
+          checkedInAt: b.checkedInAt,
+          slot: s ? `${s.startTime} – ${s.endTime}` : '',
+        };
+      });
+    const staff = DB.staff.filter((s) => s.campId === Number(campId)).map((s) => ({
+      id: s.id,
+      userId: s.userId,
+      name: s.name,
+      roleAtCamp: s.roleAtCamp,
+      shiftStart: s.shiftStart,
+      shiftEnd: s.shiftEnd,
+      expectedLoadPerHour: s.expectedLoadPerHour,
+      maxPatientsPerHour: s.maxPatientsPerHour,
+      duties: s.duties,
+      loadWarning: s.expectedLoadPerHour > s.maxPatientsPerHour,
+    }));
+    const stats = {
+      checkedIn: DB.bookings.filter((b) => b.campId === Number(campId) && b.status === 'CHECKED_IN').length,
+      noShow: DB.bookings.filter((b) => b.campId === Number(campId) && b.status === 'NO_SHOW').length,
+      confirmed: DB.bookings.filter((b) => b.campId === Number(campId) && b.status === 'CONFIRMED').length,
+      cancelled: DB.bookings.filter((b) => b.campId === Number(campId) && b.status === 'CANCELLED').length,
+      total: DB.bookings.filter((b) => b.campId === Number(campId)).length,
+    };
+    return { camp: { id: camp.id, title: camp.title, venue: camp.venue, campDate: camp.campDate, status: camp.status }, slots: slotBoard, checkedIn, staff, stats, minutesToStart: 120, simulated: true };
+  },
+
+
   async createCamp(payload, user) {
     if (!['ORGANIZER', 'ADMIN'].includes(user.role)) throw new Error('Only organizers create camps.');
     const plan = buildPlan(payload.startTime, payload.endTime, payload.slotDurationMins, payload.totalCapacity);

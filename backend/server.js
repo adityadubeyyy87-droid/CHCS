@@ -2181,6 +2181,118 @@ app.get(
   }),
 );
 
+/* ---------------------------------------------------------------------------
+ * CAMP DAY CONTROL ROOM — real-time board for organizers
+ * Slot fill, check-in queue, staff status, no-show countdown.
+ * ------------------------------------------------------------------------- */
+
+app.get(
+  '/api/camps/:campId/control-room',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+
+    const [camps] = await pool.query(
+      'SELECT id, title, venue, camp_date, start_time, end_time, status FROM camps WHERE id = ?',
+      [campId],
+    );
+    if (!camps.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const camp = camps[0];
+
+    // Slot fill board
+    const [slots] = await pool.query(
+      `SELECT id, slot_index, start_time, end_time, capacity, booked_count
+       FROM slots WHERE camp_id = ? ORDER BY slot_index`,
+      [campId],
+    );
+    const slotBoard = slots.map((s) => ({
+      id: s.id,
+      slotIndex: s.slot_index,
+      startTime: s.start_time,
+      endTime: s.end_time,
+      capacity: Number(s.capacity),
+      booked: Number(s.booked_count),
+      remaining: Number(s.capacity) - Number(s.booked_count),
+      fillPct: Number(s.capacity) ? Math.round((Number(s.booked_count) / Number(s.capacity)) * 100) : 0,
+    }));
+
+    // Check-in queue (checked-in patients, earliest first)
+    const [checkedIn] = await pool.query(
+      `SELECT b.id, b.token_number, b.checked_in_at, u.name AS patient_name,
+              s.start_time, s.end_time
+       FROM bookings b
+       JOIN users u ON u.id = b.patient_id
+       JOIN slots s ON s.id = b.slot_id
+       WHERE b.camp_id = ? AND b.status = 'CHECKED_IN'
+       ORDER BY b.checked_in_at ASC, b.id ASC`,
+      [campId],
+    );
+
+    // Staff status with load warnings
+    const [staff] = await pool.query(
+      `SELECT sa.id, sa.user_id, sa.role_at_camp, sa.shift_start, sa.shift_end,
+              sa.expected_load_per_hour, sa.max_patients_per_hour, sa.duties,
+              u.name, u.email
+       FROM staff_assignments sa
+       JOIN users u ON u.id = sa.user_id
+       WHERE sa.camp_id = ?
+       ORDER BY sa.role_at_camp, u.name`,
+      [campId],
+    ]);
+    const staffBoard = staff.map((s) => ({
+      id: s.id,
+      userId: s.user_id,
+      name: s.name,
+      email: s.email,
+      roleAtCamp: s.role_at_camp,
+      shiftStart: s.shift_start,
+      shiftEnd: s.shift_end,
+      expectedLoadPerHour: Number(s.expected_load_per_hour),
+      maxPatientsPerHour: Number(s.max_patients_per_hour),
+      duties: s.duties,
+      loadWarning: Number(s.expected_load_per_hour) > Number(s.max_patients_per_hour),
+    }));
+
+    // No-show / attendance stats
+    const [[stats]] = await pool.query(
+      `SELECT
+         SUM(status = 'CHECKED_IN') AS checked_in,
+         SUM(status = 'NO_SHOW') AS no_show,
+         SUM(status = 'CONFIRMED') AS confirmed,
+         SUM(status = 'CANCELLED') AS cancelled,
+         COUNT(*) AS total
+       FROM bookings WHERE camp_id = ?`,
+      [campId],
+    );
+
+    const now = Date.now();
+    const campStart = new Date(String(camp.camp_date) + ' ' + String(camp.start_time)).getTime();
+    const minutesToStart = Math.round((campStart - now) / 60000);
+
+    return res.json({
+      camp: { id: camp.id, title: camp.title, venue: camp.venue, campDate: camp.camp_date, status: camp.status },
+      slots: slotBoard,
+      checkedIn: checkedIn.map((row) => ({
+        id: row.id,
+        tokenNumber: row.token_number,
+        patientName: row.patient_name,
+        checkedInAt: row.checked_in_at,
+        slot: `${row.start_time} – ${row.end_time}`,
+      })),
+      staff: staffBoard,
+      stats: {
+        checkedIn: Number(stats.checked_in || 0),
+        noShow: Number(stats.no_show || 0),
+        confirmed: Number(stats.confirmed || 0),
+        cancelled: Number(stats.cancelled || 0),
+        total: Number(stats.total || 0),
+      },
+      minutesToStart: minutesToStart > 0 ? minutesToStart : 0,
+    });
+  }),
+);
+
 app.get(
   '/api/staff/me',
   authenticate,

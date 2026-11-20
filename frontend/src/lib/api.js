@@ -87,6 +87,7 @@ export const api = {
   generateSlots: (campId, payload) => withFallback(() => call(`/api/camps/${campId}/generate-slots`, { method: 'POST', body: payload }), () => engine.generateSlots(campId, payload, currentUser)),
   setCampStatus: (campId, status) => withFallback(() => call(`/api/camps/${campId}/status`, { method: 'PATCH', body: { status } }), () => engine.setCampStatus(campId, status)),
   staffFor: (campId) => withFallback(() => call(`/api/camps/${campId}/staff`), async () => ({ staff: (await engine.camp(campId)).camp.staff })),
+  controlRoom: (campId) => withFallback(() => call(`/api/camps/${campId}/control-room`), () => engine.controlRoom(campId)),
   assignStaff: (campId, payload) => withFallback(() => call(`/api/camps/${campId}/staff`, { method: 'POST', body: payload }), () => engine.assignStaff(campId, payload, currentUser)),
   removeStaff: (id) => withFallback(() => call(`/api/staff/${id}`, { method: 'DELETE' }), () => engine.removeStaff(id)),
   analytics: () => withFallback(() => call('/api/admin/analytics'), () => engine.analytics()),
