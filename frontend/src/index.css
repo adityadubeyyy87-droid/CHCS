@@ -1,42 +1,28 @@
 /* ============================================================================
    CHSC — Community Health Screening Camp Scheduler
-   Design World: "BIOPHILIC FUTURE — Intelligent Healthcare for Everyone"
-   Premium Apple-inspired minimalism · Futuristic medical technology ·
-   Organic 3D environments · Sophisticated glass surfaces ·
-   Cinematic visual storytelling · Emerald & mint lighting
+   Design World: "Biophilic Clinical Precision"
+   Tailwind CSS utility layer + custom component overrides
    ============================================================================ */
+@import "tailwindcss";
 
-/* ------------------------------- color tokens ------------------------------ */
-:root {
-  /* Biophilic Future palette */
-  --forest-deep: #064e3b;
-  --forest-dark: #0f766e;
-  --emerald: #10b981;
-  --emerald-glow: #34d399;
-  --mint-soft: #d1fae5;
-  --off-white: #fafafa;
-  --charcoal: #0f172a;
-  --charcoal-soft: #1e293b;
-  --luminous: #6ee7b7;
-
-  /* Semantic mapping (kept for compatibility) */
-  --bg: var(--charcoal);
-  --surface: var(--charcoal-soft);
-  --surface-2: #16213e;
-  --surface-3: #1c2541;
-  --text: #f8fafc;
-  --text-soft: #cbd5e1;
-  --text-muted: #94a3b8;
-  --brand: var(--emerald);
-  --brand-hi: var(--emerald-glow);
-  --brand-ink: #ecfdf5;
-  --danger: #f87171;
-  --warning: #fbbf24;
-  --info: #60a5fa;
-  --line: rgba(148, 163, 184, 0.14);
-  --line-strong: rgba(148, 163, 184, 0.26);
-
-  /* Radius & shadows */
+/* ============================================================================
+   Design tokens — mapped to Tailwind theme
+   ============================================================================ */
+@theme {
+  --color-emerald: #10b981;
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-600: #059669;
+  --color-emerald-700: #064e3b;
+  --color-charcoal: #0f172a;
+  --color-charcoal-soft: #1e293b;
+  --color-off-white: #fafafa;
+  --color-text-muted: #94a3b8;
+  --color-line: rgba(148, 163, 184, 0.14);
+  --color-line-strong: rgba(148, 163, 184, 0.26);
+  --font-display: 'Plus Jakarta Sans', 'Inter', 'Noto Sans Kannada', system-ui, sans-serif;
+  --font-body: 'Inter', 'Noto Sans Kannada', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
   --radius-control: 10px;
   --radius-card: 16px;
   --radius-panel: 24px;
@@ -44,17 +30,34 @@
   --shadow-sm: 0 1px 2px rgba(2, 6, 23, 0.24);
   --shadow: 0 1px 2px rgba(2, 6, 23, 0.25), 0 12px 24px -8px rgba(2, 6, 23, 0.30);
   --shadow-lg: 0 2px 6px rgba(2, 6, 23, 0.24), 0 20px 40px -16px rgba(2, 6, 23, 0.40);
-
-  /* Typography */
-  --font-display: 'Plus Jakarta Sans', 'Inter', 'Noto Sans Kannada', system-ui, sans-serif;
-  --font-body: 'Inter', 'Noto Sans Kannada', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
-
-  /* Motion */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-expo: cubic-bezier(0.19, 1, 0.22, 1);
-  --sidebar-w: 256px;
-  --sidebar-mini: 80px;
+}
+
+@theme inline {
+  --radius-control: 10px;
+  --radius-card: 16px;
+  --radius-panel: 24px;
+  --radius-pill: 999px;
+}
+
+/* Semantic surface tokens — dark clinical default */
+:root {
+  --bg: var(--color-charcoal);
+  --surface: var(--color-charcoal-soft);
+  --surface-2: #16213e;
+  --surface-3: #1c2541;
+  --text: #f8fafc;
+  --text-soft: #cbd5e1;
+  --text-muted: var(--color-text-muted);
+  --brand: var(--color-emerald);
+  --brand-hi: #34d399;
+  --brand-ink: var(--color-emerald-50);
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --info: #60a5fa;
+  --line: var(--color-line);
+  --line-strong: var(--color-line-strong);
 }
 
 html[data-theme='light'] {
@@ -130,8 +133,6 @@ img, svg { display: block; max-width: 100%; }
 @keyframes entrance-up {
   to { opacity: 1; transform: none; }
 }
-
-@keyframes holo-sweep { 0% { left: -150%; } 100% { left: 150%; } }
 
 .page-transition {
   position: fixed;
@@ -291,8 +292,6 @@ img, svg { display: block; max-width: 100%; }
 @keyframes entrance-up {
   to { opacity: 1; transform: none; }
 }
-
-@keyframes holo-sweep { 0% { left: -150%; } 100% { left: 150%; } }
 
 .page-transition {
   position: fixed;
@@ -1243,15 +1242,6 @@ html[data-theme='light'] .passport-seal small { color: var(--forest-dark); }
 .passport-sealed .passport-strip { background-size: 200% 100%; animation: strip-shift 2.2s ease 1; }
 @keyframes strip-shift { from { background-position: 100% 0; } to { background-position: 0 0; } }
 /* Holographic shimmer on seal + QR when celebrated */
-.holo-seal { position: relative; overflow: hidden; }
-.holo-seal::before {
-  content: '';
-  position: absolute;
-  inset: -50% -50% -50% -50%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
-  transform: rotate(25deg);
-  animation: holo-sweep 2.5s linear infinite;
-}
 .qr-pulse { animation: qr-pulse 2.6s ease-in-out infinite; }
 @keyframes qr-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); } 50% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0.15); } }
 .passport-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }

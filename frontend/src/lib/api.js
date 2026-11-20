@@ -16,8 +16,17 @@ export function setToken(t) { token = t; if (t) localStorage.setItem('chsc_token
 export function setUser(u) { currentUser = u; }
 export function getUser() { return currentUser; }
 
-async function call(path, { method = 'GET', body } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+async function call(path, { method = 'GET', body, qs } = {}) {
+  let url = path;
+  if (qs && typeof qs === 'object') {
+    const search = new URLSearchParams();
+    for (const [k, v] of Object.entries(qs)) {
+      if (v !== undefined && v !== null) search.append(k, String(v));
+    }
+    const qsStr = search.toString();
+    if (qsStr) url += (path.includes('?') ? '&' : '?') + qsStr;
+  }
+  const res = await fetch(`${BASE}${url}`, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -60,7 +69,10 @@ async function withFallback(liveFn, engineFn) {
       const out = await liveFn();
       return { ...out, __mode: 'live' };
     } catch (err) {
-      if (err.status && err.status < 500 && err.code !== 'DB_OFFLINE') throw err;
+      // Only fall back to the demo engine on a connection failure (no HTTP
+      // status = server unreachable). Surface real API errors (4xx/5xx) so
+      // they are never silently masked as a demo result.
+      if (err.status !== undefined) throw err;
       mode = 'demo';
       onModeChange(mode);
     }

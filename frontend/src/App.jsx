@@ -1,7 +1,7 @@
 // App.jsx — top-level wiring: global provider → auth gate → shell + pages.
 // Page transitions (clip-path reveal), DemoController float, science-on body
 // class, CommandPalette (⌘K), and global audio context start on first click.
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { AppProvider, useApp } from './store.jsx';
 import Shell from './components/Shell.jsx';
 import DemoController from './components/DemoController.jsx';
@@ -9,16 +9,17 @@ import CommandPalette from './components/CommandPalette.jsx';
 import Landing from './pages/Landing.jsx';
 import Login from './pages/Login.jsx';
 import Overview from './pages/Overview.jsx';
-import Discover from './pages/Discover.jsx';
-import MyBookings from './pages/MyBookings.jsx';
-import StaffDay from './pages/StaffDay.jsx';
-import Manage from './pages/Manage.jsx';
-import { LiveQueuePage } from './components/LiveQueueTV.jsx';
-import Analytics from './pages/Analytics.jsx';
-import ConcurrencyProof from './pages/ConcurrencyProof.jsx';
-import ControlRoom from './pages/ControlRoom.jsx';
-import Notifications from './pages/Notifications.jsx';
-import Settings from './pages/Settings.jsx';
+
+const Discover = lazy(() => import('./pages/Discover.jsx'));
+const MyBookings = lazy(() => import('./pages/MyBookings.jsx'));
+const StaffDay = lazy(() => import('./pages/StaffDay.jsx'));
+const { LiveQueuePage } = lazy(() => import('./components/LiveQueueTV.jsx'));
+const Manage = lazy(() => import('./pages/Manage.jsx'));
+const Analytics = lazy(() => import('./pages/Analytics.jsx'));
+const ConcurrencyProof = lazy(() => import('./pages/ConcurrencyProof.jsx'));
+const ControlRoom = lazy(() => import('./pages/ControlRoom.jsx'));
+const Notifications = lazy(() => import('./pages/Notifications.jsx'));
+const Settings = lazy(() => import('./pages/Settings.jsx'));
 import { startAudio } from './lib/audio.js';
 
 const PAGES = {
@@ -78,7 +79,9 @@ function Routes() {
       <Shell>
         <div className="page-view" style={{ opacity: transitioning ? 0 : 1 }}>
           <CommandPalette />
-          <Page page={page} />
+          <Suspense fallback={<div className="stack-lg p-8 flex items-center justify-center h-96"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600"></div></div>}>
+            <Page page={page} />
+          </Suspense>
         </div>
       </Shell>
       <DemoController />
