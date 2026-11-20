@@ -274,6 +274,19 @@ function publicNotification(row) {
   };
 }
 
+async function auditLog({ actorId, actorName, action, targetType, targetId, before, after }) {
+  try {
+    await pool.query(
+      `INSERT INTO audit_log (actor_id, actor_name, action, target_type, target_id, \`before\`, \`after\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [actorId, actorName, action, targetType, targetId, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null],
+    );
+  } catch (e) {
+    // Audit must never break the primary request.
+    console.error('[audit] failed:', e.message);
+  }
+}
+
 async function withTransaction(work) {
   const conn = await pool.getConnection();
   try {
@@ -1808,7 +1821,12 @@ app.patch(
         campId: booking.camp_id,
       };
     });
-
+    await auditLog({
+      actorId: req.user.id, actorName: req.user.name, action: 'CANCEL_BOOKING',
+      targetType: 'booking', targetId: bookingId,
+      before: { status: 'CONFIRMED' },
+      after: { status: 'CANCELLED', autoPromoted: outcome.autoPromoted },
+    });
     publishNotifications(outcome.notifications);
     io.emit('slot:updated', {
       slotId: outcome.slotId,
@@ -2972,6 +2990,43 @@ app.post(
     }
 
     throw new ApiError(400, 'Unknown scenario. Use: full-slot | waitlist-active | camp-day', 'UNKNOWN_SCENARIO');
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * ADMIN AUDIT LOG — who changed what, and when
+ * ------------------------------------------------------------------------- */
+
+app.get(
+  '/api/admin/audit-log',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (req, res) => {
+    const paging = parsePagination(req.query);
+    if (!paging) throw new ApiError(400, 'Invalid pagination.', 'INVALID_PAGINATION');
+    const [rows] = await pool.query(
+      `SELECT al.*, u.name AS actor_name
+       FROM audit_log al
+       LEFT JOIN users u ON u.id = al.actor_id
+       ORDER BY al.created_at DESC, al.id DESC
+       LIMIT ? OFFSET ?`,
+      [paging.limit, paging.offset],
+    );
+    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM audit_log');
+    res.json({
+      audit: rows.map((r) => ({
+        id: r.id,
+        actorId: r.actor_id,
+        actorName: r.actor_name || r.actor_id,
+        action: r.action,
+        targetType: r.target_type,
+        targetId: r.target_id,
+        before: r.before ? JSON.parse(r.before) : null,
+        after: r.after ? JSON.parse(r.after) : null,
+        createdAt: r.created_at,
+      })),
+      pagination: buildPagination(Number(total), paging),
+    });
   }),
 );
 

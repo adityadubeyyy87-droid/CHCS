@@ -100,6 +100,7 @@ export const api = {
   rush: (campId) => withFallback(() => call('/api/demo/rush', { method: 'POST', body: { campId } }), () => engine.rush(campId)),
   concurrency: (campId) => withFallback(() => call('/api/demo/concurrency', { method: 'POST', body: { campId } }), () => engine.concurrency(campId)),
   scenario: (name) => withFallback(() => call(`/api/demo/scenario/${name}`, { method: 'POST' }), () => engine.scenario(name)),
+  auditLog: (params = {}) => withFallback(() => call('/api/admin/audit-log', { method: 'GET', qs: params }), () => ({ audit: [], pagination: { page: 1, pageSize: 20, total: 0 } })),
   purgeMe: () => withFallback(() => call('/api/users/me/purge', { method: 'DELETE' }), () => engine.purgeMe(currentUser)),
   exportCsvUrl: () => `${BASE}/api/admin/reports/export.csv`,
 };
