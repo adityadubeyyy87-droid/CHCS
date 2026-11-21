@@ -1422,7 +1422,12 @@ html[data-theme='light'] .advisor-recommended small { color: var(--forest-dark);
 .setting-row > div { min-width: 0; }
 .setting-row strong { font-size: 12.5px; }
 .setting-row p { margin-top: 2px; font-size: 10.5px; line-height: 1.4; }
-.setting-row .select, .setting-row .btn { flex: 0 0 auto; }
+/* A select must be allowed to shrink (its width is 100% of the row, but the row
+   also holds free text). With flex: 0 0 auto + width:100% the select's base size
+   became the full row and pushed the label/description out of view — that was the
+   "text and column overlap" defect on the Appearance & language rows. */
+.setting-row .select, .setting-row .btn { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.setting-row .select { width: auto; max-width: 100%; }
 .danger-card { border-color: rgba(248, 113, 113, 0.22); background: linear-gradient(120deg, rgba(220, 38, 38, 0.045), transparent 60%), var(--surface); }
 .user-table { display: flex; flex-direction: column; gap: 2px; }
 .user-table-head, .user-row { display: grid; grid-template-columns: minmax(145px, 1.2fr) minmax(135px, 1fr) 110px 110px; gap: 9px; align-items: center; }
