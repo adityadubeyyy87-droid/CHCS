@@ -16,7 +16,7 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration"
   },
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=20" },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
