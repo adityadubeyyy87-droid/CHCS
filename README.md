@@ -44,7 +44,8 @@ npm test              # backend suite
 npm run pm2:start     # keep :4000 alive forever (after: npm i -g pm2, pm2 startup)
 ```
 
-Free public link: push to GitHub → **Settings → Pages → Source: GitHub Actions**.
+Free public link: push to GitHub → **Settings → Pages → Source: GitHub Actions**
+(one admin click), or use the prebuilt `gh-pages` branch with **Deploy from a branch**.
 The included workflow publishes the UI at `https://<you>.github.io/CHCS/` and it
 falls back to the labelled DEMO engine if no backend is configured, so it never goes black.
 See `DEPLOYMENT.md` sections 14–16 for the full guide.
