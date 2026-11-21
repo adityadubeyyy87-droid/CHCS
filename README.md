@@ -53,11 +53,25 @@ npm run dev            # auto-falls back to local engine when backend is offline
 
 ## Test suite
 
-All 67 backend tests pass, including the mandatory concurrency test:
+Full automated suite (unit + integration against a throwaway MySQL test database):
+
 ```bash
 cd backend
-npm test               # 67/67 pass
+npm test               # 79/79 tests pass (14 files: unit + integration)
+npm run test:unit
+npm run test:integration
 ```
+
+### Live end-to-end verification
+
+```bash
+cd backend && node server.js          # real Express + MySQL
+node scripts/verify-live.js          # 43/43 live HTTP checks across all roles
+```
+
+Both the mandatory concurrency proof (50 → 10 confirmed / 40 waitlisted / 0 overbooked)
+and the full suite must stay green before any release. See `docs/TEST_REPORT.md` for the
+current evidence record.
 
 ## Project structure
 
@@ -66,7 +80,7 @@ database/schema.sql        8 InnoDB tables + CHECK constraints + seed data
 database/migrations/       Incremental migration scripts
 backend/server.js          Express API, JWT auth, row-lock transactions, Socket.io, cron
 backend/lib/               validation, pagination, rate limits, providers, reminder engine
-backend/tests/             67 unit + integration tests (67/67 passing)
+backend/tests/             79 unit + integration tests (unit: validation, pagination, reminders, slots, limits; integration: auth, booking, camps, staff, attendance, export, reminders, concurrency, audit)
 backend/concurrency-test.js 50-way parallel booking proof (10/40/0)
 backend/.env.example       Production environment template
 backend/chsc-postman-collection.json  Postman collection for all API endpoints

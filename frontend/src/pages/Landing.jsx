@@ -572,7 +572,11 @@ export default function Landing() {
         <div className="ln-wrap ln-footer-base">
           <p className="ln-fine">Cinematic build · React Three Fiber · custom GLSL sun · no stock video</p>
           <p className="ln-fine">
-            {mode === 'live' ? 'Connected to the live backend.' : 'Running in demo mode — simulated data is always labelled.'}
+            {mode === 'live'
+              ? 'Connected to the live backend.'
+              : mode === 'connecting'
+                ? 'Checking for the live backend…'
+                : 'Running in demo mode — simulated data is always labelled.'}
           </p>
         </div>
       </footer>

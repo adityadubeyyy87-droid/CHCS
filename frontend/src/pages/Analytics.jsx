@@ -44,14 +44,45 @@ export default function Analytics() {
   const charts = data.data || {};
 
   const csvHref = useMemo(() => {
-    if (getMode() === 'live') return api.exportCsvUrl();
     const rows = (charts.bookingsVsCapacity || []);
     const lines = [
       'Camp,Date,Status,Capacity,Booked,Fill rate %',
       ...rows.map((r) => `"${r.camp}",${String(r.date).slice(0, 10)},${r.status},${r.capacity},${r.bookings},${r.capacity ? ((r.bookings / r.capacity) * 100).toFixed(1) : '0.0'}`),
     ];
     return `data:text/csv;charset=utf-8,${encodeURIComponent(`# CHSC local demo export (simulated data — Mode B)\n${lines.join('\n')}`)}`;
-  }, [getMode(), charts.bookingsVsCapacity]);
+  }, [charts.bookingsVsCapacity]);
+
+  const [exportBusy, setExportBusy] = useState(false);
+
+  async function downloadCsv() {
+    if (getMode() !== 'live') {
+      const a = document.createElement('a');
+      a.href = csvHref;
+      a.download = 'chsc-camp-report.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('Demo CSV downloaded — labelled as simulated (Mode B).', 'info');
+      return;
+    }
+    setExportBusy(true);
+    try {
+      const blob = await api.exportCsv();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'chsc-camp-report.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      toast('Camp report exported from MySQL.', 'ok');
+    } catch (err) {
+      toast(err.message || 'Export failed.', 'bad');
+    } finally {
+      setExportBusy(false);
+    }
+  }
 
   function printReport() { window.print(); toast('Print dialog opened — clean layout is print-ready.', 'ok'); }
 
@@ -189,7 +220,15 @@ export default function Analytics() {
                 : 'Local engine active — the export below is generated in-browser from simulated data.'}
               actions={(
                 <div className="row-actions">
-                  <a className="btn btn-ghost btn-sm" href={csvHref} download="chsc-camp-report.csv"><Icon name="download" size={14} /> Export CSV</a>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={downloadCsv}
+                    disabled={exportBusy}
+                    aria-busy={exportBusy || undefined}
+                  >
+                    <Icon name="download" size={14} /> {exportBusy ? 'Exporting…' : 'Export CSV'}
+                  </button>
                   <Button size="sm" variant="ghost" icon="camera" onClick={printReport}>Print report</Button>
                 </div>
               )} />

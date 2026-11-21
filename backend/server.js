@@ -39,7 +39,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'chsc-cmrit-dev-secret-change-in-vi
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '12h';
 const DEMO_MODE = String(process.env.DEMO_MODE || 'true') !== 'false';
 const FRONTEND_ORIGIN =
-  process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173';
+  process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4000,http://127.0.0.1:4000';
 const ALLOWED_ORIGINS = FRONTEND_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean);
 const ALPHA_MAX = Number(process.env.ALPHA_MAX || 0.25);
 
@@ -272,6 +272,21 @@ function publicNotification(row) {
     status: row.status,
     sentAt: row.sent_at,
   };
+}
+
+/**
+ * Read a MySQL JSON column defensively.
+ * mysql2 returns JSON columns already decoded; some driver/pool configs return
+ * the raw string. Handle both so a page can never 500 on valid data.
+ */
+function decodeJsonColumn(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return { raw: String(value) };
+  }
 }
 
 async function auditLog({ actorId, actorName, action, targetType, targetId, before, after }) {
@@ -904,6 +919,7 @@ app.get('/api/health', async (_req, res) => {
 
 app.post(
   '/api/auth/register',
+  limiters.authIp,
   limiters.auth,
   validateBody(schemas.registerSchema),
   asyncHandler(async (req, res) => {
@@ -959,6 +975,7 @@ app.post(
 
 app.post(
   '/api/auth/login',
+  limiters.authIp,
   limiters.auth,
   validateBody(schemas.loginSchema),
   asyncHandler(async (req, res) => {
@@ -3021,8 +3038,11 @@ app.get(
         action: r.action,
         targetType: r.target_type,
         targetId: r.target_id,
-        before: r.before ? JSON.parse(r.before) : null,
-        after: r.after ? JSON.parse(r.after) : null,
+        // mysql2 already decodes JSON columns to objects; a raw string only
+        // appears on older drivers. Never JSON.parse an object (it throws
+        // "[object Object] is not valid JSON" and 500s the whole page).
+        before: decodeJsonColumn(r.before),
+        after: decodeJsonColumn(r.after),
         createdAt: r.created_at,
       })),
       pagination: buildPagination(Number(total), paging),

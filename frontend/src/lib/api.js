@@ -115,6 +115,27 @@ export const api = {
   auditLog: (params = {}) => withFallback(() => call('/api/admin/audit-log', { method: 'GET', qs: params }), () => ({ audit: [], pagination: { page: 1, pageSize: 20, total: 0 } })),
   purgeMe: () => withFallback(() => call('/api/users/me/purge', { method: 'DELETE' }), () => engine.purgeMe(currentUser)),
   exportCsvUrl: () => `${BASE}/api/admin/reports/export.csv`,
+  /**
+   * Authenticated CSV download. A plain <a href> cannot attach the Bearer token,
+   * so a live export used to 401. Fetch the bytes with the header instead of
+   * putting the JWT in a URL (which would leak into history and server logs).
+   */
+  exportCsv: async () => {
+    const res = await fetch(`${BASE}/api/admin/reports/export.csv`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let message = `Export failed (${res.status})`;
+      try {
+        const body = await res.json();
+        if (body?.error) message = body.error;
+      } catch { /* non-JSON */ }
+      const err = new Error(message);
+      err.status = res.status;
+      throw err;
+    }
+    return res.blob();
+  },
 };
 
 export { engine };

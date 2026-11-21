@@ -30,6 +30,7 @@ export function AppProvider({ children }) {
   const [unread, setUnread] = useState(0);
   const [screenshotMode, setScreenshotMode] = useState(false);
   const socketRef = useRef(null);
+  const [socketOnline, setSocketOnline] = useState(false);
   const localNotifId = useRef(1);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('chsc_theme', theme); }, [theme]);
@@ -43,8 +44,8 @@ export function AppProvider({ children }) {
         try {
           const socket = window.io({ transports: ['websocket', 'polling'] });
           socketRef.current = socket;
-          socket.on('connect', () => setMode('live'));
-          socket.on('disconnect', () => setMode('demo'));
+          socket.on('connect', () => { setSocketOnline(true); });
+          socket.on('disconnect', () => setSocketOnline(false));
           socket.on('gateway:message', (n) => pushGateway({ ...n, simulated: false }));
           ['notification:new', 'reminders:sweep'].forEach(() => {});
           socket.on('notification:new', (n) => pushGateway(n));
@@ -112,11 +113,13 @@ export function AppProvider({ children }) {
     mode, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread, screenshotMode,
     setTheme, setLang, setScience, setPage: navigate, setDrawerOpen, setUnread, setScreenshotMode,
     toast, pushGateway, t, signIn, signOut,
+    socketOnline,
     isStaff: user && ['DOCTOR', 'VOLUNTEER'].includes(user.role),
     isOrganizer: user && ['ORGANIZER', 'ADMIN'].includes(user.role),
     isAdmin: user && user.role === 'ADMIN',
+    socketOnline,
     socket: socketRef.current,
-  }), [mode, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread, screenshotMode, toast, pushGateway, t, signIn, signOut, navigate]);
+  }), [mode, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread, screenshotMode, toast, pushGateway, t, signIn, signOut, navigate, socketOnline]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
