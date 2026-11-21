@@ -70,6 +70,8 @@ Additional mechanical checks:
 - `git diff --check` clean (only CRLF normalization warnings)
 - direct `fetch(` exists only in `frontend/src/lib/api.js`
 - production build succeeds: 1793 modules transformed, no compile errors
+- CI builds the frontend before backend tests so the static-serving regression runs
+  against a real `frontend/dist` in the runner too
 
 ---
 
