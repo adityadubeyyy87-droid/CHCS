@@ -117,7 +117,8 @@ Built UI served by the local backend at `http://localhost:4000/`.
 | Check | Result |
 |---|---|
 | Role/route matrix | All 5 roles × all permitted routes render the expected `<h1>` |
-| Mode chip | `LIVE · MySQL` on every authenticated route |
+| Mode chip | `LIVE · MySQL` on every authenticated route (public Pages: `DEMO`) |
+| Demo sign-in navigation | updates hash to `#/overview` for one-click sessions and normal login |
 | Console errors | 0 |
 | Failed network requests (4xx/5xx) | 0 (organizer staff list no longer 403s) |
 | Horizontal overflow | none on checked routes at the browser's current width |

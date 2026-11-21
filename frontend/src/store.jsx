@@ -96,6 +96,12 @@ export function AppProvider({ children }) {
 
   const t = useCallback((key) => translate(lang, key), [lang]);
 
+  const navigate = useCallback((p) => {
+    setPage(p);
+    location.hash = `#/${p}`;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
   const signIn = useCallback(async (fn) => {
     const result = await fn(); // calls api.login/demoLogin; returns {user, token, simulated}
     setToken(result.token);
@@ -107,14 +113,11 @@ export function AppProvider({ children }) {
       socketRef.current.connect();
     }
     if (result.simulated) pushGateway({ channel: 'SYSTEM', type: 'DEMO_SESSION', recipient: result.user.email, message: `Local demo session started for ${result.user.name} (${result.user.role}). Simulated — not a real server session.`, status: 'SIMULATED', provider: 'Local Engine' });
+    // A successful sign-in is a navigation, not just a state change. Without
+    // this, the shell falls back to Overview while the URL still says #/login.
+    navigate('overview');
     return result.user;
-  }, [pushGateway]);
-
-  const navigate = useCallback((p) => {
-    setPage(p);
-    location.hash = `#/${p}`;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
+  }, [pushGateway, navigate]);
 
   const signOut = useCallback(() => {
     setToken(null); setUser(null);
