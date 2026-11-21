@@ -8,7 +8,7 @@ import { relTime } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 export default function Notifications() {
-  const { user, gateway, toast, pushGateway, isOrganizer } = useApp();
+  const { user, gateway, toast, pushGateway, isOrganizer, mode } = useApp();
   const [running, setRunning] = useState(false);
   const canSeeLog = isOrganizer;
 
@@ -26,9 +26,10 @@ export default function Notifications() {
     setRunning(true);
     try {
       const res = await api.runReminders();
+      const simulated = mode !== 'live' || res?.__mode === 'demo' || res?.simulated;
       const count = res.sent ?? res.remindersSent ?? res.count ?? 0;
       toast(`Reminder sweep finished — ${count} new reminder(s).`, 'ok', res.note || 'De-duplicated per booking and type.');
-      pushGateway({ channel: 'SYSTEM', type: 'REMINDER_SWEEP', recipient: 'all booked patients', message: `Manual reminder sweep sent ${count} message(s).`, status: res.simulated ? 'SIMULATED' : 'SENT', provider: res.simulated ? 'Local Engine' : 'Gateway Interceptor' });
+      pushGateway({ channel: 'SYSTEM', type: 'REMINDER_SWEEP', recipient: 'all booked patients', message: `Manual reminder sweep sent ${count} message(s).`, status: simulated ? 'SIMULATED' : 'SENT', provider: simulated ? 'Local Engine' : 'Gateway Interceptor' });
       if (canSeeLog) await log.reload();
     } catch (err) { toast(err.message, 'bad'); }
     finally { setRunning(false); }
@@ -49,7 +50,7 @@ export default function Notifications() {
                 </Magnetic>
               </Spotlight>
             )} />
-          <Sci k="privacy">
+          <Sci k="privacy" as="div" className="sci-block">
             <p className="muted">
               Message bodies contain logistics only — token, venue, time. No health information is ever sent or stored.
             </p>
@@ -65,7 +66,7 @@ export default function Notifications() {
           <div className="stack-md">
             {rows.map((n, i) => (
               <InView key={n._id || `${n.id}-${i}`} once>
-                <article key={n._id || `${n.id}-${i}`} className={`gw-row ${n.local ? 'gw-local' : ''}`}>
+                <article className={`gw-row ${n.local ? 'gw-local' : ''}`}>
                   <div className="gw-top">
                     <Badge status={n.channel} tone={n.channel === 'SMS' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
                     <Badge status={n.status} tone={String(n.status || '').toUpperCase() === 'SENT' ? 'ok' : 'sim'}>
@@ -79,7 +80,7 @@ export default function Notifications() {
                   </p>
                   <p className="gw-meta muted">
                     → {n.recipient} · {n.provider || 'Local Engine'}
-                    {n.bookingId ? ` · booking #${n.bookingId}` : ''}
+                    {n.bookingId ? ` · booking reference ${n.bookingId}` : ''}
                     {n.local && ' · captured live in this session'}
                   </p>
                 </article>

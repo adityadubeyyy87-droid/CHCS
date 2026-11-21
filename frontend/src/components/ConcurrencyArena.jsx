@@ -76,15 +76,15 @@ export default function ConcurrencyArena() {
       <CardHead
         icon="zap"
         title="Concurrency Arena — 20 requests, 1 seat"
-        sub="Visual client simulation of the exact FOR UPDATE transaction path. Verified against real MySQL by backend/concurrency-test.js."
+        sub="Visual client simulation of the row-lock path. Use the 50-way proof for an actual live/demo result; backend/concurrency-test.js is a separate audit."
         actions={phase !== 'running' ? <Button size="sm" icon="play" onClick={run}>{phase === 'done' ? 'Run again' : 'Start race'}</Button> : <Button size="sm" variant="ghost" onClick={reset}>Reset</Button>}
       />
 
       <div className={cls('arena', `arena-${phase}`)} role="img" aria-label="Twenty concurrent booking requests racing for one seat under a row lock">
         <div className="arena-lock" data-held={holder ? 'true' : 'false'}>
           <Icon name="shield" size={16} />
-          <span>slots.row #401 · FOR UPDATE</span>
-          <small>{holder ? `HELD by request #${holder}` : phase === 'idle' ? 'mutex free' : 'mutex released'}</small>
+          <span>Slot row 401 · FOR UPDATE</span>
+          <small>{holder ? `HELD by request ${holder}` : phase === 'idle' ? 'mutex free' : 'mutex released'}</small>
         </div>
 
         <div className="arena-grid">
@@ -92,12 +92,12 @@ export default function ConcurrencyArena() {
             <p className="muted arena-hint">Press <strong>Start race</strong> — 20 parallel booking transactions arrive at a slot with one seat left. Watch the row lock serialize them: exactly one commit, nineteen FIFO waitlist routes, zero overbookings.</p>
           )}
           {nodes.map((n) => (
-            <div key={n.id} className={cls('req', `req-${n.state}`)} title={`Request #${n.id}: ${n.state}`}>
-              <span className="req-id">#{n.id}</span>
+            <div key={n.id} className={cls('req', `req-${n.state}`)} title={`Request ${n.id}: ${n.state}`}>
+              <span className="req-id">{n.id}</span>
               <span className="req-state">
                 {n.state === 'confirmed' ? <Icon name="check" size={11} /> : n.state === 'waitlisted' ? 'WL' : n.state === 'locking' ? <Icon name="shield" size={11} /> : n.state === 'waiting' ? '…' : '→'}
               </span>
-              {n.position && <small className="req-pos">#{n.position}</small>}
+              {n.position && <small className="req-pos">Pos {n.position}</small>}
             </div>
           ))}
         </div>
@@ -126,7 +126,7 @@ export default function ConcurrencyArena() {
       )}
 
       <footer className="arena-foot">
-        <Sci k="fifo"><p className="muted"><Icon name="flask" size={13} /> FIFO fairness — under the row lock, waitlist entries are appended and promoted strictly first-in-first-out.</p></Sci>
+        <Sci k="fifo" as="div" className="sci-block"><p className="muted"><Icon name="flask" size={13} /> FIFO fairness — under the row lock, waitlist entries are appended and promoted strictly first-in-first-out.</p></Sci>
         <code className="mono">cd backend &amp;&amp; node concurrency-test.js   <span className="muted"># real MySQL audit</span></code>
       </footer>
     </Card>

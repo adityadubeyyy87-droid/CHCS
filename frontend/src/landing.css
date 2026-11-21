@@ -379,10 +379,7 @@ body.landing-on {
   font-weight: 400;
   letter-spacing: -0.02em;
   font-size: 1.07em;
-  background: linear-gradient(100deg, #eafff5 0%, #9df0cd 46%, #ffd7a3 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #b9f3d5;
   padding-right: 0.06em;
 }
 
@@ -777,10 +774,7 @@ body.landing-on {
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.05em;
-  background: linear-gradient(160deg, #f7fffb 0%, #8ff0cb 62%, #ffd7a3 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #d9fff0;
   font-variant-numeric: tabular-nums;
 }
 .ln-target-value span { font-size: 0.45em; letter-spacing: 0; margin-left: 2px; }

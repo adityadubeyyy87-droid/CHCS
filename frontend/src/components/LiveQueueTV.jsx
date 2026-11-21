@@ -8,32 +8,51 @@ import { cls, fmtTime12, relTime } from '../lib/format.js';
 import { Badge, Button, Counter, Icon, Skeleton } from './ui.jsx';
 
 export default function LiveQueueTV({ campId, compact = false }) {
-  const { socket, mode, pushGateway } = useApp();
+  const { socket, socketOnline, mode, pushGateway } = useApp();
   const [flash, setFlash] = useState(null);
   const { data, loading, error, reload, setData } = useFetch(
     () => api.queue(campId), [campId], { skip: !campId }
   );
-  const queue = data?.queue;
+
+  // Mode B does not create a realtime socket; keep the display honest.
+  const live = mode === 'live' && Boolean(socket) && socketOnline;
+  const queue = data?.queue || {};
+  const next = Array.isArray(queue.next) ? queue.next : [];
+  const current = queue.current;
 
   // Live updates
   useEffect(() => {
-    if (!campId) return;
-    if (socket) {
+    if (!campId) return undefined;
+    let flashTimer;
+    if (live) {
       socket.emit('camp:join', campId);
-      const onUpdate = (q) => setData({ queue: q });
+      const onUpdate = (q) => { if (q) setData({ queue: q }); };
       const onPing = () => reload();
+      const onCheckin = (e) => {
+        const token = e?.booking?.tokenNumber;
+        if (token) {
+          setFlash(token);
+          clearTimeout(flashTimer);
+          flashTimer = setTimeout(() => setFlash(null), 2400);
+        }
+        const resultMode = e?.simulated || mode !== 'live' ? 'demo' : 'live';
+        pushGateway({
+          channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'Waiting room display',
+          message: `Token ${token || 'unknown'} checked in at the desk.`,
+          status: resultMode === 'live' ? 'SENT' : 'SIMULATED',
+          provider: resultMode === 'live' ? 'Socket.io' : 'Local Engine',
+        });
+        onUpdate(e?.queue);
+      };
       socket.on('queue:updated', onUpdate);
-      socket.on('checkin:new', (e) => {
-        setFlash(e.booking?.tokenNumber || null);
-        pushGateway({ channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'Waiting room display', message: `Token ${e.booking?.tokenNumber} checked in at the desk.`, status: 'SIMULATED', provider: 'Socket.io' });
-        setTimeout(() => setFlash(null), 2400);
-        onUpdate(e.queue);
-      });
+      socket.on('checkin:new', onCheckin);
       socket.on('booking:confirmed', onPing);
       socket.on('waitlist:promoted', onPing);
       return () => {
+        clearTimeout(flashTimer);
+        socket.emit('camp:leave', campId);
         socket.off('queue:updated', onUpdate);
-        socket.off('checkin:new');
+        socket.off('checkin:new', onCheckin);
         socket.off('booking:confirmed', onPing);
         socket.off('waitlist:promoted', onPing);
       };
@@ -42,7 +61,10 @@ export default function LiveQueueTV({ campId, compact = false }) {
     const id = setInterval(reload, 4000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, campId]);
+    // setData is recreated by useFetch each render; keeping it out of deps
+    // prevents needless socket re-subscriptions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, socketOnline, live, campId, mode, pushGateway]);
 
   if (!campId) return <div className="tv tv-empty"><p>Select a camp to display.</p></div>;
   if (loading) {
@@ -54,34 +76,40 @@ export default function LiveQueueTV({ campId, compact = false }) {
   }
   if (error) return <div className="tv tv-error"><Icon name="alert" /><p>{error}</p><Button size="sm" variant="ghost" onClick={reload}>Retry</Button></div>;
 
-  const progress = Math.min(1, (queue.totalCheckedIn + (queue.next?.length || 0)) / 40);
+  const checkedIn = Number(queue.totalCheckedIn) || 0;
+  const progress = Math.min(1, (checkedIn + next.length) / 40);
   return (
-    <div className={cls('tv', compact && 'tv-compact', flash && 'tv-flash')} aria-label="Live waiting room display">
+    <div className={cls('tv', compact && 'tv-compact', flash && 'tv-flash')} aria-label="Waiting room display">
       <header className="tv-head">
-        <div className="tv-live"><span className="live-dot" aria-hidden="true" /> LIVE</div>
+        <div className="tv-live"><span className="live-dot" aria-hidden="true" /> {live ? 'LIVE' : 'DEMO'}</div>
         <div className="tv-title">
           <h2>Waiting Room</h2>
-          <p className="muted">{mode === 'live' ? 'Real-time · Socket.io' : 'Real-time simulation · local engine'}</p>
+          <p className="muted">{live ? 'Real-time · Socket.io' : 'Real-time simulation · local engine'}</p>
         </div>
-        <Badge status="CHECKED_IN">{queue.totalCheckedIn} checked in</Badge>
+        <Badge status="CHECKED_IN">{checkedIn} checked in</Badge>
       </header>
+      <span className="sr-only" aria-live="polite">{flash ? `Now serving ${flash}` : ''}</span>
 
       <div className="tv-main">
         <div className="tv-now">
           <small>Now serving</small>
-          <strong className={cls('tv-token', flash && 'tv-token-flash')}>{queue.current?.tokenNumber || '—'}</strong>
-          <span className="muted">{queue.current ? `${queue.current.patientName} · in for ${queue.current.waitedMinutes} min` : 'Awaiting first check-in'}</span>
+          <strong className={cls('tv-token', flash && 'tv-token-flash')}>{current?.tokenNumber || '—'}</strong>
+          <span className="muted">
+            {current
+              ? `${current.patientName || 'Patient'} · in for ${Number(current.waitedMinutes) || 0} min`
+              : 'Awaiting first check-in'}
+          </span>
         </div>
         <div className="tv-stats">
-          <div><small>Avg wait</small><strong><Counter value={queue.averageWaitMinutes} suffix=" min" /></strong></div>
-          <div><small>Next up</small><strong>{queue.next?.length || 0}</strong></div>
-          <div><small>Updated</small><strong>{relTime(queue.updatedAt)}</strong></div>
+          <div><small>Avg wait</small><strong><Counter value={Number(queue.averageWaitMinutes) || 0} suffix=" min" /></strong></div>
+          <div><small>Next up</small><strong>{next.length}</strong></div>
+          <div><small>Updated</small><strong>{queue.updatedAt ? relTime(queue.updatedAt) : '—'}</strong></div>
         </div>
       </div>
 
       <div className="tv-next" aria-label="Next tokens">
-        {(queue.next?.length ? queue.next : Array.from({ length: 4 }, () => null)).map((n, i) => (
-          <div key={i} className={cls('tv-next-row', !n && 'tv-next-empty')}>
+        {(next.length ? next : Array.from({ length: 4 }, () => null)).map((n, i) => (
+          <div key={n?.id || i} className={cls('tv-next-row', !n && 'tv-next-empty')}>
             <small>{i + 1}</small>
             <strong>{n?.tokenNumber || '···'}</strong>
             <span className="muted">{n ? n.patientName : '—'}</span>
@@ -119,8 +147,7 @@ export function LiveQueuePage() {
 
   const goFullscreen = () => {
     const el = document.getElementById('tv-stage');
-    if (el?.requestFullscreen) el.requestFullscreen();
-    setFullscreen(true);
+    if (el?.requestFullscreen) el.requestFullscreen().catch(() => setFullscreen(false));
   };
 
   return (

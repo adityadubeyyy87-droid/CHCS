@@ -279,7 +279,7 @@ export default function Landing() {
 
       <header className="ln-nav" ref={navRef}>
         <div className="ln-nav-inner">
-          <button className="ln-brand" type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} aria-label="CHSC — back to top">
+          <button className="ln-brand" type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
             <span className="ln-sunmark" aria-hidden="true">
               <svg viewBox="0 0 32 32" width="30" height="30" role="presentation">
                 <circle cx="16" cy="16" r="6.2" fill="url(#lnSunGrad)" />
@@ -373,7 +373,7 @@ export default function Landing() {
               </div>
             </dl>
 
-            <button type="button" className="ln-scrollcue" onClick={() => jump('why')} aria-label="Scroll to the story">
+            <button type="button" className="ln-scrollcue" onClick={() => jump('why')} aria-label="Scroll — the sun keeps rising">
               <span className="ln-scrollcue-line" aria-hidden="true" />
               <span>Scroll — the sun keeps rising</span>
             </button>

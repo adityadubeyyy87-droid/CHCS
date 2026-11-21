@@ -89,9 +89,9 @@ async function scheduleForBooking(conn, { bookingId, campDate, startTime, now = 
       `INSERT INTO reminders (booking_id, type, send_at, status, attempts, last_error)
        VALUES (?, ?, ?, 'PENDING', 0, NULL)
        ON DUPLICATE KEY UPDATE
-         send_at = VALUES(send_at),
-         status = IF(status = 'SENT', 'SENT', 'PENDING'),
-         attempts = IF(status = 'SENT', attempts, 0),
+         send_at = IF(status IN ('SENT', 'SENDING', 'CANCELLED'), send_at, VALUES(send_at)),
+         status = IF(status IN ('SENT', 'SENDING', 'CANCELLED'), status, 'PENDING'),
+         attempts = IF(status IN ('SENT', 'SENDING', 'CANCELLED'), attempts, 0),
          last_error = NULL`,
       [bookingId, type, formatSqlDate(sendAt)],
     );
@@ -109,9 +109,17 @@ async function cancelForBooking(conn, bookingId) {
   return result.affectedRows;
 }
 
-/** A reschedule replaces the queued nudges so they follow the new slot. */
+/**
+ * A reschedule replaces only queued/failed nudges so they follow the new slot.
+ * SENT and SENDING rows are terminal/in-flight and must never be resurrected or
+ * deleted — doing so could double-send a reminder or re-announce a past slot.
+ */
 async function rescheduleForBooking(conn, { bookingId, campDate, startTime, now = new Date() }) {
-  await conn.query('DELETE FROM reminders WHERE booking_id = ?', [bookingId]);
+  await conn.query(
+    `DELETE FROM reminders
+     WHERE booking_id = ? AND status IN ('PENDING', 'FAILED')`,
+    [bookingId],
+  );
   return scheduleForBooking(conn, { bookingId, campDate, startTime, now });
 }
 

@@ -13,7 +13,7 @@ const EMPTY_FORM = {
 };
 
 export default function Manage() {
-  const { toast, pushGateway } = useApp();
+  const { toast, pushGateway, mode } = useApp();
   const camps = useFetch(() => api.camps(), []);
   const users = useFetch(() => api.users().catch(() => ({ users: [] })), []);
   const [selected, setSelected] = useState(null);
@@ -73,9 +73,10 @@ export default function Manage() {
     setBusy(true);
     try {
       const res = await api.assignStaff(selected.id, staffForm);
+      const simulated = mode !== 'live' || res.__mode === 'demo' || res.simulated;
       if (res.warning) toast(res.warning.message, 'warn', 'Load Balancer');
-      else toast(`${res.staff.name} assigned to ${selected.title}.`);
-      pushGateway({ channel: 'SYSTEM', type: 'STAFF', recipient: 'organizer desk', message: `${res.staff.name} → ${selected.title} (${res.staff.roleAtCamp})`, status: 'SIMULATED', provider: 'Load Balancer' });
+      else toast(`${res.staff.name} assigned to ${selected.title}.`, 'ok', simulated ? 'Local demo engine' : 'MySQL');
+      pushGateway({ channel: 'SYSTEM', type: 'STAFF', recipient: 'organizer desk', message: `${res.staff.name} → ${selected.title} (${res.staff.roleAtCamp})`, status: simulated ? 'SIMULATED' : 'SENT', provider: simulated ? 'Local Engine' : 'Load Balancer' });
       setStaffForm({ ...staffForm, userId: '' });
       await camps.reload();
     } catch (err) { toast(err.message, 'bad'); }
@@ -100,7 +101,7 @@ export default function Manage() {
             <div className="camp-rows">
               {camps.data.camps.map((c) => (
                 <Tilt key={c.id} rotationFactor={6}>
-                  <button key={c.id} className={`camp-row ${selected?.id === c.id && 'sel'}`} onClick={() => setSelected(c)}>
+                  <button className={`camp-row ${selected?.id === c.id && 'sel'}`} onClick={() => setSelected(c)}>
                     <div className="camp-date"><strong>{fmtDate(c.campDate).split(',')[1] || c.campDate}</strong><small>{fmtDate(c.campDate).split(',')[0]}</small></div>
                     <div className="camp-row-main">
                       <strong>{c.title}</strong>
@@ -132,7 +133,7 @@ export default function Manage() {
                 {camp.status === 'PUBLISHED' && <Button size="sm" variant="ghost" onClick={() => setStatus('COMPLETED')}>Mark completed</Button>}
                 {camp.status === 'DRAFT' && <Button size="sm" onClick={() => setStatus('PUBLISHED')}>Publish</Button>}
               </div>
-              <Sci k="miller">
+              <Sci k="miller" as="div" className="sci-block">
                 <p className="muted config-note">
                   <Icon name="flask" size={13} />
                   k = floor((T<sub>end</sub> − T<sub>start</sub>) / Δt) = <strong>{camp.slots.length}</strong> slots ·
@@ -206,7 +207,7 @@ export default function Manage() {
           {showSlotPlan && (
             <div className="slot-plan" role="table" aria-label="Generated slot plan">
               {showSlotPlan.slice(0, 8).map((s) => (
-                <div key={s.slotIndex} role="row"><span>#{s.slotIndex}</span><span className="mono">{s.startTime}–{s.endTime}</span><span>{s.capacity} seats</span></div>
+                <div key={s.slotIndex} role="row"><span>Slot {s.slotIndex}</span><span className="mono">{s.startTime}–{s.endTime}</span><span>{s.capacity} seats</span></div>
               ))}
               {showSlotPlan.length > 8 && <p className="muted">+{showSlotPlan.length - 8} more…</p>}
             </div>

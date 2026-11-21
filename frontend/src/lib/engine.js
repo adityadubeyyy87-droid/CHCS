@@ -254,6 +254,31 @@ const engine = {
     return { status: 'CANCELLED', message: waiter ? 'Seat released and the first waiting neighbour was atomically promoted.' : 'Seat released. No waitlisted patient was pending.', booking: publicBooking(b), autoPromoted: Boolean(waiter), promotedBooking: promoted ? publicBooking(promoted) : null, promotedPatient: waiter ? DB.users.find((u) => u.id === waiter.patientId) : null, simulated: true };
   },
 
+  async rescheduleBooking(id, slotId, user) {
+    if (!user) throw new Error('Sign in first.');
+    const b = DB.bookings.find((x) => x.id === Number(id));
+    if (!b) throw new Error('Booking not found.');
+    if (user.role === 'PATIENT' && b.patientId !== user.id) throw new Error('You cannot reschedule this booking.');
+    if (!['PATIENT', 'ADMIN', 'ORGANIZER'].includes(user.role)) throw new Error('You cannot reschedule this booking.');
+    if (b.status !== 'CONFIRMED') throw new Error('Only a confirmed booking can be rescheduled.');
+    const camp = DB.camps.find((c) => c.id === b.campId);
+    if (camp.status !== 'PUBLISHED') throw new Error('This camp is not accepting changes.');
+    const from = DB.slots.find((s) => s.id === b.slotId);
+    const to = DB.slots.find((s) => s.id === Number(slotId));
+    if (!to || to.campId !== b.campId) throw new Error('Choose another slot in the same camp.');
+    if (from?.id === to.id) throw new Error('This booking is already on that slot.');
+    if (to.bookedCount >= to.capacity) throw new Error('That slot is full. Pick another time.');
+
+    from.bookedCount = Math.max(0, from.bookedCount - 1);
+    to.bookedCount += 1;
+    b.slotId = to.id;
+    b.bookedAt = new Date().toISOString();
+    const patient = DB.users.find((u) => u.id === b.patientId);
+    this._notify(b.patientId, b.id, 'SMS', 'BOOKING_CONFIRMED', patient.phone, null, `CHSC: ${patient.name}, your booking moved to ${camp.title} at ${to.startTime.slice(0, 5)}. Pass ${b.qrToken}.`);
+    this._notify(b.patientId, b.id, 'EMAIL', 'BOOKING_CONFIRMED', patient.email, `Moved slot · ${b.tokenNumber}`, `Your screening slot moved to ${to.startTime.slice(0, 5)} at ${camp.title}.`);
+    return { status: 'RESCHEDULED', message: 'Booking moved. Reminders were re-queued for the new slot.', booking: publicBooking(b), slot: { id: to.id, startTime: to.startTime, endTime: to.endTime }, simulated: true };
+  },
+
   async checkin(qrToken, user) {
     if (user && !['DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'].includes(user.role)) throw new Error('Check-in requires staff access.');
     const b = DB.bookings.find((x) => x.qrToken === String(qrToken).trim() || x.tokenNumber === String(qrToken).trim());

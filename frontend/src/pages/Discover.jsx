@@ -8,7 +8,7 @@ import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Input, Sci,
 import { Passport } from '../components/Passport.jsx';
 import Confetti from '../components/Confetti.jsx';
 import { cls, fmtDate, fmtTime12, dayTone, slotTone } from '../lib/format.js';
-import { useSound, startAudio } from '../lib/audio.js';
+import { useSound } from '../lib/audio.js';
 import { Tilt, InView, Spotlight, Magnetic } from '../components/motion';
 
 const TRAVEL = [
@@ -32,8 +32,8 @@ export default function Discover() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [celebrating, setCelebrating] = useState(false);
-
-  React.useEffect(() => { startAudio(); }, []);
+  const slotRefs = React.useRef(new Map());
+  const travelRefs = React.useRef(new Map());
 
   React.useEffect(() => {
     if (camps.data && !selected) {
@@ -52,6 +52,40 @@ export default function Discover() {
     });
     return g;
   }, [selected]);
+
+  function onSlotKeyDown(e, list) {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const enabled = list.filter((s) => slotTone(s.remaining, s.capacity) !== 'full');
+    if (!enabled.length) return;
+    const step = ['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : -1;
+    const at = enabled.findIndex((s) => s.id === slot?.id);
+    const next = e.key === 'Home'
+      ? enabled[0]
+      : e.key === 'End'
+        ? enabled[enabled.length - 1]
+        : enabled[(at + step + enabled.length) % enabled.length];
+    if (next) {
+      setSlot(next);
+      requestAnimationFrame(() => slotRefs.current.get(next.id)?.focus());
+    }
+  }
+
+  function onTravelKeyDown(e) {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const step = ['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : -1;
+    const at = TRAVEL.findIndex((t) => t.id === travel);
+    const next = e.key === 'Home'
+      ? TRAVEL[0]
+      : e.key === 'End'
+        ? TRAVEL[TRAVEL.length - 1]
+        : TRAVEL[(at + step + TRAVEL.length) % TRAVEL.length];
+    if (next) {
+      setTravel(next.id);
+      requestAnimationFrame(() => travelRefs.current.get(next.id)?.focus());
+    }
+  }
 
   async function confirm() {
     setBusy(true); setError(null);
@@ -103,7 +137,7 @@ export default function Discover() {
 
   return (
     <div className="discover">
-      <Sci k="zeigarnik" className="steps-wrap">
+      <Sci k="zeigarnik" as="div" className="steps-wrap">
         <ol className="steps" aria-label="Booking progress">
           {['Camp', 'Choose a slot', 'Confirm'].map((label, i) => (
             <li key={label} className={cls(step > i + 0 && step !== 0 && 'done', step === i + 1 && 'current')} aria-current={step === i + 1 ? 'step' : undefined}>
@@ -179,11 +213,19 @@ export default function Discover() {
                   <div className="slot-grid" role="listbox" aria-label={`${band} slots`}>
                     {grouped[band].map((s) => {
                       const tone = slotTone(s.remaining, s.capacity);
+                      const firstAvailable = grouped[band].find((x) => slotTone(x.remaining, x.capacity) !== 'full')?.id;
                       return (
-                        <button key={s.id} role="option" aria-selected={slot?.id === s.id}
+                        <button
+                          key={s.id}
+                          ref={(el) => { if (el) slotRefs.current.set(s.id, el); else slotRefs.current.delete(s.id); }}
+                          role="option"
+                          aria-selected={slot?.id === s.id}
+                          tabIndex={s.id === (slot?.id ?? firstAvailable) ? 0 : -1}
                           disabled={tone === 'full'}
                           className={cls('slot', `slot-${tone}`, slot?.id === s.id && 'slot-sel')}
-                          onClick={() => setSlot(s)}>
+                          onClick={() => setSlot(s)}
+                          onKeyDown={(e) => onSlotKeyDown(e, grouped[band])}
+                        >
                           <strong>{fmtTime12(s.startTime)}</strong>
                           <small>{tone === 'full' ? `Full · ${s.waitingCount} waiting` : tone === 'almost' ? `Hurry · ${s.remaining} left` : `${s.remaining} free`}</small>
                         </button>
@@ -196,13 +238,21 @@ export default function Discover() {
               {slot && (
                 <Spotlight color="rgba(16, 185, 129, 0.1)" size={400}>
                   <div className="commit-panel">
-                    <Sci k="intent">
+                    <Sci k="intent" as="div" className="sci-block">
                       <h4>Plan your visit <Badge tone="sim">commitment improves follow-through</Badge></h4>
                     </Sci>
                     <div className="travel-row" role="radiogroup" aria-label="How will you get there?">
                       {TRAVEL.map((t) => (
                         <Magnetic key={t.id} intensity={0.2} range={50}>
-                          <button key={t.id} role="radio" aria-checked={travel === t.id} className={cls('travel', travel === t.id && 'sel')} onClick={() => setTravel(t.id)}>
+                          <button
+                            ref={(el) => { if (el) travelRefs.current.set(t.id, el); else travelRefs.current.delete(t.id); }}
+                            role="radio"
+                            aria-checked={travel === t.id}
+                            tabIndex={t.id === (travel ?? TRAVEL[0].id) ? 0 : -1}
+                            className={cls('travel', travel === t.id && 'sel')}
+                            onClick={() => setTravel(t.id)}
+                            onKeyDown={onTravelKeyDown}
+                          >
                             <Icon name={t.id === 'WALK' ? 'user' : t.id === 'AUTO_BUS' ? 'pin' : t.id === 'TWO_WHEELER' ? 'zap' : 'users'} size={15} />
                             <span>{t.label}</span>
                           </button>

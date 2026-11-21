@@ -2,18 +2,17 @@
 // AnimatedNumber KPI counters, InView for chart cards, Spotlight on advisor.
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, ReferenceLine,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ReferenceLine,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { useApp, useFetch } from '../store.jsx';
-import { api, getMode } from '../lib/api.js';
+import { api } from '../lib/api.js';
 import {
   Badge, Button, Card, CardHead, Counter, ErrorNote, Icon, Sci, Skeleton, Slider,
 } from '../components/ui.jsx';
-import HealthViz3D from '../components/HealthViz3D.jsx';
-import { AnimatedNumber, InView, Spotlight, GlowEffect } from '../components/motion';
+import { AnimatedNumber, InView, Spotlight } from '../components/motion';
 
-const C = { ok: '#10b981', ok2: '#34d399', teal: '#14b8a6', amber: '#f59e0b', red: '#f87171', grid: 'rgba(148,163,184,0.15)' };
+const C = { ok: '#059669', ok2: '#10b981', amber: '#f59e0b', red: '#f87171', grid: 'rgba(148,163,184,0.15)' };
 
 const tooltipStyle = {
   background: 'rgba(15,23,42,0.94)', border: '1px solid rgba(148,163,184,0.25)',
@@ -21,7 +20,8 @@ const tooltipStyle = {
 };
 
 export default function Analytics() {
-  const { toast } = useApp();
+  const { toast, mode } = useApp();
+  const simulated = mode !== 'live';
   const data = useFetch(() => api.analytics(), []);
   const [physical, setPhysical] = useState(100);
   const [advisor, setAdvisor] = useState(null);
@@ -49,13 +49,14 @@ export default function Analytics() {
       'Camp,Date,Status,Capacity,Booked,Fill rate %',
       ...rows.map((r) => `"${r.camp}",${String(r.date).slice(0, 10)},${r.status},${r.capacity},${r.bookings},${r.capacity ? ((r.bookings / r.capacity) * 100).toFixed(1) : '0.0'}`),
     ];
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(`# CHSC local demo export (simulated data — Mode B)\n${lines.join('\n')}`)}`;
-  }, [charts.bookingsVsCapacity]);
+    const label = simulated ? '# CHSC local demo export (simulated data — Mode B)' : '# CHSC camp report (Mode A · MySQL)';
+    return `data:text/csv;charset=utf-8,${encodeURIComponent(`${label}\n${lines.join('\n')}`)}`;
+  }, [charts.bookingsVsCapacity, simulated]);
 
   const [exportBusy, setExportBusy] = useState(false);
 
   async function downloadCsv() {
-    if (getMode() !== 'live') {
+    if (simulated) {
       const a = document.createElement('a');
       a.href = csvHref;
       a.download = 'chsc-camp-report.csv';
@@ -88,7 +89,7 @@ export default function Analytics() {
 
   return (
     <div className="stack-lg analytics gap-6">
-      <Sci k="privacy">
+      <Sci k="privacy" as="div" className="sci-block">
         <div className="banner-quiet">
           <Icon name="shield" size={16} />
           <p>Every number here is derived from booking logistics only — never from medical data, which the platform does not collect.</p>
@@ -137,11 +138,11 @@ export default function Analytics() {
             </InView>
           </div>
 
-          <Sci k="ethical">
+          <Sci k="ethical" as="div" className="sci-block">
             <Card>
               <CardHead icon="zap" title="Modelled no-show reduction"
                 sub="Transparent label: modelled, not a measured causal inference"
-                actions={<Badge status="SIMULATED" tone="sim">{kpis.noShowReductionPct}% modelled</Badge>} />
+                actions={<Badge tone="info">{kpis.noShowReductionPct}% modelled · not measured</Badge>} />
               <p className="muted">{kpis.noShowReductionBasis}</p>
             </Card>
           </Sci>
@@ -149,7 +150,7 @@ export default function Analytics() {
           <div className="bento chart-bento">
             <InView once className="bento-2 chart-slot">
               <Card className="bento-2">
-                <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone="sim">Seeded demo data</Badge>} />
+                <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated data' : 'Live MySQL'}</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.bookingsVsCapacity || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -167,7 +168,7 @@ export default function Analytics() {
             </InView>
             <InView once delay={100} className="bento-2 chart-slot">
               <Card className="bento-2">
-                <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone="sim">Seeded demo data</Badge>} />
+                <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated data' : 'Live MySQL'}</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.attendanceVsNoShow || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -177,7 +178,7 @@ export default function Analytics() {
                       <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.08)' }} />
                       <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
                       <Bar dataKey="attended" name="Attended" stackId="a" fill={C.ok} radius={[0, 0, 0, 0]} />
-                      <Bar dataKey="noShow" name="No-shows" stackId="a" fill={C.amber} radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="noShow" name="No-shows" stackId="a" fill={C.red} radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -185,7 +186,7 @@ export default function Analytics() {
             </InView>
             <InView once delay={200} className="chart-slot">
               <Card>
-                <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone="sim">Seeded demo data</Badge>} />
+                <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated data' : 'Live MySQL'}</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={260}>
                     <AreaChart data={charts.hourlyUtilisation || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -201,7 +202,6 @@ export default function Analytics() {
                       <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.08)' }} />
                       <ReferenceLine y={90} stroke={C.amber} strokeDasharray="5 4" label={{ value: 'Target 90%', fill: C.amber, fontSize: 11, position: 'insideTopRight' }} />
                       <Area type="monotone" dataKey="utilisation" name="Utilisation" stroke={C.ok} strokeWidth={2.4} fill="url(#utilGrad)" />
-                      <Line type="monotone" dataKey="utilisation" stroke="transparent" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -210,12 +210,12 @@ export default function Analytics() {
           </div>
 
           <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}>
-            <CapacityAdvisor advisor={advisor} busy={advisorBusy} physical={physical} setPhysical={setPhysical} />
+            <CapacityAdvisor advisor={advisor} busy={advisorBusy} physical={physical} setPhysical={setPhysical} simulated={simulated} />
           </Spotlight>
 
           <Card>
             <CardHead icon="download" title="Reports"
-              sub={getMode() === 'live'
+              sub={!simulated
                 ? 'CSV served by the Express + MySQL backend.'
                 : 'Local engine active — the export below is generated in-browser from simulated data.'}
               actions={(
@@ -235,7 +235,7 @@ export default function Analytics() {
             <p className="muted">
               {charts.meta?.engine
                 ? <>Source: <strong>{charts.meta.engine}</strong> · {charts.meta.isolation} · generated {new Date(charts.meta.generatedAt).toLocaleTimeString()}</>
-                : 'Source: MySQL aggregate queries.'}
+                : simulated ? 'Source: local demo engine (simulated aggregates).' : 'Source: MySQL aggregate queries.'}
             </p>
           </Card>
         </>
@@ -244,12 +244,12 @@ export default function Analytics() {
   );
 }
 
-function CapacityAdvisor({ advisor, busy, physical, setPhysical }) {
+function CapacityAdvisor({ advisor, busy, physical, setPhysical, simulated }) {
   return (
     <Card className="advisor-card entrance card-tilt">
       <CardHead icon="flask" title="Smart Capacity Advisor"
         sub="Rule-Based Statistical Heuristic — NOT Black-Box AI/ML"
-        actions={advisor && <Badge tone="sim">{advisor.sampleSize} historical bookings</Badge>} />
+        actions={advisor && <Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated sample' : 'Sample'}: {advisor.sampleSize} bookings</Badge>} />
       <div className="advisor-grid">
         <div className="stack-md">
           <Slider label="Physical screening seats (C_phys)" min={20} max={400} step={5} value={physical}
@@ -259,7 +259,7 @@ function CapacityAdvisor({ advisor, busy, physical, setPhysical }) {
             p = empirical no-show rate from completed bookings; α_max = 25% hard safety ceiling.
             {advisor && <> Current p = <strong>{advisor.noShowRate}%</strong> ({advisor.noShows} no-shows in {advisor.sampleSize} completed bookings).</>}
           </p>
-          <Sci k="ethical">
+          <Sci k="ethical" as="div" className="sci-block">
             <p className="muted small">{advisor?.interpretation}</p>
           </Sci>
         </div>

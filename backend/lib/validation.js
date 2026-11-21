@@ -92,6 +92,14 @@ const campStatusSchema = z.object({
 const generateSlotsSchema = z.object({
   ...campWindow,
   force: z.boolean().optional().default(false),
+  destructive: z.boolean().optional().default(false),
+});
+
+/** Capacity Advisor query parameters: finite, bounded and explicitly numeric. */
+const advisorQuerySchema = z.object({
+  physicalCapacity: z.coerce.number().int().min(1).max(100000).default(100),
+  // Leave absent so the server's ALPHA_MAX environment setting is honoured.
+  alphaMax: z.coerce.number().min(0).max(1).optional(),
 });
 
 const staffAssignSchema = z.object({
@@ -145,6 +153,22 @@ function validateBody(schema) {
   };
 }
 
+/** Same envelope as validateBody but for req.query (GET endpoints). */
+function validateQuery(schema) {
+  return function validate(req, _res, next) {
+    const parsed = schema.safeParse(req.query ?? {});
+    if (!parsed.success) {
+      const error = new Error('Invalid query parameters.');
+      error.status = 400;
+      error.code = 'VALIDATION_FAILED';
+      error.details = { issues: issuesOf(parsed.error) };
+      return next(error);
+    }
+    req.query = parsed.data;
+    return next();
+  };
+}
+
 module.exports = {
   schemas: {
     registerSchema,
@@ -157,9 +181,11 @@ module.exports = {
     bookingSchema,
     rescheduleSchema,
     attendanceSchema,
+    advisorQuerySchema,
   },
   paginationSchema,
   validateBody,
+  validateQuery,
   issuesOf,
   patterns: { HHMM, ISO_DATE },
 };

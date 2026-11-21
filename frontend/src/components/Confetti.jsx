@@ -7,16 +7,17 @@ export default function Confetti({ active = true, count = 60 }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) return undefined;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return undefined;
     const ctx = canvas.getContext('2d');
     const rect = canvas.parentElement?.getBoundingClientRect() || { width: 400, height: 300 };
-    canvas.width = rect.width;
-    canvas.height = rect.height;
+    canvas.width = Math.max(1, Math.round(rect.width));
+    canvas.height = Math.max(1, Math.round(rect.height));
 
     const particles = [];
-    const colors = ['#10b981', '#34d399', '#6ee7b7', '#f59e0b', '#fcd34d', '#60a5fa', '#a7f3d0'];
+    const colors = ['#059669', '#10b981', '#34d399', '#6ee7b7', '#f59e0b'];
 
     for (let i = 0; i < count; i++) {
       particles.push({
@@ -33,6 +34,7 @@ export default function Confetti({ active = true, count = 60 }) {
     }
 
     let frame = 0;
+    let raf = 0;
     const draw = () => {
       frame++;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -54,13 +56,14 @@ export default function Confetti({ active = true, count = 60 }) {
         ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
         ctx.restore();
       }
-      if (alive && frame < 250) requestAnimationFrame(draw);
+      if (alive && frame < 250) raf = requestAnimationFrame(draw);
     };
     draw();
+    return () => cancelAnimationFrame(raf);
   }, [active, count]);
 
   return (
-    <div className="fixed inset-0 z-[150] pointer-events-none">
+    <div className="fixed inset-0 z-[150] pointer-events-none" aria-hidden="true">
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
     </div>
   );

@@ -28,6 +28,10 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 4000,
+        // This PM2 process is a local demo bound to this machine only. The
+        // production guardrail requires an explicit loopback HOST or
+        // ALLOW_LOCAL_DEMO=true; never copy this binding to a public host.
+        HOST: '127.0.0.1',
         // DEMO_MODE: 'false', // uncomment in production once MySQL is reachable
       },
       out_file: path.join(root, 'logs', 'chsc-out.log'),

@@ -1,0 +1,82 @@
+name: CHSC CI
+
+on:
+  push:
+    branches: [main, master, phase1-verify-hardening]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend suite (real MySQL 8)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: chsc
+          MYSQL_DATABASE: community_health_scheduler
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pchsc"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: chsc
+      DB_NAME: community_health_scheduler
+      DB_TEST_NAME: community_health_scheduler_test
+      JWT_SECRET: chsc-ci-secret-not-for-production
+      DEMO_MODE: "true"
+      RATE_LIMIT_DISABLED: "true"
+      REMINDER_CRON: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: backend
+      - name: Syntax check
+        run: node --check server.js
+        working-directory: backend
+      - name: Run unit + integration tests
+        run: npm test
+        working-directory: backend
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Build production bundle
+        run: npm run build
+        working-directory: frontend
+      - name: Verify no direct network boundary bypass
+        run: |
+          if git grep -n -E "fetch\\(" -- frontend/src | grep -v 'frontend/src/lib/api.js'; then
+            echo "Direct fetch() outside frontend/src/lib/api.js is not allowed." >&2
+            exit 1
+          fi

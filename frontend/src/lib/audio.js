@@ -1,14 +1,27 @@
 // audio.js — Web Audio API sound design system.
 // Subtle, non-intrusive sonic feedback for confirmations, errors and
-// celebrations. Always respects prefers-reduced-motion and is gated behind
-// a user gesture (first click), so browsers never autoplay audio.
-const ACTX = typeof AudioContext !== 'undefined' ? new (window.AudioContext || window.webkitAudioContext)() : null;
-
+// celebrations. Honours prefers-reduced-motion and only creates an AudioContext
+// after a user gesture, so browsers never autoplay audio.
+let ctx = null;
 let started = false;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
+/** Lazily create the context; never at module import time. */
+function getContext() {
+  if (prefersReducedMotion() || typeof window === 'undefined') return null;
+  if (!ctx) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    ctx = new AudioCtx();
+  }
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  return ctx;
+}
 
 const tone = (freq, type = 'sine', duration = 0.12, when = 0, volume = 0.08) => {
+  const ACTX = getContext();
   if (!ACTX) return;
   const osc = ACTX.createOscillator();
   const gain = ACTX.createGain();
@@ -27,6 +40,7 @@ const chord = (freqs, when = 0, duration = 0.5, volume = 0.05) => {
 };
 
 const start = async () => {
+  const ACTX = getContext();
   if (started || !ACTX) return;
   if (ACTX.state === 'suspended') await ACTX.resume();
   started = true;
@@ -62,5 +76,5 @@ const notify = () => {
 };
 
 export const startAudio = start;
-export const useSound = () => ({ click, success, error: error, notify, confirm });
+export const useSound = () => ({ click, success, error, notify, confirm });
 export default { click, success, error, notify, confirm, start };

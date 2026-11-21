@@ -33,6 +33,6 @@ describe('full-version static serving (backend origin)', () => {
     const res = await request(app)
       .get('/')
       .set('Origin', 'http://evil.example.com');
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(403);
   });
 });

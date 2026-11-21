@@ -99,6 +99,11 @@ describe('zod validation middleware', () => {
   it('rejects a reschedule without a slotId', async () => {
     await request(appWith(schemas.rescheduleSchema)).post('/x').send({}).expect(400);
   });
+
+  it('leaves alphaMax absent so the server ALPHA_MAX setting is honoured', () => {
+    expect(schemas.advisorQuerySchema.parse({})).not.toHaveProperty('alphaMax');
+    expect(schemas.advisorQuerySchema.parse({ alphaMax: '0.1' }).alphaMax).toBe(0.1);
+  });
 });
 
 describe('rate limiting', () => {

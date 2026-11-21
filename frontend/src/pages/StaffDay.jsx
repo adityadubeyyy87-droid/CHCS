@@ -1,36 +1,80 @@
-// StaffDay.jsx — Biophilic Future camp-day check-in with motion primitives:
-// Spotlight on QR scanner, Magnetic buttons, InView for staff cards.
-import React, { useEffect, useState, useRef } from 'react';
+// StaffDay.jsx — camp-day check-in with an offline queue that really syncs.
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Input, Skeleton } from '../components/ui.jsx';
+import { Badge, Button, Card, CardHead, Counter, EmptyState, ErrorNote, Icon, Input, Skeleton } from '../components/ui.jsx';
 import { fmtDate, fmtTime12 } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 export default function StaffDay() {
-  const { user, toast, pushGateway, mode } = useApp();
+  const { toast, pushGateway, mode } = useApp();
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [offlineQueue, setOfflineQueue] = useState([]);
-  const camps = useFetch(() => api.camps(), []);
+  const assignments = useFetch(() => api.staffMe(), []);
   const [campId, setCampId] = useState(null);
   const [queue, setQueue] = useState(null);
   const [queueBusy, setQueueBusy] = useState(false);
+  const isOnlineRef = useRef(isOnline);
+  const offlineQueueRef = useRef([]);
+
+  useEffect(() => { isOnlineRef.current = isOnline; }, [isOnline]);
+  useEffect(() => { offlineQueueRef.current = offlineQueue; }, [offlineQueue]);
+
+  const loadQueue = useCallback(async () => {
+    if (!campId) return;
+    setQueueBusy(true);
+    try {
+      const res = await api.queue(campId);
+      setQueue(res.queue || null);
+    } catch { setQueue(null); }
+    finally { setQueueBusy(false); }
+  }, [campId]);
+
+  const syncOffline = useCallback(async (force = false) => {
+    const pending = offlineQueueRef.current;
+    if (pending.length === 0) return;
+    if (!isOnlineRef.current && !force) {
+      toast('Still offline — scans will sync when the connection returns.', 'warn');
+      return;
+    }
+    setOfflineQueue([]);
+    for (const item of pending) {
+      try {
+        const res = await api.checkin(item.token);
+        toast(`Synced: ${res.booking?.tokenNumber || item.token}`, 'ok');
+      } catch (err) {
+        setOfflineQueue((cur) => [...cur, { ...item, status: 'SYNC_FAILED' }]);
+        toast(`Sync failed for ${item.token}: ${err.message}`, 'bad');
+      }
+    }
+    await loadQueue();
+  }, [loadQueue, toast]);
+
+  useEffect(() => {
+    const onOnline = () => { isOnlineRef.current = true; setIsOnline(true); syncOffline(true); };
+    const onOffline = () => { isOnlineRef.current = false; setIsOnline(false); };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [syncOffline]);
 
   async function doCheckin() {
     if (!token.trim()) return;
     setBusy(true);
     const t = token.toUpperCase();
     try {
-      if (!isOnline) {
+      if (!isOnlineRef.current) {
         const pending = { id: Date.now(), token: t, scannedAt: new Date().toISOString(), status: 'PENDING_SYNC' };
         setOfflineQueue((q) => [...q, pending]);
         setResult({ offline: true, tokenNumber: t, message: 'Offline — scanned locally, will sync when back online.' });
-        toast('Offline: queued for sync', 'warn', 'Token ' + t);
+        toast('Offline: queued for sync', 'warn', `Token ${t}`);
         setToken('');
-        setBusy(false);
         return;
       }
       const res = await api.checkin(t);
@@ -38,65 +82,43 @@ export default function StaffDay() {
       pushGateway({ channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'camp staff', message: `Token ${res.booking?.tokenNumber || t} checked in.`, status: res.simulated ? 'SIMULATED' : 'SENT', provider: res.simulated ? 'Local Engine' : 'Socket.io', bookingId: res.booking?.id });
       await loadQueue();
       toast(res.message, 'ok', `Token ${res.booking?.tokenNumber || t} checked in.`);
+      setToken('');
     } catch (err) { setResult({ error: err.message }); toast(err.message, 'bad'); }
     finally { setBusy(false); }
   }
 
-  async function syncOffline() {
-    if (offlineQueue.length === 0 || !isOnline) return;
-    const q = [...offlineQueue];
-    setOfflineQueue([]);
-    for (const item of q) {
-      try {
-        const res = await api.checkin(item.token);
-        toast('Synced: ' + (res.booking?.tokenNumber || item.token), 'ok');
-      } catch (err) {
-        setOfflineQueue((cur) => [...cur, { ...item, status: 'SYNC_FAILED' }]);
-      }
-    }
-    await loadQueue();
-  }
-
   useEffect(() => {
-    const onOnline = () => { setIsOnline(true); syncOffline(); };
-    const onOffline = () => setIsOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
-  }, [isOnline, offlineQueue, syncOffline]);
+    const list = assignments.data?.assignments || [];
+    if (list.length && !campId) setCampId(list[0].campId);
+  }, [assignments.data, campId]);
 
-  async function loadQueue() {
-    if (!campId) return;
-    setQueueBusy(true);
-    try {
-      const res = await api.queue(campId);
-      setQueue(res.queue);
-    } catch { setQueue(null); }
-    finally { setQueueBusy(false); }
-  }
+  useEffect(() => { loadQueue(); }, [loadQueue]);
 
-  useEffect(() => {
-    if (camps.data?.camps.length && !campId) setCampId(camps.data.camps[0].id);
-  }, [camps.data]);
-
-  useEffect(() => { loadQueue(); }, [campId]);
+  const duty = assignments.data?.assignments || [];
+  const currentCamp = duty.find((a) => Number(a.campId) === Number(campId));
+  const demoTokens = [queue?.current?.tokenNumber, ...(queue?.next || []).map((n) => n.tokenNumber)].filter(Boolean).slice(0, 4);
 
   return (
     <div className="split gap-6">
       <div className="split-left stack-lg">
         <Card>
-          <CardHead icon="stetho" title="Staff Duty Roster" sub="Your assignments for today" />
-          {camps.loading ? <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={64} />)}</div> : camps.error ? <ErrorNote onRetry={camps.reload}>{camps.error}</ErrorNote> : (
+          <CardHead icon="stetho" title="Staff Duty Roster" sub="Your assigned camps and shifts" />
+          {assignments.loading ? <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={64} />)}</div> : assignments.error ? <ErrorNote onRetry={assignments.reload}>{assignments.error}</ErrorNote> : duty.length === 0 ? (
+            <EmptyState icon="stetho" title="No duty assignments yet">An organizer can assign you to a camp from Manage → Staff matrix.</EmptyState>
+          ) : (
             <div className="camp-rows">
-              {(camps.data?.camps || []).map((c) => (
-                <InView key={c.id} once>
-                  <button key={c.id} className={`camp-row ${campId === c.id && 'sel'}`} onClick={() => setCampId(c.id)}>
-                    <div className="camp-date"><strong>{fmtDate(c.campDate).split(',')[1] || c.campDate}</strong><small>{fmtDate(c.campDate).split(',')[0]}</small></div>
-                    <div className="camp-row-main">
-                      <strong>{c.title}</strong>
-                      <small className="muted">{c.venue} · {fmtTime12(c.startTime)}–{fmtTime12(c.endTime)}</small>
+              {duty.map((a) => (
+                <InView key={a.id} once>
+                  <button type="button" className={`camp-row ${campId === a.campId ? 'sel' : ''}`} onClick={() => setCampId(a.campId)}>
+                    <div className="camp-date">
+                      <strong>{fmtDate(a.campDate).split(',')[1] || a.campDate}</strong>
+                      <small>{fmtDate(a.campDate).split(',')[0]}</small>
                     </div>
-                    <Badge tone={c.status}>{c.status}</Badge>
+                    <div className="camp-row-main">
+                      <strong>{a.campTitle || `Camp #${a.campId}`}</strong>
+                      <small className="muted">{a.venue} · {fmtTime12(a.shiftStart)}–{fmtTime12(a.shiftEnd)}</small>
+                    </div>
+                    <Badge tone={a.loadWarning ? 'warn' : 'ok'}>{a.roleAtCamp}</Badge>
                   </button>
                 </InView>
               ))}
@@ -106,36 +128,36 @@ export default function StaffDay() {
 
         <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}>
           <Card>
-            <CardHead icon="qr" title="QR Check-In Scanner" sub="Token verifier · Socket.io queue broadcaster" />
+            <CardHead icon="qr" title="QR Check-In Scanner" sub="Token verifier · live queue broadcaster" />
             <div className="checkin-status">
-              <span className={isOnline ? 'online-dot' : 'offline-dot'}></span>
+              <span className={isOnline ? 'online-dot' : 'offline-dot'} />
               {isOnline ? 'Online' : 'Offline — scans queued locally'}
               {offlineQueue.length > 0 && <span className="muted small">· {offlineQueue.length} pending sync</span>}
-              {!isOnline && offlineQueue.length > 0 && (
-                <Button size="sm" icon="refresh" onClick={syncOffline}>Sync now</Button>
+              {offlineQueue.length > 0 && (
+                <Button size="sm" icon="refresh" loading={!isOnline} onClick={() => syncOffline(false)}>Sync now</Button>
               )}
             </div>
             <form className="checkin-form" onSubmit={(e) => { e.preventDefault(); doCheckin(); }}>
               <div className="checkin-input">
                 <Icon name="qr" size={14} />
-                <Input value={token} onChange={(e) => setToken(e.target.value.toUpperCase())} placeholder="Scan or type QR token — CHSC-BLR-104" aria-label="Booking QR token" />
+                <Input aria-label="Booking QR token" value={token} onChange={(e) => setToken(e.target.value.toUpperCase())} placeholder="CHSC-BLR-104999" autoComplete="off" />
                 <Magnetic intensity={0.5}>
                   <Button type="submit" icon="check" loading={busy}>Verify & check in</Button>
                 </Magnetic>
               </div>
             </form>
-            <div className="quick-tokens">
-              <span className="muted small">Quick tokens:</span>
-              {['CHSC-BLR-104', 'CHSC-BLR-201', 'CHSC-BLR-202', 'CHSC-BLR-203'].map((t) => (
-                <button key={t} className="chip" onClick={() => setToken(t)}>{t}</button>
-              ))}
-            </div>
+            {mode !== 'live' && demoTokens.length > 0 && (
+              <div className="quick-tokens">
+                <span className="muted small">Local demo tokens:</span>
+                {demoTokens.map((t) => <button key={t} type="button" className="chip" onClick={() => setToken(t)}>{t}</button>)}
+              </div>
+            )}
             {result && (
-              <div className={`checkin-result ${result.error ? 'bad' : ''}`} role="status">
+              <div className={`checkin-result ${result.error ? 'bad' : ''}`} role={result.error ? 'alert' : 'status'}>
                 <Icon name={result.error ? 'alert' : 'check'} />
                 <div>
-                  <strong>{result.error ? 'Check-in failed' : 'Check-in successful'}</strong>
-                  <p className="muted checkin-note">{result.error || `Token ${result.tokenNumber || token} — ${result.booking?.patientName || 'patient'} checked in.`}</p>
+                  <strong>{result.error ? 'Check-in failed' : result.offline ? 'Queued while offline' : 'Check-in successful'}</strong>
+                  <p className="muted checkin-note">{result.error || `Token ${result.tokenNumber || token} — ${result.booking?.patientName || 'patient'}.`}</p>
                 </div>
               </div>
             )}
@@ -146,7 +168,7 @@ export default function StaffDay() {
 
       <div className="split-right stack-lg">
         <Card>
-          <CardHead icon="radio" title="Live Waiting Room" sub="Socket.io TV display · camp #{campId}" />
+          <CardHead icon="radio" title="Live Waiting Room" sub={currentCamp ? `${currentCamp.campTitle} · ${fmtTime12(currentCamp.shiftStart)}` : 'Select a duty camp'} />
           {queueBusy && <div className="stack-md"><Skeleton h={48} /><Skeleton h={48} /></div>}
           {queue && (
             <div className="tv-main">
@@ -176,28 +198,4 @@ export default function StaffDay() {
       </div>
     </div>
   );
-}
-
-function Counter({ value, decimals = 0, suffix = '', className }) {
-  const [display, setDisplay] = useState(0);
-  const prev = useRef(0);
-  useEffect(() => {
-    const from = prev.current;
-    const to = Number(value) || 0;
-    prev.current = to;
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduce || from === to) { setDisplay(to); return; }
-    const start = performance.now();
-    const dur = 700;
-    let raf;
-    const tick = (now) => {
-      const p = Math.min(1, (now - start) / dur);
-      const eased = 1 - Math.pow(2, -10 * p);
-      setDisplay(from + (to - from) * eased);
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [value]);
-  return <span className={`counter ${className || ''}`}>{display.toFixed(decimals)}{suffix}</span>;
 }

@@ -13,6 +13,7 @@
  */
 
 const nodemailer = require('nodemailer');
+const { redactRecipient } = require('./security');
 
 function buildEmailProvider(env, { quiet = false } = {}) {
   const host = env.SMTP_HOST;
@@ -23,9 +24,10 @@ function buildEmailProvider(env, { quiet = false } = {}) {
     return {
       name: 'Email Sandbox',
       live: false,
-      async send({ to, subject, text }) {
-        if (!quiet) console.log(`[EMAIL MOCK] ${to} · ${subject}\n${text}`);
-        return { ok: true, provider: 'Email Sandbox', simulated: true, reference: `mock-email-${to}` };
+      async send({ to }) {
+        // Never print or persist raw recipients / message bodies in sandbox logs.
+        if (!quiet) console.log(`[EMAIL MOCK] → ${redactRecipient(to)} (content omitted)`);
+        return { ok: true, provider: 'Email Sandbox', simulated: true, reference: `mock-email-${redactRecipient(to)}` };
       },
     };
   }
@@ -59,9 +61,9 @@ function buildSmsProvider(env, { quiet = false } = {}) {
     return {
       name: 'SMS Sandbox',
       live: false,
-      async send({ to, text }) {
-        if (!quiet) console.log(`[SMS MOCK] ${to}\n${text}`);
-        return { ok: true, provider: 'SMS Sandbox', simulated: true, reference: `mock-sms-${to}` };
+      async send({ to }) {
+        if (!quiet) console.log(`[SMS MOCK] → ${redactRecipient(to)} (content omitted)`);
+        return { ok: true, provider: 'SMS Sandbox', simulated: true, reference: `mock-sms-${redactRecipient(to)}` };
       },
     };
   }

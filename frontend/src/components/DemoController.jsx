@@ -9,8 +9,8 @@ import { Badge, Button, Icon } from './ui.jsx';
 import { cls } from '../lib/format.js';
 
 const SCENARIOS = [
-  { id: 'concurrency', title: '1 · Last-Seat Concurrency', desc: '20 parallel requests, 1 seat — 1 confirmed, 19 waitlisted, 0 overbooked.', page: 'analytics', arena: true },
-  { id: 'promotion', title: '2 · Waitlist Promotion', desc: 'Release CHSC-BLR-104 and watch the FIFO promotion + simulated SMS/email.', arena: false },
+  { id: 'concurrency', title: '1 · Last-Seat Concurrency', desc: '50 parallel requests, 10 seats — 10 confirmed, 40 waitlisted, 0 overbooked.', page: 'analytics', arena: true },
+  { id: 'promotion', title: '2 · Waitlist Promotion', desc: 'Release CHSC-BLR-104 and watch the FIFO promotion + notification.', arena: false },
   { id: 'checkin', title: '3 · QR Check-In', desc: 'Scan token CHSC-BLR-104 and broadcast it to the Live Queue TV.', arena: false },
   { id: 'analytics', title: '4 · Smart Analytics', desc: 'No-show statistics and the mathematical capacity recommendation.', page: 'analytics', arena: false },
 ];
@@ -27,6 +27,15 @@ export default function DemoController() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(null);
   const [last, setLast] = useState(null);
+
+  const outcome = (res) => {
+    const simulated = mode !== 'live' || res?.__mode === 'demo' || res?.simulated;
+    return {
+      simulated,
+      status: simulated ? 'SIMULATED' : 'SENT',
+      provider: simulated ? 'Local Engine' : 'Gateway Interceptor',
+    };
+  };
 
   useEffect(() => {
     const onToggle = () => setOpen((value) => !value);
@@ -46,17 +55,20 @@ export default function DemoController() {
     try {
       if (s.page) setPage(s.page);
       if (s.id === 'promotion') {
-        // Admin/organizer can release any confirmed booking; find booking #1 (CHSC-BLR-104's owner).
+        // Admin/organizer can release any confirmed booking; this seeded
+        // booking belongs to the CHSC-BLR-104 demo token.
         const res = await api.cancelBooking(1);
+        const result = outcome(res);
         setLast(res);
         toast(res.message, 'ok', res.autoPromoted ? `Promoted: ${res.promotedPatient?.name || 'first waiting patient'}` : 'No waiting patients on that slot.');
-        pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'presentation controller', message: `Scenario 2 executed: ${res.message}`, status: 'SIMULATED', provider: 'Demo Controller', bookingId: 1 });
+        pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'presentation controller', message: `Scenario 2 executed: ${res.message}`, status: result.status, provider: result.simulated ? 'Local Engine' : 'Demo Controller', bookingId: 1 });
       }
       if (s.id === 'checkin') {
         const res = await api.checkin('CHSC-BLR-104');
+        const result = outcome(res);
         setLast(res);
         toast(res.message, 'ok', 'The Live Queue TV updates in real time — open it from the sidebar.');
-        pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'presentation controller', message: `Scenario 3 executed: ${res.message}`, status: 'SIMULATED', provider: 'Demo Controller' });
+        pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'presentation controller', message: `Scenario 3 executed: ${res.message}`, status: result.status, provider: result.simulated ? 'Local Engine' : 'Demo Controller' });
       }
       if (s.id === 'analytics') {
         setPage('analytics');
@@ -77,13 +89,16 @@ export default function DemoController() {
     setBusy('reset');
     try {
       if (mode === 'live') {
-        await fetch('/api/demo/reset-notice', { method: 'POST' }).catch(() => {});
-        toast('Database reset uses the CLI', 'warn', 'Run: mysql -u root -p < database/schema.sql — then reload. Frontend state reset below.');
+        const notice = await api.demoResetNotice().catch(() => null);
+        toast('Database reset uses the CLI', 'warn', notice?.message || 'Run: mysql -u root -p < database/schema.sql — then reload.');
+        return;
       }
-      const { engine } = await import('../lib/api.js');
-      engine.reset();
-      setLast(null);
-      toast('Local demo data reset to the deterministic seed.');
+      const res = await api.demoReset();
+      setLast(res);
+      pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'local demo engine', message: res.message, status: 'SIMULATED', provider: 'Local Engine' });
+      toast(res.message, 'ok', 'Local engine only — no database was changed.');
+    } catch (err) {
+      toast(err.message, 'bad');
     } finally { setBusy(null); }
   }
 
@@ -97,8 +112,9 @@ export default function DemoController() {
     setBusy('rush');
     try {
       const res = await api.rush(1);
-      toast('Rush hour simulated on camp 1', 'warn', `${res.slotsTouched.length} slots filled with synthetic demand${res.simulated ? ' (local engine)' : ''}.`);
-      pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'presentation controller', message: 'Simulate Rush Hour: synthetic demand added to camp 1 slots.', status: 'SIMULATED', provider: 'Demo Controller' });
+      const result = outcome(res);
+      toast(result.simulated ? 'Synthetic rush hour added locally' : 'Synthetic rush hour added', 'warn', `${res.slotsTouched?.length || 0} slots filled with synthetic demand${result.simulated ? ' (local engine)' : ''}.`);
+      pushGateway({ channel: 'SYSTEM', type: 'DEMO', recipient: 'presentation controller', message: `Rush hour: synthetic demand added to ${res.slotsTouched?.length || 0} slots.`, status: result.status, provider: result.simulated ? 'Local Engine' : 'Demo Controller' });
     } catch (err) { toast(err.message, 'bad'); }
     finally { setBusy(null); }
   }
@@ -111,7 +127,7 @@ export default function DemoController() {
       </button>
 
       {open && (
-        <div className="demo-panel" role="dialog" aria-label="Demo story controller">
+        <div className="demo-panel" role="dialog" aria-modal="false" aria-label="Demo story controller">
           <header className="demo-head">
             <h3><Icon name="zap" size={15} /> Demonstration Story Controller</h3>
             <Badge tone={mode === 'live' ? 'ok' : 'sim'}>{mode === 'live' ? 'MODE A · real MySQL' : 'MODE B · simulated'}</Badge>

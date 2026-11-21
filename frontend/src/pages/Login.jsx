@@ -1,10 +1,11 @@
 // Login.jsx — Biophilic Clinical Precision authentication with motion primitives:
 // InView staggered form entries, Magnetic buttons.
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Field, Icon, Input, Select, Sci } from '../components/ui.jsx';
-import Hero3D from '../components/Hero3D.jsx';
+import { Badge, Button, Field, Icon, Input, Select, Sci, Skeleton } from '../components/ui.jsx';
+
+const Hero3D = lazy(() => import('../components/Hero3D.jsx'));
 import {
   TextShimmer,
   Magnetic,
@@ -46,7 +47,13 @@ export default function Login() {
     setBusy(role);
     try {
       const user = await signIn(() => api.demoLogin(role));
-      toast(`Demo session as ${user.name} (${user.role})`, 'ok', 'Simulated session — clearly labeled in the mode indicator.');
+      toast(
+        `Demo session as ${user.name} (${user.role})`,
+        'ok',
+        mode === 'live'
+          ? 'Seeded MySQL demo account — session is real, data is demonstration seed data.'
+          : 'Simulated local session — clearly labeled in the mode indicator.',
+      );
     } catch (err) { setError(err.message); }
     finally { setBusy(null); }
   }
@@ -72,7 +79,9 @@ export default function Login() {
         <div className="relative w-full h-full flex-1 flex items-center justify-center px-8 py-12 lg:px-12">
           <div className="z-10 w-full max-w-lg flex flex-col items-center text-center space-y-6">
             <div className="relative">
-              <Hero3D width={320} height={280} />
+              <Suspense fallback={<Skeleton h={280} w={320} />}>
+                <Hero3D width={320} height={280} />
+              </Suspense>
             </div>
             <div className="space-y-4">
               <TextShimmer
@@ -100,9 +109,9 @@ export default function Login() {
           <button type="button" className="linkish auth-back" onClick={() => setPage('welcome')}>
             ← Back to the cinematic site
           </button>
-          <div className="auth-tabs" role="tablist">
-            <button role="tab" aria-selected={tab === 'signin'} className={tab === 'signin' ? 'on' : undefined} onClick={() => setTab('signin')}>Sign in</button>
-            <button role="tab" aria-selected={tab === 'register'} className={tab === 'register' ? 'on' : undefined} onClick={() => setTab('register')}>Register</button>
+          <div className="auth-tabs" role="group" aria-label="Account access">
+            <button type="button" aria-pressed={tab === 'signin'} className={tab === 'signin' ? 'on' : undefined} onClick={() => setTab('signin')}>Sign in</button>
+            <button type="button" aria-pressed={tab === 'register'} className={tab === 'register' ? 'on' : undefined} onClick={() => setTab('register')}>Register</button>
           </div>
 
           <InView once>

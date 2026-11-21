@@ -1,85 +1,101 @@
-// HealthViz3D.jsx — 3D healthcare data visualization for analytics dashboard.
-// Floating bar-style columns representing patient metrics, with smooth
-// transitions and hover states. Built with React Three Fiber.
-import React, { useRef, useState } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+// HealthViz3D.jsx — compact 3D healthcare data visualization.
+// Metrics are supplied by the caller so the chart always reflects the active
+// data source (live MySQL or the local demo engine). Built with React Three Fiber.
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
-const METRICS = [
-  { label: 'Registered', value: 1248, color: 0x10b981 },
-  { label: 'Attendance', value: 85.3, color: 0x34d399 },
-  { label: 'Promotions', value: 37, color: 0x6ee7b7 },
-  { label: 'Waitlist', value: 14, color: 0xf59e0b },
-  { label: 'No-Show', value: 14.7, color: 0xf87171 },
-];
+function BarColumn({ x, h, color, reduce }) {
+  const meshRef = useRef(null);
+  const [hovered, setHovered] = useState(false);
 
-function BarColumn({ x, y, z, h, color, index, hovered }) {
-  const meshRef = useRef();
-
-  useFrame((state, delta) => {
-    if (!meshRef.current) return;
-    const targetScaleY = hovered ? h * 1.2 : h;
-    meshRef.current.scale.y = THREE.MathUtils.lerp(meshRef.current.scale.y, targetScaleY, delta * 4);
-    meshRef.current.material.opacity = THREE.MathUtils.lerp(meshRef.current.material.opacity, hovered ? 1 : 0.7, delta * 4);
-    meshRef.current.position.y = h / 2;
+  useFrame((_state, delta) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const targetScale = h * (hovered ? 1.08 : 1);
+    const targetOpacity = hovered ? 1 : 0.78;
+    mesh.scale.y = reduce ? targetScale : THREE.MathUtils.lerp(mesh.scale.y, targetScale, delta * 5);
+    mesh.material.opacity = reduce
+      ? targetOpacity
+      : THREE.MathUtils.lerp(mesh.material.opacity, targetOpacity, delta * 5);
+    mesh.position.y = mesh.scale.y / 2;
   });
 
   return (
     <mesh
       ref={meshRef}
-      position={[x, h / 2, z]}
-      onPointerOver={() => (hovered = true)}
-      onPointerOut={() => (hovered = false)}
+      position={[x, h / 2, 0]}
+      scale={[1, h, 1]}
+      onPointerOver={() => setHovered(true)}
+      onPointerOut={() => setHovered(false)}
     >
-      <boxGeometry args={[0.6, h, 0.6]} />
-      <meshStandardMaterial color={color} transparent={true} opacity={0.7} />
+      <boxGeometry args={[0.6, 1, 0.6]} />
+      <meshStandardMaterial color={color} transparent opacity={0.78} roughness={0.35} />
     </mesh>
   );
 }
 
-export default function HealthViz3D({ width = 400, height = 300 }) {
-  const maxVal = Math.max(...METRICS.map((m) => m.value));
+export default function HealthViz3D({
+  metrics = [],
+  width = '100%',
+  height = 300,
+  simulated = false,
+  className = '',
+}) {
+  const [reduce, setReduce] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!mq) return;
+    const update = () => setReduce(mq.matches);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
+
+  const data = useMemo(() => metrics.slice(0, 5), [metrics]);
+  const maxVal = Math.max(1, ...data.map((m) => Number(m.value) || 0));
+  const description = data.length
+    ? `${simulated ? 'Simulated' : 'Live'} health metrics: ${data.map((m) => `${m.label} ${m.display ?? m.value}`).join(', ')}.`
+    : 'Health metrics visualization. No data available.';
+
+  if (!data.length) {
+    return (
+      <section className={`grid place-items-center rounded-2xl border border-line bg-surface ${className}`} style={{ width, height }} role="img" aria-label={description}>
+        <p className="muted text-sm">Metrics will appear once data loads.</p>
+      </section>
+    );
+  }
 
   return (
-    <section className="relative w-full h-[300px] rounded-3xl bg-surface border border-line overflow-hidden">
+    <section
+      className={`relative overflow-hidden rounded-2xl border border-line bg-surface ${className}`}
+      style={{ width, height }}
+      role="img"
+      aria-label={description}
+    >
       <Canvas
-        className="absolute inset-0 w-full h-full"
-        camera={{ position: [0, 4, 6], fov: 45 }}
-        shadows
+        className="absolute inset-0"
+        camera={{ position: [0, 3.4, 6], fov: 45 }}
+        frameloop={reduce ? 'demand' : 'always'}
+        dpr={[1, 1.5]}
         gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
       >
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[5, 10, 7]} intensity={0.8} color="#ffffff" castShadow />
-        <directionalLight position={[-5, -5, 5]} intensity={0.4} color="#34d399" castShadow />
-
-        <OrbitControls enablePan={false} enableZoom={true} autoRotate={false} makeDefault />
-
-        {/* Grid floor */}
-        <gridHelper args={[20, 20, 0x6ee7b7, 0x10b981]} position={[0, -0.01, 0]} />
-
-        {/* Bar columns */}
-        {METRICS.map((m, i) => {
-          const x = (i - 2) * 1.6;
-          const h = (m.value / maxVal) * 3;
-          return (
-            <BarColumn
-              key={m.label}
-              x={x}
-              y={0}
-              z={0}
-              h={h}
-              color={m.color}
-              index={i}
-            />
-          );
-        })}
-
-        {/* Floor label plane */}
-        <mesh position={[0, -0.02, 4]} rotation={[Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[10, 10]} />
-          <meshBasicMaterial color={0x10b981} transparent={true} opacity={0.05} side={THREE.DoubleSide} />
-        </mesh>
+        <ambientLight intensity={0.65} />
+        <directionalLight position={[5, 10, 7]} intensity={0.85} />
+        <directionalLight position={[-5, 2, 5]} intensity={0.35} color="#6ee7b7" />
+        <gridHelper args={[16, 16, 0x6ee7b7, 0x10b981]} position={[0, 0, 0]} />
+        {data.map((m, i) => (
+          <BarColumn
+            key={m.label}
+            x={(i - (data.length - 1) / 2) * 1.6}
+            h={(Number(m.value) / maxVal) * 2.8}
+            color={m.color ?? 0x10b981}
+            reduce={reduce}
+          />
+        ))}
+        <OrbitControls enablePan={false} enableZoom={false} makeDefault />
       </Canvas>
     </section>
   );

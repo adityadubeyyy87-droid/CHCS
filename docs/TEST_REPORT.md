@@ -1,9 +1,9 @@
-# CHSC — Test & Verification Report (Engineering Completion)
+# CHSC — Test & Verification Report (Release Hardening)
 
-_Status: live, reproducible, green as of 2026-11-21._
+_Status: green as of 2026-11-21. Evidence below is from the exact working tree shipped in this release._
 
-This is the honest, current record of test evidence for Phase 1 (Engineering Completion)
-and the post-hardening verification run.
+This is the honest, reproducible record for Phase 1 (Engineering Completion) and the
+subsequent security, reliability, accessibility and deployment hardening pass.
 
 ---
 
@@ -11,126 +11,198 @@ and the post-hardening verification run.
 
 | Component | Version / value |
 |---|---|
-| Node.js | `>=18` (local LTS channel) |
-| MySQL | 8.4.9 Community Server (InnoDB) — local portable instance |
+| Node.js | 24.19.0 locally (CI uses Node 20) |
+| MySQL | 8.4.9 Community Server, InnoDB, local portable instance |
 | Express | 4.21 |
 | JWT | jsonwebtoken 9 |
 | bcryptjs | 2.4.3 |
 | Zod | 3.23 |
 | Vitest | 2.1.9 |
 | supertest | 7 |
+| Frontend | React 18 + Vite 5, production build served by backend |
 
-Backend boots clean (`node --check` clean) and reports:
-`{ ok: true, service: CHSC API, demoMode: true, database: "connected", dbVersion: "8.4.9", socket: "ready" }`
+Local backend health:
+
+```json
+{
+  "ok": true,
+  "service": "CHSC API",
+  "demoMode": true,
+  "database": "connected",
+  "dbVersion": "8.4.9",
+  "socket": "ready"
+}
+```
+
+The local PM2 process is online as `chsc`, bound to `127.0.0.1:4000` via
+`ecosystem.config.cjs` (the explicit local-demo opt-in). Demo login still works
+locally; production deployments with `NODE_ENV=production` require
+`ALLOW_LOCAL_DEMO=true` or a loopback `HOST`.
 
 ---
 
-## 2. Automated test suite
+## 2. Automated backend suite
 
 Command: `cd backend && npm test`
 
 | Suite | Files | Result |
 |---|---|---|
-| Unit | `tests/unit/validation`, `pagination`, `reminders`, `slots` | PASS |
-| Unit | `tests/unit/limits` (added this sprint) | PASS |
-| Integration | `tests/integration/auth`, `booking`, `camps`, `staff`, `attendance`, `export`, `reminders`, `concurrency` | PASS |
-| Integration | `tests/integration/audit` (added this sprint) | PASS |
+| Unit | `validation`, `pagination`, `reminders`, `slots`, `limits`, `security` | PASS |
+| Integration | `auth`, `booking`, `camps`, `staff`, `attendance`, `export`, `reminders`, `concurrency`, `audit`, `frontend-serve`, `security-regression` | PASS |
 
-**Total: 15 test files · 82 tests · 82 passing.**
+**Total: 17 test files · 98 tests · 98 passing.**
 
-### Coverage mapped to the Phase 1 checklist
+Security/correctness regressions added or extended in this pass:
 
-| Requirement | Evidence |
-|---|---|
-| Authentication / authorization | `auth.test.js` — register, bcrypt hash, JWT, role guards (403), validation envelope |
-| Booking integrity / concurrency | `concurrency.test.js` — 50 parallel bookings → exactly 10 confirmed, 40 waitlisted, 0 overbooked, 0 duplicate-active |
-| Cancellation / waitlist promotion | `booking.test.js` + live run — cancel releases seat, FIFO promotion fires |
-| Rescheduling | `booking.test.js` — moves a booking to another slot |
-| Staff conflicts | `staff.test.js` — overlapping shift → 409 `STAFF_OVERLAP` |
-| Reminders | `reminders.test.js` (unit + integration) — 24h/2h sweeps, idempotency |
-| Attendance / no-show | `attendance.test.js` — check-in, NO_SHOW, close-out |
-| Analytics / CSV | `export.test.js` — CSV header/content, analytics aggregates |
-| Rate limiting | `limits.test.js` — buckets, keying, bypass |
-| Error handling / validation | `validation.test.js` — zod envelope, shared error format, 429 |
+- production demo guardrail cannot be satisfied by loopback-only CORS defaults
+- organizer staff list is PII-free and no longer returns 403
+- JWT role/status are reloaded from the database on each request
+- socket identity is authenticated and PII is redacted from broadcasts
+- destructive slot rebuilds remain opt-in and blocked
+- reschedule authority is restricted and never resurrects a `SENT` reminder
+- CSV fan-out, reminder re-queue safety and migration idempotency are covered
+- `ALPHA_MAX` is honoured when the query parameter is absent
 
-### Bugs found and fixed during this verification sprint
+Additional mechanical checks:
 
-1. **Audit log endpoint 500'd on any row with a `before`/`after` snapshot.**
-   `JSON.parse()` was applied to JSON columns that `mysql2` already decodes to objects.
-   Fix: added `decodeJsonColumn()` that accepts object or string. Added regression test
-   `tests/integration/audit.test.js` (3 tests).
-2. **Auth rate-limit bucket was per-IP only**, which would lock out a full demo hall
-   (many roles behind one NAT address) after 10 legitimate logins. Fix: bucket keyed by
-   IP + identifier, coarse per-IP backstop retained. Added `tests/unit/limits.test.js`
-   (7 tests).
+- `node --check` clean for `server.js`, `lib/security.js`, `lib/validation.js`,
+  `lib/reminders.js`, `scripts/db.js` and `scripts/verify-live.js`
+- `git diff --check` clean (only CRLF normalization warnings)
+- direct `fetch(` exists only in `frontend/src/lib/api.js`
+- production build succeeds: 1793 modules transformed, no compile errors
 
 ---
 
-## 3. Live end-to-end verification (real HTTP → real Express → real MySQL)
+## 3. Database migration verification
 
-Script: `backend/scripts/verify-live.js`
+`database/migrations/002_waitlist_expiry.sql` was rewritten without the mysql-client
+`DELIMITER` directive and verified through the repo's own runner:
 
-```
-node scripts/verify-live.js        # against http://127.0.0.1:4000
-BASE_URL=https://api.example.com node scripts/verify-live.js
-```
+1. Fresh schema + `npm run db:migrate` twice → all three migrations applied both times.
+2. Legacy-shaped `waitlist` table without the expiry column/index → migration added
+   `promotion_expires_at` and `idx_wait_expires` safely.
+3. `backend/scripts/db.js` now selects `DB_NAME` before every migration file, so an
+   earlier file's `USE` statement cannot redirect later migrations.
 
-The script exercises the real network path (no supertest in-memory harness) and covers:
+---
 
-- health, MySQL connectivity, Socket.io readiness
-- demo login for all five roles + register / login / wrong-password / zod validation
-- authorization (patient cannot create a camp; unauthenticated rejected)
-- organizer: create camp → slot allocation (6×10 for a 3h camp) → update → staff assign → overlap 409
-- public camp list pagination + camp detail with slots
-- patient: book (201) → double-click → 409 `DUPLICATE_BOOKING` (no second row) → bookings/me
-- patient: cancel (200) → rebook (201) → reschedule (200)
-- waitlist: capacity-1 camp → 2nd/3rd bookings → FIFO positions 1, 2 → cancel #1 → promotion
-- QR check-in by volunteer → booking becomes `CHECKED_IN`
-- control room aggregates, admin analytics KPIs, capacity advisor, notifications, audit log
-- CSV export → `text/csv` with header row
-- reminder sweep → idempotent
-- concurrency proof: **10 confirmed / 40 waitlisted / 0 errors / 0 overbooked**
-- camp close-out
+## 4. Live end-to-end verification
+
+Script: `backend/scripts/verify-live.js` against `http://127.0.0.1:4000`
+(real HTTP → Express → MySQL).
 
 **Result: 43 / 43 checks passed.**
 
----
+Coverage includes health/database/socket, demo login for all five roles, register/login
+and validation, role guards, camp creation and slot generation, staff assignment and
+overlap 409, booking/duplicate-booking/cancel/rebook/reschedule, FIFO waitlist
+promotion, QR check-in, control room, analytics, advisor labelling, notifications,
+audit log, CSV export, idempotent reminder sweep, camp close-out and the mandatory
+concurrency proof.
 
-## 4. Mandatory stress test (formal evidence)
+Concurrency proof result:
 
-- In-suite: `backend/tests/integration/concurrency.test.js` — 50 parallel bookings
-  against capacity 10 → 10 confirmed, 40 waitlisted, FIFO positions 1–40, slot counter
-  consistent, zero 5xx. **PASS**
-- Live-server proof: `/api/demo/concurrency` (50 requests, capacity 10) →
-  `confirmed: 10, waitlisted: 40, errors: 0, zeroOverbooked: true`. **PASS**
-
----
-
-## 5. Known issues / outstanding hardening (honest list)
-
-1. **SMTP/SMS providers are sandboxed** (`SMTP_HOST` blank, `SMS_PROVIDER=Fast2SMS Sandbox`).
-   Reminder delivery records outcomes in `notifications_log` — delivery path is sandboxed by design.
-2. **Deployment** not executed in this environment (no public hosting credentials available).
-   See `DEPLOYMENT.md`.
-3. **Performance budget**: frontend production bundle is ~1.31 MB / 382 KB gzip with a
-   >500 kB warning (recharts + three.js). See Phase 2/5 work.
-4. **`api.notifications(limit)` query param is accepted but the backend paginates via
-   `page`/`pageSize`** — behaviour validated as 200 with defaults.
-
----
-
-## 6. How to reproduce
-
-```bash
-mysql -u root -p < database/schema.sql
-cd backend && npm test          # full suite
-cd backend && npm run db:setup  # dev DB + seed
-cd backend && node server.js
-node scripts/verify-live.js    # live E2E evidence
-cd ../frontend && npm run dev
+```json
+{"confirmed":10,"waitlisted":40,"errors":0,"zeroOverbooked":true}
 ```
 
 ---
 
-_Report generated during the Phase 1 engineering-completion sprint, 2026-11-21._
-_Any new test must pass before a feature ships (test-first release policy)._
+## 5. Browser verification (production build)
+
+Built UI served by the local backend at `http://localhost:4000/`.
+
+| Check | Result |
+|---|---|
+| Role/route matrix | All 5 roles × all permitted routes render the expected `<h1>` |
+| Mode chip | `LIVE · MySQL` on every authenticated route |
+| Console errors | 0 |
+| Failed network requests (4xx/5xx) | 0 (organizer staff list no longer 403s) |
+| Horizontal overflow | none on checked routes at the browser's current width |
+| Nested buttons | 0 |
+| Persistent error notes | 0 |
+| StaffDay QR token field | visible, 528×44px, correctly labelled |
+| Booking flow | slot selection → commitment panel → confirmation + 4 SVG passport codes |
+| Build asset | `assets/index-C2uv4Ez2.js` |
+
+The one intentional 409 observed during manual exploration was a legitimate duplicate
+camp booking, shown inline as "You already have an active booking at this camp.
+Reschedule it instead." A second booking on a different camp succeeded and produced a
+Digital Health Passport.
+
+Lighthouse on the public landing route:
+
+| Category | Score |
+|---|---|
+| Accessibility | 1.00 |
+| Best practices | 1.00 |
+| SEO | 1.00 |
+| Failures | none |
+
+The Impeccable detector returned an empty finding list for `frontend/src` after the
+side-tab, decorative-grid and gradient-text cleanups.
+
+---
+
+## 6. Bugs found and fixed in this release
+
+1. Organizer staff matrix received a 403 from the admin users endpoint; organizers now
+   get a minimal PII-free projection.
+2. Mode detection could race page hooks and let a request hit Mode B while the chip was
+   still "Connecting"; `withFallback()` now awaits memoized detection.
+3. `StaffDay` QR input was clipped by `sr-only`; restored as a visible labelled input.
+4. `StaffDay` offline sync captured a stale `campId`; queue reload is now keyed on it.
+5. Production demo guardrail failed open with the shipped loopback CORS defaults; now
+   requires explicit opt-in.
+6. Migration 002 used `DELIMITER`, which mysql2 cannot parse, and `db.js` did not select
+   a database for migrations; both fixed and verified.
+7. `ALPHA_MAX` was silently overridden by a hardcoded query default; removed.
+8. Landing-page accessible names did not include visible text; corrected.
+9. `/robots.txt` fell through to the SPA HTML; a valid static file is now shipped.
+10. Decorative grid backgrounds, side-tab borders and gradient text were removed in
+    favour of the established hairline-card system.
+11. `api.notifications(limit)` now sends the backend's supported `pageSize` parameter.
+
+---
+
+## 7. Remaining issues / honest limitations
+
+1. **No public backend or hosted MySQL** is provisioned. The GitHub Pages site therefore
+   runs the clearly labelled `DEMO · LOCAL` engine by design. It is not fake production
+   data and never claims to be a database result.
+2. **SMTP/SMS are sandbox providers** (`SMTP_HOST` blank, `SMS_PROVIDER=Fast2SMS Sandbox`).
+   Delivery attempts are recorded in `notifications_log`; no real messages are sent.
+3. **Bundle-size warning remains** for the 3D/react-three-fiber chunk (>500 kB before
+   gzip). It is lazy-loaded and does not block first paint; further splitting is Phase 2.
+4. **Lighthouse performance was not benchmarked** by the available browser tool; only
+   accessibility, best practices and SEO were audited.
+5. Responsive checks were performed at the available browser viewport (785px CSS width)
+   plus source-level media-query review; a device-emulator matrix was not available in
+   this harness.
+
+---
+
+## 8. Reproduction
+
+```bash
+# backend suite + live E2E
+cd backend
+npm test
+node scripts/verify-live.js
+
+# production frontend build
+cd ../frontend
+npm run build
+
+# database migrations (idempotent)
+cd ../backend
+npm run db:migrate
+
+# local full version
+npm run live      # from the repository root
+```
+
+---
+
+_Report generated 2026-11-21 for the release hardening pass. Any new test must pass
+before the next feature ships (test-first release policy)._

@@ -90,8 +90,13 @@ FAST2SMS_API_KEY=<your-api-key>
 - **Never commit `.env`** to version control
 - **Generate a strong `JWT_SECRET`** for production (use `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
 - **Set `NODE_ENV=production`** to disable verbose error output
-- **Set `DEMO_MODE=false`** in production to disable demo login
+- **Set `DEMO_MODE=false`** in production to disable demo login. If you intentionally run a
+  production-env demo, you must explicitly set `ALLOW_LOCAL_DEMO=true` or bind `HOST` to
+  `127.0.0.1`/`localhost`/`::1`; a loopback-only `FRONTEND_ORIGIN` is the shipped default and is
+  **not** an opt-in. Otherwise `/api/demo/*` and demo admin login stay closed.
 - **Configure CORS** `FRONTEND_ORIGIN` to your actual production domain(s)
+- **Leave `TRUST_PROXY=false`** unless the API is behind a known reverse proxy
+- **Keep `ALLOW_DESTRUCTIVE_SLOT_REBUILD=false`**; normal slot regeneration preserves bookings
 
 ### Start the backend
 ```bash
@@ -193,6 +198,10 @@ The backend checks the `Origin` header against this list. Socket.io uses the sam
 | `DB_HOST` | your MySQL host | Production database host |
 | `DB_PASSWORD` | strong password | Production database password |
 | `FRONTEND_ORIGIN` | your frontend domain(s) | CORS allowed origins |
+| `TRUST_PROXY` | `false` | Opt-in reverse-proxy trust (`loopback`, hop count, or IP list) |
+| `HOST` | unset / `127.0.0.1` | Bind address; loopback enables the local-demo safety allowance |
+| `ALLOW_LOCAL_DEMO` | unset in prod | Explicit opt-in for `DEMO_MODE=true` on a non-local host |
+| `ALLOW_DESTRUCTIVE_SLOT_REBUILD` | `false` | Allows ADMIN-only destructive slot regeneration when paired with `destructive:true` |
 | `SMTP_*` | real SMTP credentials | Optional — leaves blank = sandbox |
 | `FAST2SMS_API_KEY` | real API key | Optional — leaves blank = sandbox |
 
@@ -209,7 +218,9 @@ The backend checks the `Origin` header against this list. Socket.io uses the sam
 
 ## 10. Database Migrations
 
-Schema changes are managed via `database/schema.sql` (full rebuild). For incremental changes, use `database/migrations/`. The test suite recreates the test database from `schema.sql` on every run.
+Schema changes are managed via `database/schema.sql` (full rebuild). For incremental changes, use `database/migrations/`. Apply them with `npm run db:migrate` from `backend/`; the runner selects `DB_NAME` for every file and the migration SQL is idempotent (safe to apply twice). The test suite recreates the test database from `schema.sql` on every run.
+
+The bundled `ecosystem.config.cjs` binds the local PM2 demo to `127.0.0.1` and is the explicit local-demo opt-in. Do not reuse that binding for a public deployment.
 
 ---
 
@@ -226,7 +237,7 @@ Before going live:
 - [ ] `.env` is not committed to version control
 - [ ] Test patient registration and login
 - [ ] Test booking flow end-to-end
-- [ ] Run `npm test` — all 79 backend tests pass (see `docs/TEST_REPORT.md`)
+- [ ] Run `npm test` — all 98 backend tests pass (see `docs/TEST_REPORT.md`)
 
 ---
 
@@ -243,21 +254,24 @@ cd ../backend && npm start
 
 ## 13. Current Verification Status (2026-11-21)
 
-The full backend suite is green (**82/82 tests**, 15 files) and the live
+The full backend suite is green (**98/98 tests**, 17 files) and the live
 end-to-end harness passes **43/43 checks** (`backend/scripts/verify-live.js`).
 
-**Live deployment has not been executed from this environment.** No public hosting
-credentials or DNS/domain ownership were available, so no public URL has been produced.
+**Public frontend deployment is live** at
+`https://adityadubeyyy87-droid.github.io/CHCS/`. There is no public backend or
+hosted MySQL in this environment: the Pages build therefore runs the explicitly
+labelled `DEMO · LOCAL` engine. The local PM2 backend at `http://localhost:4000`
+is healthy against MySQL 8.4.9 and reports `demoMode: true`.
 
-To publish:
+To add a real public backend later:
 
 1. Provision a hosted MySQL instance (RDS / Azure / DigitalOcean / PlanetScale-style managed).
 2. Set production env vars (see section 3) and run `database/schema.sql`.
 3. Deploy the backend (Render / Railway / Fly / AWS Elastic Beanstalk / a VPS with PM2).
-4. Deploy the frontend either from the backend (`frontend/dist/` served at `/`) or a static CDN
-   with `VITE_API_BASE=https://<backend-host>/api`.
-5. Add `https://` to `FRONTEND_ORIGIN` and TLS termination.
-6. Run the verification checklist above and open the public URL.
+4. Add the backend origin as the repository variable `RENDER_API_URL`; the Pages
+   workflow injects it as `VITE_API_BASE`.
+5. Set `DEMO_MODE=false` and add `https://` origins to `FRONTEND_ORIGIN` plus TLS termination.
+6. Re-run the Pages workflow, then the verification checklist above and open the public URL.
 
 ---
 

@@ -49,10 +49,11 @@ With PM2 already running, use `npm run dev -- --frontend-only` for Vite hot relo
 against the permanent backend. If the portable demo datadir ever fails to boot,
 `npm run mysql:start` rebuilds it and reseeds the demo data automatically.
 
-Free public link: push to GitHub. The included workflow builds the UI and publishes
-the `gh-pages` branch, so GitHub Pages needs no extra configuration. It is live at
-`https://<you>.github.io/CHCS/` and falls back to the labelled DEMO engine if no
-backend is configured, so it never goes black.
+Free public link: the included workflow builds the UI and publishes the `gh-pages`
+branch, so GitHub Pages needs no extra configuration. It is live at
+`https://adityadubeyyy87-droid.github.io/CHCS/` and runs the clearly labelled
+`DEMO · LOCAL` engine because no public backend is configured, so it never goes black.
+A `ci.yml` workflow runs the real-MySQL backend suite and frontend build on pushes to `main`, `master`, and `phase1-verify-hardening` (plus PRs and manual dispatch).
 See `DEPLOYMENT.md` sections 14–16 for the full guide.
 
 ### Mode A — real MySQL + Socket.io (manual)
@@ -86,7 +87,7 @@ Full automated suite (unit + integration against a throwaway MySQL test database
 
 ```bash
 cd backend
-npm test               # 82/82 tests pass (15 files: unit + integration)
+npm test               # 98/98 tests pass (17 files: unit + integration)
 npm run test:unit
 npm run test:integration
 ```
@@ -109,7 +110,7 @@ database/schema.sql        8 InnoDB tables + CHECK constraints + seed data
 database/migrations/       Incremental migration scripts
 backend/server.js          Express API, JWT auth, row-lock transactions, Socket.io, cron
 backend/lib/               validation, pagination, rate limits, providers, reminder engine
-backend/tests/             79 unit + integration tests (unit: validation, pagination, reminders, slots, limits; integration: auth, booking, camps, staff, attendance, export, reminders, concurrency, audit)
+backend/tests/             98 unit + integration tests across 17 files (adds security, CORS, demo-guard and validation regressions)
 backend/concurrency-test.js 50-way parallel booking proof (10/40/0)
 backend/.env.example       Production environment template
 backend/chsc-postman-collection.json  Postman collection for all API endpoints

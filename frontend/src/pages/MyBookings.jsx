@@ -1,23 +1,16 @@
 // MyBookings.jsx — Biophilic Future booking management with motion primitives:
 // Magnetic buttons, InView booking rows, Spotlight on passport.
 // Supports confirm → view pass → cancel → reschedule → calendar export.
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Modal, Select, Skeleton } from '../components/ui.jsx';
-import { PassportModal } from '../components/Passport.jsx';
-import { downloadIcs } from '../components/Passport.jsx';
-import { fmtDate, fmtTime12, cls } from '../lib/format.js';
+import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Modal, Skeleton } from '../components/ui.jsx';
+import { Passport, downloadIcs } from '../components/Passport.jsx';
+import { fmtDate, fmtTime12, cls, slotTone } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
-function slotTone(remaining, capacity) {
-  if (remaining <= 0) return 'full';
-  if (remaining <= capacity * 0.3) return 'almost';
-  return 'open';
-}
-
 export default function MyBookings() {
-  const { toast, pushGateway, user, mode, setPage } = useApp();
+  const { toast, pushGateway, setPage } = useApp();
   const bookings = useFetch(() => api.myBookings(), []);
   const [pass, setPass] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null);
@@ -26,6 +19,7 @@ export default function MyBookings() {
   const [slotLoading, setSlotLoading] = useState(false);
   const [newSlotId, setNewSlotId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const slotRefs = useRef(new Map());
 
   async function release(b) {
     setCancelTarget(b);
@@ -62,11 +56,18 @@ export default function MyBookings() {
     if (!rescheduleTarget || !newSlotId) return;
     setBusy(true);
     try {
-      const res = await api.cancelBooking(rescheduleTarget.id);
-      // Cancel succeeded; now book the new slot
-      const booked = await api.book(newSlotId, {});
-      toast(res.message, 'ok');
-      toast(`Moved to slot ${booked.booking?.tokenNumber || 'confirmed'}. Reminders re-queued.`, 'ok');
+      // One atomic server transaction: no cancel-then-book gap where a failed
+      // second call could cost the patient their original seat.
+      const res = await api.rescheduleBooking(rescheduleTarget.id, newSlotId);
+      if (res.status !== 'RESCHEDULED') throw new Error('The booking could not be moved.');
+      toast(res.message || 'Booking moved to the new slot.', 'ok');
+      pushGateway({
+        channel: 'SYSTEM', type: 'RESCHEDULE', recipient: 'you',
+        message: res.message || 'Booking moved to the new slot.',
+        status: res.simulated ? 'SIMULATED' : 'SENT',
+        provider: res.simulated ? 'Local Engine' : 'MySQL + Socket.io',
+        bookingId: rescheduleTarget.id,
+      });
       setRescheduleTarget(null);
       setNewSlotId(null);
       setSlots([]);
@@ -95,7 +96,7 @@ export default function MyBookings() {
                     <div className="booking-when">{fmtDate(b.campDate)} · {fmtTime12(b.startTime)}–{fmtTime12(b.endTime)}</div>
                     <div className="booking-meta">
                       <Badge status={b.status}>{b.status.replace('_', ' ')}</Badge>
-                      {b.status === 'WAITLISTED' && b.waitlistPosition && <span className="qr-hint">Position #{b.waitlistPosition}</span>}
+                      {b.status === 'WAITLISTED' && b.waitlistPosition && <span className="qr-hint">Position {b.waitlistPosition}</span>}
                       {b.status === 'CONFIRMED' && <span className="qr-hint">QR: {b.qrToken}</span>}
                     </div>
                   </div>
@@ -113,7 +114,7 @@ export default function MyBookings() {
                     )}
                     {b.status === 'CONFIRMED' && (
                       <Magnetic intensity={0.3}>
-                        <Button size="sm" variant="ghost" icon="refresh" tone="bad" onClick={() => release(b)}>Release</Button>
+                        <Button size="sm" variant="danger" icon="refresh" onClick={() => release(b)}>Release</Button>
                       </Magnetic>
                     )}
                   </div>
@@ -125,7 +126,7 @@ export default function MyBookings() {
       </Card>
 
       <Modal open={pass !== null} onClose={() => setPass(null)} title="Digital Health Passport" wide>
-        {pass && <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}><PassportModal booking={pass} onClose={() => setPass(null)} /></Spotlight>}
+        {pass && <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}><Passport booking={pass} embedded /></Spotlight>}
       </Modal>
 
       <Modal open={cancelTarget !== null} onClose={() => setCancelTarget(null)} title="Release your seat">
@@ -155,12 +156,34 @@ export default function MyBookings() {
             {slotLoading ? <div className="stack"><Skeleton h={92} /><Skeleton h={92} /></div> : slots.length === 0 ? (
               <EmptyState icon="clock" title="No other slots available" action={<Button variant="ghost" onClick={() => setRescheduleTarget(null)}>Back</Button>} />
             ) : (
-              <div className="slot-grid">
+              <div className="slot-grid" role="radiogroup" aria-label="Available slots">
                 {slots.map((s) => (
-                  <button key={s.id} role="radio" aria-checked={newSlotId === s.id}
+                  <button
+                    key={s.id}
+                    ref={(el) => { if (el) slotRefs.current.set(s.id, el); else slotRefs.current.delete(s.id); }}
+                    role="radio"
+                    aria-checked={newSlotId === s.id}
+                    tabIndex={s.id === (newSlotId ?? slots.find((x) => x.remaining > 0)?.id) ? 0 : -1}
                     disabled={s.remaining <= 0}
                     className={cls('slot', `slot-${slotTone(s.remaining, s.capacity)}`, newSlotId === s.id && 'slot-sel')}
-                    onClick={() => setNewSlotId(s.id)}>
+                    onClick={() => setNewSlotId(s.id)}
+                    onKeyDown={(e) => {
+                      if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+                      e.preventDefault();
+                      const enabled = slots.filter((x) => x.remaining > 0);
+                      if (!enabled.length) return;
+                      const step = ['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : -1;
+                      const at = enabled.findIndex((x) => x.id === (newSlotId ?? enabled[0]?.id));
+                      const next = e.key === 'Home'
+                        ? enabled[0]
+                        : e.key === 'End'
+                          ? enabled[enabled.length - 1]
+                          : enabled[(at + step + enabled.length) % enabled.length];
+                      if (next) {
+                        setNewSlotId(next.id);
+                        requestAnimationFrame(() => slotRefs.current.get(next.id)?.focus());
+                      }
+                    }}>
                     <strong>{fmtTime12(s.startTime)}</strong>
                     <small>{s.remaining <= 0 ? 'Full' : `${s.remaining} free`}</small>
                   </button>

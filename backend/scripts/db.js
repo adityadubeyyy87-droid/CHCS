@@ -119,9 +119,18 @@ async function migrate() {
     .filter((file) => file.endsWith('.sql'))
     .sort();
 
-  const conn = await mysql.createConnection(connectionOptions());
+  // Unlike setup(), migrations need a selected database: they inspect
+  // information_schema with DATABASE() and the migration files do not USE one.
+  const dbName = process.env.DB_NAME || 'community_health_scheduler';
+  if (!/^[a-zA-Z0-9_]+$/.test(dbName)) {
+    throw new Error(`Unsafe DB_NAME: ${dbName}`);
+  }
+  const conn = await mysql.createConnection(connectionOptions({ database: dbName }));
   try {
     for (const file of files) {
+      // Migration 001 includes a USE statement for mysql CLI users. Re-select
+      // after every file so a custom DB_NAME is not silently abandoned.
+      await conn.query(`USE \`${dbName}\``);
       await conn.query(fs.readFileSync(path.join(dir, file), 'utf8'));
       console.log(`applied ${file}`);
     }

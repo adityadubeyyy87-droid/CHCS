@@ -1,6 +1,6 @@
 // ui.jsx — design-system primitives: icons, buttons, badges, cards, fields,
 // modals, toasts, skeletons, animated counters, empty states.
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { cls } from '../lib/format.js';
 
 /* ------------------------------- icons ------------------------------- */
@@ -43,6 +43,8 @@ const PATHS = {
   send: 'M21 3 10 14M21 3l-7 18-4-7-7-4 18-7Z',
   camera: 'M4 8h3l2-2h6l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Zm8 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z',
   eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Zm9.5 2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
+  layers: 'M12 3 2 8l10 5 10-5-10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5',
+  database: 'M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Zm0 0v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3',
 };
 
 export function Icon({ name, size = 18, className, strokeWidth = 1.6 }) {
@@ -81,13 +83,13 @@ export function Card({ as: Tag = 'section', className, children, ...rest }) {
   return <Tag className={cls('card', className)} {...rest}>{children}</Tag>;
 }
 
-export function CardHead({ title, sub, actions, icon }) {
+export function CardHead({ title, sub, actions, icon, as: Heading = 'h2' }) {
   return (
     <header className="card-head">
       <div className="card-head-titles">
         {icon && <span className="card-head-icon"><Icon name={icon} /></span>}
         <div>
-          <h3>{title}</h3>
+          <Heading>{title}</Heading>
           {sub && <p className="card-sub">{sub}</p>}
         </div>
       </div>
@@ -116,21 +118,71 @@ export function Input({ className, ...rest }) {
 }
 
 /* ------------------------------- modal ------------------------------- */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Modal({ open, onClose, title, children, wide, footer }) {
+  const dialogRef = useRef(null);
+  const restoreRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
-    window.addEventListener('keydown', onKey);
+    if (!open) return undefined;
+    restoreRef.current = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
-  }, [open, onClose]);
+
+    const focusable = () => Array.from(dialogRef.current?.querySelectorAll(FOCUSABLE) || [])
+      .filter((el) => el.offsetParent !== null || el === document.activeElement);
+
+    const focusFrame = requestAnimationFrame(() => {
+      const nodes = focusable();
+      (nodes[0] || dialogRef.current)?.focus();
+    });
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onCloseRef.current?.();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const nodes = focusable();
+      if (nodes.length === 0) {
+        e.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+      if (restoreRef.current?.isConnected) restoreRef.current.focus();
+    };
+  }, [open]);
+
   if (!open) return null;
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
-      <div className={cls('modal', wide && 'modal-wide')} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onCloseRef.current?.(); }}>
+      <div ref={dialogRef} tabIndex={-1} className={cls('modal', wide && 'modal-wide')} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="modal-head">
-          <h2>{title}</h2>
-          <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
+          <h2 id={titleId}>{title}</h2>
+          <button className="icon-btn" onClick={() => onCloseRef.current?.()} aria-label="Close"><Icon name="x" /></button>
         </header>
         <div className="modal-body">{children}</div>
         {footer && <footer className="modal-foot">{footer}</footer>}
@@ -210,7 +262,7 @@ export function Slider({ label, value, min, max, step, onChange, format }) {
 const SCIENCE = {
   hicks: { name: "Hick's Law", text: 'Decision time grows with the number of choices. Booking is compressed to 3 fixed steps, so each screen offers few, clear choices.' },
   miller: { name: "Miller's Law", text: 'Working memory holds ~7±2 items. Slots are grouped into Morning / Midday / Afternoon chunks instead of one long list.' },
-  fitts: { name: "Fitts's Law", text: 'Time to target shrinks with size and proximity. Primary actions are ≥40px tall and sit where the eye already is.' },
+  fitts: { name: "Fitts's Law", text: 'Time to target shrinks with size and proximity. Primary actions are at least 44px tall and sit where the eye already is.' },
   jakob: { name: "Jakob's Law", text: 'Users expect your site to work like sites they already know. The slot grid follows familiar calendar/timetable patterns.' },
   zeigarnik: { name: 'Zeigarnik Effect', text: 'Interrupted tasks are remembered better — an explicit 3-step progress indicator motivates completion of a started booking.' },
   peakend: { name: 'Peak-End Rule', text: 'People judge an experience by its peak and its end. The confirmation moment gets a satisfying, celebratory pass reveal.' },
@@ -220,14 +272,21 @@ const SCIENCE = {
   fifo: { name: 'FIFO fairness', text: 'Waitlist promotions follow strict first-in-first-out order under a row lock, so nobody can jump the queue.' },
 };
 
-export function Sci({ k, children, className }) {
+export function Sci({ k, children, className, as: Tag = 'span' }) {
   const s = SCIENCE[k];
+  const descriptionId = useId();
   if (!s) return children;
   return (
-    <span className={cls('sci', className)} data-sci={k} tabIndex={0} role="note" aria-label={`${s.name}: ${s.text}`}>
+    <Tag
+      className={cls('sci', className)}
+      data-sci={k}
+      role="note"
+      tabIndex={0}
+      aria-describedby={descriptionId}
+    >
       {children}
       <span className="sci-chip" aria-hidden="true">⌕ {s.name}</span>
-      <span className="sci-pop">{s.text}</span>
-    </span>
+      <span className="sci-pop" id={descriptionId} role="tooltip">{s.text}</span>
+    </Tag>
   );
 }

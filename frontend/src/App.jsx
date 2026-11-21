@@ -12,7 +12,9 @@ import Overview from './pages/Overview.jsx';
 const Discover = lazy(() => import('./pages/Discover.jsx'));
 const MyBookings = lazy(() => import('./pages/MyBookings.jsx'));
 const StaffDay = lazy(() => import('./pages/StaffDay.jsx'));
-const { LiveQueuePage } = lazy(() => import('./components/LiveQueueTV.jsx'));
+const LiveQueuePage = lazy(() =>
+  import('./components/LiveQueueTV.jsx').then((m) => ({ default: m.LiveQueuePage })),
+);
 const Manage = lazy(() => import('./pages/Manage.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
 const ConcurrencyProof = lazy(() => import('./pages/ConcurrencyProof.jsx'));

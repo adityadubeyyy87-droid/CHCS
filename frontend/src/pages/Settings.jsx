@@ -93,7 +93,7 @@ export default function Settings() {
               <div><small>Age group</small><strong>{user?.ageGroup || 'Not collected'}</strong></div>
               <div><small>Language</small><strong>{(user?.preferredLanguage || lang).toUpperCase()}</strong></div>
             </div>
-            <Sci k="privacy">
+            <Sci k="privacy" as="div" className="sci-block">
               <p className="muted config-note"><Icon name="flask" size={13} /> Name, phone, email, age group — that is the complete schema. No diagnosis, prescription or report field exists anywhere in the database.</p>
             </Sci>
           </Card>
@@ -149,16 +149,22 @@ export default function Settings() {
 }
 
 function AdminUsers() {
-  const { toast, pushGateway, user } = useApp();
+  const { toast, pushGateway, user, mode } = useApp();
   const users = useFetch(() => api.users(), []);
   const [busyId, setBusyId] = useState(null);
 
   async function changeRole(id, role) {
     setBusyId(id);
     try {
-      await api.setRole(id, role);
-      toast(`Role updated to ${role}.`);
-      pushGateway({ channel: 'SYSTEM', type: 'ADMIN', recipient: 'user table', message: `User #${id} role set to ${role}.`, status: 'SIMULATED', provider: 'Admin console' });
+      const res = await api.setRole(id, role);
+      const simulated = mode !== 'live' || res?.__mode === 'demo' || res?.simulated;
+      toast(`Role updated to ${role}.`, 'ok', simulated ? 'Local demo engine' : 'MySQL');
+      pushGateway({
+        channel: 'SYSTEM', type: 'ADMIN', recipient: 'user table',
+        message: `Account ${users.data?.users?.find((u) => u.id === id)?.name || `ID ${id}`} role set to ${role}.`,
+        status: simulated ? 'SIMULATED' : 'SENT',
+        provider: simulated ? 'Local Engine' : 'Admin console',
+      });
       await users.reload();
     } catch (err) { toast(err.message, 'bad'); await users.reload(); }
     finally { setBusyId(null); }
@@ -177,7 +183,7 @@ function AdminUsers() {
   return (
     <Card>
       <CardHead icon="users" title="User & role management" sub={`${users.data?.users?.length || 0} accounts · ADMIN only`}
-        actions={<Badge tone="muted">live table view</Badge>} />
+        actions={<Badge tone={mode === 'live' ? 'ok' : 'sim'}>{mode === 'live' ? 'Live MySQL table' : 'Simulated table'}</Badge>} />
       {users.loading && <Skeleton h={180} />}
       {users.error && <ErrorNote onRetry={users.reload}>{users.error}</ErrorNote>}
       {users.data && users.data.users.length === 0 && <EmptyState icon="users" title="No users found" />}
@@ -189,10 +195,10 @@ function AdminUsers() {
           </div>
           {users.data.users.map((u) => (
             <InView key={u.id} once>
-              <div key={u.id} className={`user-row ${!u.isActive ? 'row-inactive' : ''}`} role="row">
+              <div className={`user-row ${!u.isActive ? 'row-inactive' : ''}`} role="row">
                 <div role="cell" className="user-cell-person">
                   <span className="avatar sm">{u.name?.[0]}</span>
-                  <div><strong>{u.name}{u.id === user?.id && <span className="muted"> (you)</span>}</strong><small className="muted">#{u.id}</small></div>
+                  <div><strong>{u.name}{u.id === user?.id && <span className="muted"> (you)</span>}</strong><small className="muted">ID {u.id}</small></div>
                 </div>
                 <div role="cell" className="user-cell-contact">
                   <small>{u.email}</small>

@@ -865,6 +865,7 @@ function Scene({ quality }) {
 /* -------------------------------------------------------------------------- */
 export default function CinematicScene({ className = '' }) {
   const [failed, setFailed] = useState(false);
+  const [reduced, setReduced] = useState(false);
   const quality = useMemo(() => {
     if (typeof window === 'undefined') return 'high';
     const cores = navigator.hardwareConcurrency || 4;
@@ -874,8 +875,15 @@ export default function CinematicScene({ className = '' }) {
   }, []);
 
   useEffect(() => {
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    sceneDrive.reduced = reduced;
+    const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!mq) return;
+    const update = () => {
+      sceneDrive.reduced = mq.matches;
+      setReduced(mq.matches);
+    };
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
   }, []);
 
   if (failed) {
@@ -886,7 +894,8 @@ export default function CinematicScene({ className = '' }) {
     <div className={`cine-stage ${className}`} aria-hidden="true">
       <SceneErrorBoundary onError={() => setFailed(true)}>
         <Canvas
-          dpr={[1, quality === 'low' ? 1.35 : 1.75]}
+          dpr={[1, quality === 'low' || reduced ? 1.35 : 1.75]}
+          frameloop={reduced ? 'demand' : 'always'}
           camera={{ position: [0, 2.05, 11.2], fov: 48, near: 0.1, far: 500 }}
           gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
           onCreated={({ gl }) => {

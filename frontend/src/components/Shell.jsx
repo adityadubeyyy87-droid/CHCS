@@ -37,6 +37,7 @@ export default function Shell({ children }) {
   const [results, setResults] = useState(null);
   const searchRef = useRef(null);
   const navRef = useRef(null);
+  const profileRef = useRef(null);
 
   const items = NAV.filter((n) => user && n.roles.includes(user.role));
 
@@ -54,6 +55,15 @@ export default function Shell({ children }) {
   }, []);
 
   useEffect(() => { if (!query) setResults(null); }, [query]);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onPointerDown = (e) => {
+      if (!profileRef.current?.contains(e.target)) setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [menuOpen]);
 
   async function runSearch(e) {
     e.preventDefault();
@@ -105,7 +115,7 @@ export default function Shell({ children }) {
           <div className="side-foot">
             <div className={cls('mode-chip', mode === 'live' ? 'mode-live' : mode === 'demo' ? 'mode-demo' : '')}>
               <span className="mode-dot" />
-              {mode === 'live' ? 'Backend Connected · MySQL' : mode === 'demo' ? 'Local Demo Mode' : 'Connecting…'}
+              {mode === 'live' ? 'LIVE · MySQL' : mode === 'demo' ? 'DEMO' : 'Connecting…'}
             </div>
             <button className={cls('side-mini', screenshotMode && 'active')} onClick={() => setScreenshotMode(!screenshotMode)} title="Clean PPT screenshot mode hides chrome for captures">
               <Icon name="eye" size={14} /> {screenshotMode ? 'Screenshot mode ON' : 'Clean PPT screenshot mode'}
@@ -147,25 +157,25 @@ export default function Shell({ children }) {
               {mode === 'live' ? 'LIVE · MySQL' : 'DEMO'}
             </Badge>
 
-            <button className={cls('icon-btn', science && 'active')} onClick={() => setScience(!science)} aria-pressed={science} aria-label="Toggle science annotations" title="Biophilic Science X-Ray — annotate the science behind the interface">
+            <button className={cls('icon-btn', 'topbar-util', science && 'active')} onClick={() => setScience(!science)} aria-pressed={science} aria-label="Toggle science annotations" title="Biophilic Science X-Ray — annotate the science behind the interface">
               <Icon name="flask" />
             </button>
 
-            <button className="icon-btn" onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} aria-label="Switch language" title="English / ಕನ್ನಡ">
+            <button className="icon-btn topbar-util" onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} aria-label="Switch language" title="English / ಕನ್ನಡ">
               <span className="lang-chip">{lang === 'en' ? 'EN' : 'ಕನ್'}</span>
             </button>
 
-            <button className="icon-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
+            <button className="icon-btn topbar-util" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
             </button>
 
-            <button className="icon-btn bell" onClick={() => { setDrawerOpen(true); setUnread(0); setNotifOpen(false); }} aria-label="Gateway Interceptor">
+            <button className="icon-btn bell" onClick={() => { setDrawerOpen(true); setUnread(0); }} aria-label="Gateway Interceptor">
               <Icon name="bell" />
               {unread > 0 && <span className="bell-dot">{unread > 9 ? '9+' : unread}</span>}
             </button>
 
-            <div className="profile">
-              <button className="profile-btn" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen}>
+            <div className="profile" ref={profileRef}>
+              <button className="profile-btn" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-haspopup="menu" aria-label={`Account menu for ${user?.name || 'guest'}`}>
                 <span className="avatar">{(user?.name || 'G')[0]}</span>
                 <span className="profile-meta">
                   <strong>{user?.name?.split(' ')[0]}</strong>
@@ -212,23 +222,39 @@ function GatewayDrawer() {
   const { gateway, setDrawerOpen, mode } = useApp();
   const [log, setLog] = useState(null);
   const [loading, setLoading] = useState(true);
+  const closeRef = useRef(null);
+  const headingId = 'gateway-drawer-title';
+
   useEffect(() => {
     if (mode === 'live') {
       api.notifications(40).then((d) => setLog(d.notifications)).catch(() => setLog([])).finally(() => setLoading(false));
     } else { setLog(null); setLoading(false); }
   }, [mode]);
+
+  useEffect(() => {
+    const previous = document.activeElement;
+    const focusFrame = requestAnimationFrame(() => closeRef.current?.focus());
+    const onKey = (e) => { if (e.key === 'Escape') setDrawerOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      window.removeEventListener('keydown', onKey);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [setDrawerOpen]);
+
   const merged = [...gateway, ...(log || [])];
   return (
-    <aside className="drawer" role="dialog" aria-label="Gateway Interceptor — live notification feed">
+    <aside className="drawer" role="dialog" aria-modal="false" aria-labelledby={headingId}>
       <header className="drawer-head">
         <div>
-          <h2><Icon name="send" size={16} /> Gateway Interceptor</h2>
+          <h2 id={headingId}><Icon name="send" size={16} /> Gateway Interceptor</h2>
           <p className="muted">
             Live feed of every notification the platform emits.
             {mode !== 'live' && ' Local demo engine — delivery is SIMULATED, never a real external gateway.'}
           </p>
         </div>
-        <button className="icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close"><Icon name="x" /></button>
+        <button ref={closeRef} className="icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close gateway interceptor"><Icon name="x" /></button>
       </header>
       <div className="drawer-body">
         {loading && <p className="muted">Loading delivery log…</p>}
@@ -241,7 +267,7 @@ function GatewayDrawer() {
               <time className="muted">{relTime(n.sentAt || n.at)}</time>
             </div>
             <p className="gw-msg">{n.subject ? <strong>{n.subject} — </strong> : null}{n.message}</p>
-            <p className="gw-meta muted">→ {n.recipient} · {n.provider || 'Local Engine'}{n.bookingId ? ` · booking #${n.bookingId}` : ''}</p>
+            <p className="gw-meta muted">→ {n.recipient} · {n.provider || 'Local Engine'}{n.bookingId ? ` · booking reference ${n.bookingId}` : ''}</p>
           </article>
         ))}
       </div>
