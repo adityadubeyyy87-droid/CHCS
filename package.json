@@ -1,0 +1,23 @@
+{
+  "name": "chsc-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CHSC workspace runner — one command in VS Code, permanent local service, free public deploy",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "live": "node scripts/dev.mjs --full",
+    "backend": "node scripts/dev.mjs --backend-only",
+    "build": "npm --prefix frontend run build",
+    "test": "npm --prefix backend test",
+    "mysql:start": "node scripts/mysql.mjs start",
+    "mysql:stop": "node scripts/mysql.mjs stop",
+    "pm2:install": "npm install -g pm2",
+    "pm2:start": "pm2 start ecosystem.config.cjs && pm2 save",
+    "pm2:stop": "pm2 stop chsc && pm2 delete chsc",
+    "pm2:logs": "pm2 logs chsc",
+    "pm2:status": "pm2 list"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

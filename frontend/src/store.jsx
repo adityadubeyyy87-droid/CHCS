@@ -1,8 +1,13 @@
 // store.jsx — global app state: auth, mode, theme, language, science overlay,
 // toasts, gateway interceptor feed, socket connection, routing.
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { io } from 'socket.io-client';
 import { api, detectMode, setModeListener, setToken, setUser, getMode } from './lib/api.js';
 import { translate } from './lib/i18n.js';
+
+// Same-origin by default (backend-served build or Vite proxy). When the UI is
+// on a static host, VITE_API_BASE points at the API and the socket follows it.
+const SOCKET_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/api\/?$/, '');
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -40,9 +45,9 @@ export function AppProvider({ children }) {
   useEffect(() => {
     setModeListener(setMode);
     detectMode().then((m) => {
-      if (m === 'live' && window.io) {
+      if (m === 'live') {
         try {
-          const socket = window.io({ transports: ['websocket', 'polling'] });
+          const socket = io(SOCKET_BASE || undefined, { transports: ['websocket', 'polling'] });
           socketRef.current = socket;
           socket.on('connect', () => { setSocketOnline(true); });
           socket.on('disconnect', () => setSocketOnline(false));
@@ -117,7 +122,6 @@ export function AppProvider({ children }) {
     isStaff: user && ['DOCTOR', 'VOLUNTEER'].includes(user.role),
     isOrganizer: user && ['ORGANIZER', 'ADMIN'].includes(user.role),
     isAdmin: user && user.role === 'ADMIN',
-    socketOnline,
     socket: socketRef.current,
   }), [mode, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread, screenshotMode, toast, pushGateway, t, signIn, signOut, navigate, socketOnline]);
 

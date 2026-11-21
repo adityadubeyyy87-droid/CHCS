@@ -243,7 +243,7 @@ cd ../backend && npm start
 
 ## 13. Current Verification Status (2026-11-21)
 
-The full backend suite is green (**79/79 tests**, see `docs/TEST_REPORT.md`) and the live
+The full backend suite is green (**82/82 tests**, 15 files) and the live
 end-to-end harness passes **43/43 checks** (`backend/scripts/verify-live.js`).
 
 **Live deployment has not been executed from this environment.** No public hosting
@@ -258,6 +258,149 @@ To publish:
    with `VITE_API_BASE=https://<backend-host>/api`.
 5. Add `https://` to `FRONTEND_ORIGIN` and TLS termination.
 6. Run the verification checklist above and open the public URL.
+
+---
+
+---
+
+## 14. Run locally in VS Code — one command, every time
+
+From the **project root** (the folder containing `backend/`, `frontend/`, `package.json`):
+
+```powershell
+npm run dev
+```
+
+Press **Ctrl+Shift+B** instead if you prefer the VS Code task — the default build task
+is `CHSC: Dev (API + UI)` (see `.vscode/tasks.json`).
+
+| Link | What it is |
+|---|---|
+| `http://localhost:5173/` | Vite dev server, hot reload, API + Socket.io proxied to :4000 |
+| `http://localhost:4000/` | Express serving `frontend/dist/` — the “full version” |
+| `http://localhost:4000/api/health` | Mode + database status |
+
+Other root commands:
+
+```powershell
+npm run live          # build UI fresh, then serve full version at :4000
+npm run mysql:start   # start installed MySQL 8 (needed for LIVE · MySQL)
+npm run mysql:stop
+npm test              # backend suite
+npm run build         # rebuild frontend/dist only
+```
+
+To get the **real database** locally:
+
+```powershell
+npm run mysql:start
+# once ever, to create/seed the schema:
+mysql -u root -p < database/schema.sql
+npm run dev
+```
+
+The sidebar chip reads `LIVE · MySQL` when `database: "connected"`; otherwise it
+reads `DEMO` and every simulated result carries a `SIMULATED` badge. Both are
+intentional — neither produces a blank page.
+
+`scripts/dev.mjs` has no extra dependencies: it uses the npm CLI that ships with
+your Node install and kills the whole process tree on Ctrl+C (Windows-safe).
+
+---
+
+## 15. Keep it alive permanently on this machine (PM2)
+
+```powershell
+npm install -g pm2
+npm run build
+npm run pm2:start       # starts backend :4000 with auto-restart
+pm2 startup             # run the admin command it prints — once — for boot start
+pm2 save
+```
+
+`ecosystem.config.cjs` already sets `restart_delay`, `max_restarts`, log files and
+`NODE_ENV=production`. If the process crashes, PM2 brings it straight back; after
+`pm2 startup`, it also returns after a Windows reboot.
+
+```powershell
+npm run pm2:status
+npm run pm2:logs
+npm run pm2:stop
+```
+
+For real MySQL mode, set `DEMO_MODE=false` in `backend/.env` (and make sure
+`npm run mysql:start` succeeded) before `pm2:start`.
+
+> A laptop that is switched off cannot serve the internet. True 24/7 availability
+> needs a host — see section 16.
+
+---
+
+## 16. Publish for free — a public link that works on every device
+
+### 16.1 Recommended: GitHub Pages (free forever, no card, no black screen)
+
+1. Push this repo to GitHub (branch `main`, `master` or `phase1-verify-hardening`).
+2. GitHub → repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+3. The included workflow `.github/workflows/deploy-pages.yml` builds `frontend/` and
+   publishes `frontend/dist/` automatically on every push.
+4. Your public URL appears under **Settings → Pages**, e.g.
+   `https://adityadubeyyy87-droid.github.io/CHCS/`.
+
+Why this never goes black:
+
+- The Vite build uses `base: './'`, so assets load from the `/CHCS/` subpath.
+- Routing is hash-based (`#/welcome`, `#/discover`, …), so no server rewrite is needed.
+- `api.js` probes `/api/health`; on a static host there is no API, so it switches to
+  the local demo engine. The site stays fully usable and clearly says `DEMO`.
+- The old hard-coded `http://localhost:4000/socket.io/...` script tag was removed;
+  Socket.io is now imported from the bundled `socket.io-client` package, so there is
+  no mixed-content/console error on HTTPS. Socket connections only open in LIVE mode.
+
+Optional — make the same public site use a real backend when it is available:
+
+- Add a repository variable **Settings → Secrets and variables → Variables → New
+  repository variable** named `RENDER_API_URL` with your backend origin,
+  e.g. `https://chsc-api.onrender.com`.
+- Re-run the workflow. The build injects `VITE_API_BASE`; the app uses LIVE mode when
+  the backend answers and falls back to DEMO when it sleeps. No black screen either way.
+
+### 16.2 Full LIVE mode on a free/cheap host — the honest 2026 picture
+
+| Need | Reality |
+|---|---|
+| Free managed MySQL | **Retired** (Aiven’s free MySQL plan is gone; Render Postgres expires after 30 days). |
+| Free Node web service | Render still has a free tier (sleeps after ~15 min, 750 h/month); Railway gives $1/month after a short trial; Fly.io has no free tier for new accounts. |
+| Truly free + always on | Oracle Cloud **Always Free** ARM VM (4 OCPU / 24 GB) — install MySQL + Node there. |
+
+Cheapest dependable path: **GitHub Pages UI (16.1) + a $5/mo MySQL Developer instance**,
+or **Oracle Always Free VM** if you want $0 and can handle the setup. On any host:
+
+```env
+NODE_ENV=production
+DEMO_MODE=false
+FRONTEND_ORIGIN=https://<you>.github.io,https://<your-backend>.onrender.com
+DB_HOST=<host>
+DB_NAME=community_health_scheduler
+JWT_SECRET=<32-byte random: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
+```
+
+On a VPS/Oracle VM, run the schema (`mysql -u root -p < database/schema.sql`), build
+the UI (`npm run build`), then `npm run pm2:start` and put Nginx + Let’s Encrypt in
+front. `FRONTEND_ORIGIN` must contain every exact browser origin (including the
+backend’s own origin if it serves `dist`), otherwise CORS produces a blank page.
+
+### 16.3 Verify after publishing
+
+```powershell
+curl https://<your-backend>/api/health
+# expect: {"ok":true,"database":"connected","demoMode":false,...}
+```
+
+Open the public URL on a phone and a laptop. Landing page must render, the mode chip
+must show `LIVE · MySQL` or `DEMO`, and DevTools Console must have **zero red errors**.
+Test demo login → booking → QR pass → CSV export (admin). If the backend sleeps and
+wakes, the page must silently continue in DEMO mode rather than going blank.
 
 ---
 

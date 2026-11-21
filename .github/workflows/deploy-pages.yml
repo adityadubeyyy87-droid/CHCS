@@ -1,0 +1,56 @@
+name: Deploy CHSC (free public site)
+
+on:
+  push:
+    branches: [main, master, phase1-verify-hardening]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build static frontend
+        # No repository variable set → the site runs the clearly-labelled DEMO
+        # engine and can never go black. Set RENDER_API_URL (a repo variable)
+        # to your backend URL to make the same site use LIVE mode when it is up.
+        env:
+          VITE_API_BASE: ${{ vars.RENDER_API_URL }}
+        run: npm run build
+        working-directory: frontend
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

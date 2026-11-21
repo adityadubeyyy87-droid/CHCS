@@ -36,7 +36,7 @@ Command: `cd backend && npm test`
 | Integration | `tests/integration/auth`, `booking`, `camps`, `staff`, `attendance`, `export`, `reminders`, `concurrency` | PASS |
 | Integration | `tests/integration/audit` (added this sprint) | PASS |
 
-**Total: 14 test files · 79 tests · 79 passing.**
+**Total: 15 test files · 82 tests · 82 passing.**
 
 ### Coverage mapped to the Phase 1 checklist
 

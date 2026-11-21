@@ -1,0 +1,70 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CHSC: Dev (API + UI)",
+      "type": "npm",
+      "script": "dev",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "group": { "kind": "build", "isDefault": true },
+      "detail": "One command: backend :4000 + Vite :5173 with hot reload. Ctrl+Shift+B."
+    },
+    {
+      "label": "CHSC: Full build at :4000",
+      "type": "npm",
+      "script": "live",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "detail": "Fresh UI build + backend serving http://localhost:4000/."
+    },
+    {
+      "label": "CHSC: Start MySQL",
+      "type": "npm",
+      "script": "mysql:start",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "Starts local MySQL 8 so the app runs in LIVE · MySQL mode."
+    },
+    {
+      "label": "CHSC: Everything (MySQL then Dev)",
+      "dependsOn": ["CHSC: Start MySQL", "CHSC: Dev (API + UI)"],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "detail": "Starts MySQL, then the full dev stack. Use this for the real LIVE mode."
+    },
+    {
+      "label": "CHSC: Build UI",
+      "type": "npm",
+      "script": "build",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "CHSC: Run tests",
+      "type": "npm",
+      "script": "test",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "CHSC: PM2 forever",
+      "type": "npm",
+      "script": "pm2:start",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "detail": "Keep http://localhost:4000/ alive across restarts (run pm2 startup once)."
+    }
+  ]
+}

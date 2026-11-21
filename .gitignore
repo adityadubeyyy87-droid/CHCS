@@ -13,9 +13,12 @@ build/
 .env.local
 .env.*.local
 
-# IDE
+# IDE (keep the shared VS Code runner tasks)
 .idea/
-.vscode/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/extensions.json
 *.swp
 *.swo
 *~
@@ -34,3 +37,4 @@ yarn-error.log*
 # MySQL data
 *.err
 *.pid
+backend/.mysql-data/

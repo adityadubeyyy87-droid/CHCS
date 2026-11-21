@@ -112,16 +112,18 @@ async function createCampAt({
  * Convenience wrapper: a one-slot camp starting `startsInHours` from now.
  */
 async function createCampFixture(options = {}) {
-  const { startsInHours = 72, durationMinutes = 60 } = options;
+  const { startsInHours = 72, durationMinutes = 60, campDate, startTime, endTime } = options;
   const startsAt = new Date(Date.now() + startsInHours * 3600 * 1000);
   startsAt.setSeconds(0, 0);
   const endsAt = new Date(startsAt.getTime() + durationMinutes * 60 * 1000);
 
+  // Explicit times make time-sensitive assertions (e.g. reminder ordering)
+  // deterministic regardless of the wall-clock hour the suite is run at.
   const fixture = await createCampAt({
     ...options,
-    campDate: localDate(startsAt),
-    startTime: localTime(startsAt),
-    endTime: localTime(endsAt),
+    campDate: campDate || localDate(startsAt),
+    startTime: startTime || localTime(startsAt),
+    endTime: endTime || localTime(endsAt),
   });
 
   return { ...fixture, startsAt, endsAt };

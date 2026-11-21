@@ -94,7 +94,10 @@ describe('booking integrity', () => {
 
   it('moves a booking atomically and re-queues reminders for the new time', async () => {
     const patient = await insertUser({ role: 'PATIENT' });
-    const fixture = await createCampFixture({ capacity: 3, startsInHours: 96 });
+    // Fixed times: the rescheduled slot must be later than the original one,
+    // otherwise the re-queued reminders move earlier and the assertion below
+    // becomes dependent on the hour of day the suite happens to run.
+    const fixture = await createCampFixture({ capacity: 3, startsInHours: 96, startTime: '09:00:00', endTime: '14:00:00' });
     const secondSlot = await addSlot(fixture.campId, { start: '12:00:00', end: '13:00:00' });
 
     const booked = await request(app)

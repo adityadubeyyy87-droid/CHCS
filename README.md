@@ -24,9 +24,32 @@ Every booking uses `SELECT ... FOR UPDATE` pessimistic row locking on MySQL Inno
 | Volunteer | `volunteer@cmrit.edu` | `Password@123` |
 | Patient | `patient@cmrit.edu` | `Password@123` |
 
-## Quick start
+## Quick start — one command (VS Code)
 
-### Mode A — real MySQL + Socket.io
+Open the project root in VS Code and press **Ctrl+Shift+B** (or run `npm run dev` in the integrated terminal):
+
+```powershell
+npm run dev
+```
+
+That starts **backend :4000 + frontend :5173 (hot reload)** in one terminal.
+Open **http://localhost:5173/** for development, or **http://localhost:4000/** for the production build.
+
+Other one-liners from the project root:
+
+```powershell
+npm run live          # fresh UI build, then full version at http://localhost:4000/
+npm run mysql:start   # start local MySQL 8 → LIVE · MySQL mode
+npm test              # backend suite
+npm run pm2:start     # keep :4000 alive forever (after: npm i -g pm2, pm2 startup)
+```
+
+Free public link: push to GitHub → **Settings → Pages → Source: GitHub Actions**.
+The included workflow publishes the UI at `https://<you>.github.io/CHCS/` and it
+falls back to the labelled DEMO engine if no backend is configured, so it never goes black.
+See `DEPLOYMENT.md` sections 14–16 for the full guide.
+
+### Mode A — real MySQL + Socket.io (manual)
 ```bash
 # 1. Database
 mysql -u root -p < database/schema.sql
@@ -57,7 +80,7 @@ Full automated suite (unit + integration against a throwaway MySQL test database
 
 ```bash
 cd backend
-npm test               # 79/79 tests pass (14 files: unit + integration)
+npm test               # 82/82 tests pass (15 files: unit + integration)
 npm run test:unit
 npm run test:integration
 ```
