@@ -15,7 +15,8 @@ The application supports two modes:
 
 ## 1. Prerequisites
 
-- Node.js >= 18
+- Node.js >= 20 (Railway and CI are pinned to Node 20; Tailwind's native
+  `@tailwindcss/oxide` binding requires it)
 - MySQL 8.0+ (for Mode A)
 - A domain with HTTPS (for production)
 
@@ -31,10 +32,14 @@ mysql -u root -p < database/schema.sql
 ### Production (hosted MySQL)
 1. Provision a MySQL 8 database (e.g., AWS RDS, Azure MySQL, DigitalOcean Managed DB)
 2. Note the host, port, user, password, and database name
-3. Run the schema against the production database:
+3. Run the schema against the production database. Use the idempotent hosted
+   schema (non-destructive bootstrap) when the host only exposes one SQL string:
 ```bash
-mysql -h <PROD_HOST> -P <PORT> -u <USER> -p<PASSWORD> < database/schema.sql
+mysql -h <PROD_HOST> -P <PORT> -u <USER> -p<PASSWORD> < database/schema-production.sql
 ```
+   Railway runs this automatically on every deploy via
+   `node scripts/db.js setup-production`, which creates missing tables/seeds and
+   never drops live data.
 
 ---
 
@@ -130,7 +135,11 @@ Deploy `frontend/dist/` to any static host (Vercel, Netlify, S3+CloudFront, GitH
 VITE_API_BASE=https://api.yourdomain.com
 ```
 
-The frontend will call the backend API directly and fall back to Mode B (demo engine) if unreachable.
+The frontend will call the backend API directly. When `VITE_API_BASE` is injected
+into a **production** build, the app is **strict-live**: it never substitutes the
+local demo engine if that backend is unavailable, and surfaces the real network
+error instead. Only builds without an API base (or local development) may fall
+back to the clearly labelled demo engine.
 
 ---
 
@@ -237,7 +246,11 @@ Before going live:
 - [ ] `.env` is not committed to version control
 - [ ] Test patient registration and login
 - [ ] Test booking flow end-to-end
+- [ ] Confirm the mode chip reads `LIVE · MySQL` on the public site
+- [ ] Confirm Socket.io handshake returns `101` and live queue updates without reload
+- [ ] Confirm strict-live mode never shows `SIMULATED` data as a database result
 - [ ] Run `npm test` — all 98 backend tests pass (see `docs/TEST_REPORT.md`)
+- [ ] Run `npm run build` in `frontend/` — no compile errors
 
 ---
 
@@ -257,23 +270,33 @@ cd ../backend && npm start
 The full backend suite is green (**98/98 tests**, 17 files) and the live
 end-to-end harness passes **43/43 checks** (`backend/scripts/verify-live.js`).
 
-**Public frontend deployment is live** at
-`https://adityadubeyyy87-droid.github.io/CHCS/`. There is no public backend or
-hosted MySQL in this environment: the Pages build therefore runs the explicitly
-labelled `DEMO · LOCAL` engine. The local PM2 backend at `http://localhost:4000`
-is healthy against MySQL 8.4.9 and reports `demoMode: true`.
+The public deployment is now **real full-stack**, not a static demo:
 
-To add a real public backend later:
+| Layer | Live endpoint / status |
+|---|---|
+| Frontend | `https://adityadubeyyy87-droid.github.io/CHCS/` — `LIVE · MySQL` |
+| Backend | `https://exemplary-strength-production-fbfcb823.up.railway.app/` — Node 20, Railway |
+| Database | Railway MySQL 8.4.13, persistent volume, `database: connected` |
+| Realtime | `wss://exemplary-strength-production-fbfcb823.up.railway.app/socket.io/` — `101` |
+| GitHub | `https://github.com/adityadubeyyy87-droid/CHCS` |
 
-1. Provision a hosted MySQL instance (RDS / Azure / DigitalOcean / PlanetScale-style managed).
-2. Set production env vars (see section 3) and run `database/schema.sql`.
-3. Deploy the backend (Render / Railway / Fly / AWS Elastic Beanstalk / a VPS with PM2).
-4. Add the backend origin as the repository variable `RENDER_API_URL`; the Pages
-   workflow injects it as `VITE_API_BASE`.
-5. Set `DEMO_MODE=false` and add `https://` origins to `FRONTEND_ORIGIN` plus TLS termination.
-6. Re-run the Pages workflow, then the verification checklist above and open the public URL.
+Public health response:
 
----
+```json
+{
+  "ok": true,
+  "service": "CHSC API",
+  "demoMode": false,
+  "database": "connected",
+  "dbVersion": "8.4.13",
+  "socket": "ready"
+}
+```
+
+The Pages site is a production build with `VITE_API_BASE` supplied from the
+GitHub repository variable `RENDER_API_URL`, so it is **strict-live** and cannot
+silently fall back to the demo engine. The full public verification record is in
+`docs/TEST_REPORT.md` and the deployment topology is in section 17 below.
 
 ---
 
@@ -366,8 +389,9 @@ Why this never goes black:
 
 - The Vite build uses `base: './'`, so assets load from the `/CHCS/` subpath.
 - Routing is hash-based (`#/welcome`, `#/discover`, …), so no server rewrite is needed.
-- `api.js` probes `/api/health`; on a static host there is no API, so it switches to
-  the local demo engine. The site stays fully usable and clearly says `DEMO`.
+- `api.js` probes `/api/health`. A static-only build with no injected API base switches
+  to the local demo engine and clearly says `DEMO`; the connected production build below
+  stays strictly live instead.
 - The old hard-coded `http://localhost:4000/socket.io/...` script tag was removed;
   Socket.io is now imported from the bundled `socket.io-client` package, so there is
   no mixed-content/console error on HTTPS. Socket connections only open in LIVE mode.
@@ -377,8 +401,10 @@ Optional — make the same public site use a real backend when it is available:
 - Add a repository variable **Settings → Secrets and variables → Variables → New
   repository variable** named `RENDER_API_URL` with your backend origin,
   e.g. `https://chsc-api.onrender.com`.
-- Re-run the workflow. The build injects `VITE_API_BASE`; the app uses LIVE mode when
-  the backend answers and falls back to DEMO when it sleeps. No black screen either way.
+- Re-run the workflow. The build injects `VITE_API_BASE`; because this is a
+  production build, the app runs in **strict-live** mode. It does not fall back to
+  DEMO if the backend is unreachable — the real error is shown instead. This is
+  deliberate so simulated output can never be mistaken for database output.
 
 ### 16.2 Full LIVE mode on a free/cheap host — the honest 2026 picture
 
@@ -413,9 +439,109 @@ curl https://<your-backend>/api/health
 ```
 
 Open the public URL on a phone and a laptop. Landing page must render, the mode chip
-must show `LIVE · MySQL` or `DEMO`, and DevTools Console must have **zero red errors**.
-Test demo login → booking → QR pass → CSV export (admin). If the backend sleeps and
-wakes, the page must silently continue in DEMO mode rather than going blank.
+must show `LIVE · MySQL` (or `DEMO` only for a static-only build), and DevTools
+Console must have **zero red errors**. Test sign-in → booking → QR pass → CSV
+export (admin). With `VITE_API_BASE` injected into a production build, a backend
+outage must surface a real error; it must **not** switch to DEMO.
+
+---
+
+## 17. Verified public deployment (Railway + GitHub Pages)
+
+This is the actual topology serving the public site on 2026-11-21. It replaces
+the earlier “public backend later” notes in section 13.
+
+### 17.1 Identifiers
+
+| Item | Value |
+|---|---|
+| GitHub repo | `https://github.com/adityadubeyyy87-droid/CHCS` |
+| Branches kept in sync | `main`, `master`, `phase1-verify-hardening` |
+| Railway project | `incredible-dream` |
+| Project ID | `cdb51e74-44c1-4945-918d-00d4a67c91bd` |
+| Environment ID | `dec51402-000f-4cdb-8335-99cdbfb9d61f` |
+| Primary service | `exemplary-strength` (`f8f6e479-57a4-4e78-b6a4-7e6320dfcff0`) |
+| MySQL service | `9ba75faa-fc4e-4ef0-bd96-ffdb72cd8605`, persistent volume `06c69882-5308-4702-9e84-6955ef3638d4` |
+| Active deployment at verification | `235cd05e-8186-45e7-a0ab-dde33d8e8dc3` for commit `2e63cab` |
+| Public backend | `https://exemplary-strength-production-fbfcb823.up.railway.app/` |
+| Public frontend | `https://adityadubeyyy87-droid.github.io/CHCS/` |
+
+A first, failed duplicate service named `CHCS`
+(`7667726a-ffa6-4ddc-b2bf-f9c18327ecd0`) was removed from the Railway
+environment after the primary service was verified. No `railway.json` is used;
+Railway config-as-code is deprecated for new services and is intentionally
+managed in the dashboard.
+
+### 17.2 Railway settings
+
+```text
+Root directory:        repository root
+Builder:               Railpack with custom commands
+Custom build command:  cd frontend && npm ci && npm run build
+Custom start command:  cd backend && npm ci --omit=dev && node scripts/db.js setup-production && node server.js
+Healthcheck path:      /api/health
+Port / target port:    8080
+Runtime:               node@20.20.2 (NODE_VERSION=20)
+Replicas:              1
+```
+
+Environment variables (values delivered as Railway secrets/references, never in
+this repository):
+
+| Variable | Purpose |
+|---|---|
+| `NODE_ENV=production` | Production error handling |
+| `DEMO_MODE=false` | Closes all `/api/demo/*` endpoints and demo login |
+| `TRUST_PROXY=2` | Trust Railway's two-edge proxy chain for secure cookies/IP |
+| `NODE_VERSION=20` | Required by Tailwind's native oxide binding |
+| `PORT=8080` | Railway target port |
+| `JWT_SECRET` | Hidden 32-byte random secret |
+| `MYSQL_URL` | Railway secret reference to the MySQL connection string |
+| `FRONTEND_ORIGIN` | Pages origin plus the Railway origin for CORS/socket auth |
+
+GitHub repository variable:
+
+```text
+RENDER_API_URL=https://exemplary-strength-production-fbfcb823.up.railway.app
+```
+
+`.github/workflows/deploy-pages.yml` injects it as `VITE_API_BASE`. Workflow run
+`#24` on `main` completed successfully after the variable was set; the published
+bundle switched from the old demo asset `index-SWvLevdZ.js` to live asset
+`index-CFkkecyO.js`. A production build with `VITE_API_BASE` is strict-live by
+design (`frontend/src/lib/api.js`).
+
+### 17.3 Bootstrap and schema
+
+`node scripts/db.js setup-production` reads `MYSQL_URL` (or `DATABASE_URL`),
+parses Railway's SSL requirements and applies
+`database/schema-production.sql` idempotently. It creates missing tables,
+indexes and the five seeded role accounts; it never drops existing data. The
+source schema remains `database/schema.sql` and the production copy is
+regenerated by `scripts/generate-production-schema.mjs`.
+
+### 17.4 Post-deploy verification
+
+- `GET /api/health` → `ok: true`, `demoMode: false`, `database: connected`,
+  `dbVersion: 8.4.13`, `socket: ready`.
+- Public Pages UI shows `LIVE · MySQL`; `/api/health`, `/api/camps` and
+  `/api/bookings/me` return real responses and the socket handshake is `101`.
+- Real DB aggregates (at verification time): 7 camps, 45 slots, 121 bookings
+  and FIFO waitlists.
+- All role workflows, booking/cancel/reschedule, FIFO promotion, check-in,
+  live-queue socket updates, admin analytics and CSV export were exercised
+  against MySQL. An interactive demo-only concurrency button is explicitly
+  disabled in strict-live mode; the real row-lock invariant remains covered by
+  `npm test` (10 confirmed / 40 waitlisted / 0 violations).
+- Detailed workflow evidence: `docs/TEST_REPORT.md`.
+
+### 17.5 Trial and billing disclosure
+
+Railway is currently on a trial showing **30 days or about $5.00 left**. The
+public URL is live now, but continued 24/7 availability after the trial requires
+a paid Railway plan or a migration to another host. There is no custom domain;
+the public frontend uses the default `github.io` URL and the backend uses the
+default Railway hostname.
 
 ---
 

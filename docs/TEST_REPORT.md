@@ -1,6 +1,6 @@
 # CHSC — Test & Verification Report (Release Hardening)
 
-_Status: green as of 2026-11-21. Evidence below is from the exact working tree shipped in this release._
+_Status: green as of 2026-11-22. Evidence below is from the exact working tree shipped in this release._
 
 This is the honest, reproducible record for Phase 1 (Engineering Completion) and the
 subsequent security, reliability, accessibility and deployment hardening pass.
@@ -11,8 +11,8 @@ subsequent security, reliability, accessibility and deployment hardening pass.
 
 | Component | Version / value |
 |---|---|
-| Node.js | 24.19.0 locally (CI uses Node 20) |
-| MySQL | 8.4.9 Community Server, InnoDB, local portable instance |
+| Node.js | 24.19.0 locally; Node 20.20.2 in CI and on Railway |
+| MySQL | 8.4.9 local portable instance; 8.4.13 on Railway, InnoDB |
 | Express | 4.21 |
 | JWT | jsonwebtoken 9 |
 | bcryptjs | 2.4.3 |
@@ -38,6 +38,25 @@ The local PM2 process is online as `chsc`, bound to `127.0.0.1:4000` via
 `ecosystem.config.cjs` (the explicit local-demo opt-in). Demo login still works
 locally; production deployments with `NODE_ENV=production` require
 `ALLOW_LOCAL_DEMO=true` or a loopback `HOST`.
+
+Public production health (Railway, 2026-11-21):
+
+```json
+{
+  "ok": true,
+  "service": "CHSC API",
+  "demoMode": false,
+  "database": "connected",
+  "dbVersion": "8.4.13",
+  "socket": "ready"
+}
+```
+
+Public URLs:
+
+- Frontend: `https://adityadubeyyy87-droid.github.io/CHCS/`
+- Backend: `https://exemplary-strength-production-fbfcb823.up.railway.app/`
+- Repository: `https://github.com/adityadubeyyy87-droid/CHCS`
 
 ---
 
@@ -117,7 +136,7 @@ Built UI served by the local backend at `http://localhost:4000/`.
 | Check | Result |
 |---|---|
 | Role/route matrix | All 5 roles × all permitted routes render the expected `<h1>` |
-| Mode chip | `LIVE · MySQL` on every authenticated route (public Pages: `DEMO`) |
+| Mode chip | `LIVE · MySQL` on every authenticated route, including public Pages after the live backend was connected |
 | Demo sign-in navigation | updates hash to `#/overview` for one-click sessions and normal login |
 | Console errors | 0 |
 | Failed network requests (4xx/5xx) | 0 (organizer staff list no longer 403s) |
@@ -126,7 +145,7 @@ Built UI served by the local backend at `http://localhost:4000/`.
 | Persistent error notes | 0 |
 | StaffDay QR token field | visible, 528×44px, correctly labelled |
 | Booking flow | slot selection → commitment panel → confirmation + 4 SVG passport codes |
-| Build asset | `assets/index-C2uv4Ez2.js` |
+| Build asset | local `assets/index-C2uv4Ez2.js`; public live asset `assets/index-CFkkecyO.js` |
 
 The one intentional 409 observed during manual exploration was a legitimate duplicate
 camp booking, shown inline as "You already have an active booking at this camp.
@@ -147,7 +166,52 @@ side-tab, decorative-grid and gradient-text cleanups.
 
 ---
 
-## 6. Bugs found and fixed in this release
+## 6. Public full-stack verification (Railway + GitHub Pages)
+
+Performed against the actual public URLs on 2026-11-21 after the Railway backend,
+Railway MySQL, GitHub variable and Pages workflow were connected. This is
+**authoritative data**, not the local demo engine.
+
+| Check | Evidence / result |
+|---|---|
+| Mode chip | `LIVE · MySQL` after health detection completed; public bundle `assets/index-CFkkecyO.js` |
+| Health | `GET /api/health` → 200, `demoMode: false`, `database: connected`, `dbVersion: 8.4.13`, `socket: ready` |
+| Strict-live | `VITE_API_BASE` injected from repo variable `RENDER_API_URL`; no `SIMULATED` value is presented as a DB result |
+| Socket | `wss://…/socket.io/` handshake → 101 |
+| Public aggregates | Initially 7 camps / 45 slots / 121 bookings / 3 waitlists / 20 registered patients; all from MySQL |
+| Sign-in | Patient `Meera Sharma` (id 6), organizer `Nandini Rao` (id 2), doctor `Dr. Ananya Rao` (id 3), admin `Kavya Rao` (id 1) |
+| Booking | Camp `Indiranagar Primary Health Camp`, 10:30 AM → token `D-978410`, reference `CHSC-BLR-735528`, booking id `2001` |
+| Duplicate guard | Immediate inline error: “You already have an active booking at this camp. Reschedule it instead.” |
+| Cancel / release | Booking `2001` → `CANCELLED` with `cancelledAt`; toast correctly reported no waiting patient to promote |
+| FIFO promotion | Camp 1, 09:30 slot: cancelling booking `9` atomically promoted booking `2007` (`Deepa Shetty`) and moved counts from 6 booked / 3 waiting to 6 booked / 2 waiting |
+| Reschedule | Patient booking `1` moved 10:00 → 10:30 slot (`5 → 6`) and status became `CONFIRMED` |
+| Organizer | Created camp id `101`, `Railway Live Verification Camp`, 12 booking capacity / 10 physical seats; slots generated and camp visible in Manage and public lists |
+| Check-in | API check-ins `F-855031`, `E-705326`, `D-390601`, `E-449470`; booking `2002` joined the live queue |
+| Real-time sync | Live Queue TV changed 1 → 3 checked in without reload, added `D-390601`, banner `Now serving D-390601` |
+| Staff Day | Doctor roster and `Online` scanner rendered; labelled QR form submitted `E-449470` with toast `Token E-449470 joined the live waiting room.` |
+| Notifications | Real notification rows rendered with `SIMULATED` sandbox badges for Nodemailer/Fast2SMS and gateway-interceptor copy |
+| Settings | Theme, language and science-annotation controls work; `science-on` applied and reverted cleanly |
+| Admin APIs | `/api/admin/analytics`, `/api/admin/users`, `/api/admin/notifications`, `/api/admin/audit-log`, `/api/admin/reports/export.csv` all 200 |
+| Analytics UI | Live MySQL aggregates, Recharts SVG charts, `Rule-Based Statistical Heuristic — NOT Black-Box AI/ML`, CSV report section |
+| Control Room | Live camp fill board, check-in queue and staff status |
+| CSV export | Public button produced an OPTIONS 204 then authenticated GET 200 with a real `text/csv` report |
+| Concurrency page | The interactive 50-way race is demo-only; it returned 403 in strict-live production. The button is now explicitly disabled there with a test-backed explanation, so no enabled control produces a simulated/forbidden result. Server invariant remains proven locally at 10 / 40 / 0 |
+| Console | Fresh unauthenticated public load: 0 console errors. Intentional 401/409/403s during negative tests were expected and surfaced in-UI |
+
+Seeded demo accounts are intentionally retained for verification and must be
+changed or removed before accepting real patients:
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | `admin@cmrit.edu` | `Admin@123` |
+| Organizer | `organizer@cmrit.edu` | `Password@123` |
+| Doctor | `doctor@cmrit.edu` | `Password@123` |
+| Volunteer | `volunteer@cmrit.edu` | `Password@123` |
+| Patient | `patient@cmrit.edu` | `Password@123` |
+
+---
+
+## 7. Bugs found and fixed in this release
 
 1. Organizer staff matrix received a 403 from the admin users endpoint; organizers now
    get a minimal PII-free projection.
@@ -165,27 +229,39 @@ side-tab, decorative-grid and gradient-text cleanups.
 10. Decorative grid backgrounds, side-tab borders and gradient text were removed in
     favour of the established hairline-card system.
 11. `api.notifications(limit)` now sends the backend's supported `pageSize` parameter.
+12. The strict-live Concurrency Proof page no longer offers an enabled button that calls
+    the demo-only `/api/demo/concurrency` endpoint; it explains that the invariant is
+    covered by real MySQL tests instead.
 
 ---
 
-## 7. Remaining issues / honest limitations
+## 8. Remaining issues / honest limitations
 
-1. **No public backend or hosted MySQL** is provisioned. The GitHub Pages site therefore
-   runs the clearly labelled `DEMO · LOCAL` engine by design. It is not fake production
-   data and never claims to be a database result.
-2. **SMTP/SMS are sandbox providers** (`SMTP_HOST` blank, `SMS_PROVIDER=Fast2SMS Sandbox`).
-   Delivery attempts are recorded in `notifications_log`; no real messages are sent.
-3. **Bundle-size warning remains** for the 3D/react-three-fiber chunk (>500 kB before
+1. **Railway is on a trial** showing roughly **30 days or $5.00 left**. The public URLs
+   work now, but uninterrupted 24/7 availability needs a paid Railway plan or migration.
+   There is no custom domain: Pages uses the default `github.io` URL and the backend uses
+   the default Railway hostname. Continued operation also requires keeping the GitHub
+   variable `RENDER_API_URL` in sync with the backend origin.
+2. **Seeded demo accounts remain publicly usable** (see section 6). They exist for
+   reproducible verification, not for real patient intake; rotate/remove them before
+   production use and replace with an approved registration workflow.
+3. **SMTP/SMS are sandbox providers** (`SMTP_HOST` blank, `SMS_PROVIDER=Fast2SMS Sandbox`).
+   Delivery attempts are recorded in `notifications_log` and the UI labels them
+   `SIMULATED`; no real email or SMS is sent.
+4. **Bundle-size warning remains** for the 3D/react-three-fiber chunk (>500 kB before
    gzip). It is lazy-loaded and does not block first paint; further splitting is Phase 2.
-4. **Lighthouse performance was not benchmarked** by the available browser tool; only
-   accessibility, best practices and SEO were audited.
-5. Responsive checks were performed at the available browser viewport (785px CSS width)
+5. **Lighthouse performance was not benchmarked** by the available browser tool; only
+   accessibility, best practices and SEO were audited (1.00 / 1.00 / 1.00).
+6. Responsive checks were performed at the available browser viewport (785px CSS width)
    plus source-level media-query review; a device-emulator matrix was not available in
    this harness.
+7. The interactive zero-overbooking race is intentionally unavailable in strict-live
+   production; its result is never faked. The backend suite still proves the invariant
+   against real MySQL.
 
 ---
 
-## 8. Reproduction
+## 9. Reproduction
 
 ```bash
 # backend suite + live E2E
@@ -207,5 +283,5 @@ npm run live      # from the repository root
 
 ---
 
-_Report generated 2026-11-21 for the release hardening pass. Any new test must pass
-before the next feature ships (test-first release policy)._
+_Report generated 2026-11-21, updated 2026-11-22 with public full-stack evidence.
+Any new test must pass before the next feature ships (test-first release policy)._

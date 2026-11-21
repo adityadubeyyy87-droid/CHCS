@@ -4,7 +4,7 @@
 // implementation marks.
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
-import { api } from '../lib/api.js';
+import { api, isStrictLive } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, EmptyState, ErrorNote } from '../components/ui.jsx';
 import { Magnetic } from '../components/motion';
 
@@ -13,6 +13,7 @@ const CAPACITY = 10;
 
 export default function ConcurrencyProof() {
   const { user, toast, isOrganizer, mode } = useApp();
+  const strictLive = isStrictLive();
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [simulated, setSimulated] = useState(false);
@@ -97,20 +98,36 @@ export default function ConcurrencyProof() {
             <div className="row-actions">
               <Badge tone={mode === 'live' ? 'ok' : 'sim'}>{mode === 'live' ? 'LIVE · MySQL' : 'SIMULATED · local engine'}</Badge>
               <Magnetic intensity={0.4}>
-                <Button icon="zap" loading={running} disabled={running} onClick={runRace}>
-                  {running ? 'Racing…' : 'Run 50-way race'}
+                <Button
+                  icon="zap"
+                  loading={running}
+                  disabled={running || strictLive}
+                  onClick={runRace}
+                  aria-describedby={strictLive ? 'race-proof-note' : undefined}
+                >
+                  {running ? 'Racing…' : strictLive ? 'Race disabled in production' : 'Run 50-way race'}
                 </Button>
               </Magnetic>
             </div>
           }
         />
         {error && <ErrorNote>{error}</ErrorNote>}
+        {strictLive && (
+          <p id="race-proof-note" className="muted">
+            This 50-way race is a demo-only endpoint and is disabled in strict-live
+            production. The same invariant is proven by the backend test suite
+            (10 confirmed / 40 waitlisted / 0 violations) and the local demo build;
+            no simulated result is ever shown as a database result here.
+          </p>
+        )}
         {!result && (
-          <EmptyState icon="zap" title="Ready to demonstrate zero overbooking">
-            Press <strong>Run 50-way race</strong>. {mode === 'live'
-              ? 'The server creates 50 distinct patients and fires 50 concurrent SELECT ... FOR UPDATE transactions against one capacity-10 slot.'
-              : 'The local engine deterministically mirrors the 50-way race — this is a simulation, not a database transaction.'}
-            {' '}Exactly 10 seats are confirmed; the other 40 join a FIFO waitlist. Zero capacity violations.
+          <EmptyState icon="zap" title={strictLive ? 'Production proof is test-backed' : 'Ready to demonstrate zero overbooking'}>
+            {strictLive
+              ? 'The zero-overbooking invariant is enforced by SELECT ... FOR UPDATE row locks and verified in CI against real MySQL. Run the interactive race in the local demo build.'
+              : <>Press <strong>Run 50-way race</strong>. {mode === 'live'
+                ? 'The server creates 50 distinct patients and fires 50 concurrent SELECT ... FOR UPDATE transactions against one capacity-10 slot.'
+                : 'The local engine deterministically mirrors the 50-way race — this is a simulation, not a database transaction.'}
+                {' '}Exactly 10 seats are confirmed; the other 40 join a FIFO waitlist. Zero capacity violations.</>}
           </EmptyState>
         )}
       </Card>

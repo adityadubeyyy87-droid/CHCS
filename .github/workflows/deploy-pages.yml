@@ -31,7 +31,8 @@ jobs:
       - name: Build static frontend
         # No repository variable set → the site runs the clearly-labelled DEMO
         # engine and can never go black. Set RENDER_API_URL (a repo variable)
-        # to your backend URL to make the same site use LIVE mode when it is up.
+        # to your backend URL to make this a strict-live production build: it
+        # uses LIVE mode and never substitutes simulated data if the API fails.
         env:
           VITE_API_BASE: ${{ vars.RENDER_API_URL }}
         run: npm run build
