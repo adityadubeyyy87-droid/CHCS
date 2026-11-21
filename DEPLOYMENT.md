@@ -341,14 +341,12 @@ For real MySQL mode, set `DEMO_MODE=false` in `backend/.env` (and make sure
 ### 16.1 Recommended: GitHub Pages (free forever, no card, no black screen)
 
 1. Push this repo to GitHub (branch `main`, `master` or `phase1-verify-hardening`).
-2. GitHub → repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-   (This one switch must be done by a repo admin; the workflow token cannot enable Pages.)
-   If you prefer not to use Actions, choose **Deploy from a branch → `gh-pages` / root**
-   instead — a ready-built `gh-pages` branch is already published.
-3. With the Actions source, `.github/workflows/deploy-pages.yml` builds `frontend/` and
-   publishes `frontend/dist/` automatically on every push.
-4. Your public URL appears under **Settings → Pages**, e.g.
-   `https://adityadubeyyy87-droid.github.io/CHCS/`.
+2. `.github/workflows/deploy-pages.yml` builds `frontend/` and force-pushes the
+   result to the `gh-pages` branch. GitHub Pages serves that branch, so there is
+   **no manual Settings → Pages switch** to make. (A ready-built `gh-pages`
+   branch is already published as a fallback.)
+3. Every later push to a source branch rebuilds and republishes the site automatically.
+4. Public URL: `https://adityadubeyyy87-droid.github.io/CHCS/`.
 
 Why this never goes black:
 

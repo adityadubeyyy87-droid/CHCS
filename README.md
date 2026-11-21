@@ -49,10 +49,10 @@ With PM2 already running, use `npm run dev -- --frontend-only` for Vite hot relo
 against the permanent backend. If the portable demo datadir ever fails to boot,
 `npm run mysql:start` rebuilds it and reseeds the demo data automatically.
 
-Free public link: push to GitHub → **Settings → Pages → Source: GitHub Actions**
-(one admin click), or use the prebuilt `gh-pages` branch with **Deploy from a branch**.
-The included workflow publishes the UI at `https://<you>.github.io/CHCS/` and it
-falls back to the labelled DEMO engine if no backend is configured, so it never goes black.
+Free public link: push to GitHub. The included workflow builds the UI and publishes
+the `gh-pages` branch, so GitHub Pages needs no extra configuration. It is live at
+`https://<you>.github.io/CHCS/` and falls back to the labelled DEMO engine if no
+backend is configured, so it never goes black.
 See `DEPLOYMENT.md` sections 14–16 for the full guide.
 
 ### Mode A — real MySQL + Socket.io (manual)
