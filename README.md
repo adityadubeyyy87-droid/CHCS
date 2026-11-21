@@ -42,7 +42,12 @@ npm run live          # fresh UI build, then full version at http://localhost:40
 npm run mysql:start   # start local MySQL 8 → LIVE · MySQL mode
 npm test              # backend suite
 npm run pm2:start     # keep :4000 alive forever (after: npm i -g pm2, pm2 startup)
+npm run pm2:stop      # free :4000 before using the hot-reload dev command
 ```
+
+With PM2 already running, use `npm run dev -- --frontend-only` for Vite hot reload
+against the permanent backend. If the portable demo datadir ever fails to boot,
+`npm run mysql:start` rebuilds it and reseeds the demo data automatically.
 
 Free public link: push to GitHub → **Settings → Pages → Source: GitHub Actions**
 (one admin click), or use the prebuilt `gh-pages` branch with **Deploy from a branch**.

@@ -48,6 +48,17 @@ async function call(path, { method = 'GET', body, qs } = {}) {
 
 /** Detect backend availability once at startup (and via retry()). */
 export async function detectMode() {
+  // A production build with no API base is a static-only deployment
+  // (GitHub Pages / Netlify / Vercel). Probing `/api/health` there would
+  // always 404 and paint a red console error even though DEMO is the
+  // expected mode. Skip the probe and declare DEMO immediately. localhost
+  // still probes, so the full build served by Express stays in LIVE mode.
+  const localHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
+  if (!BASE && import.meta.env.PROD && !localHost) {
+    mode = 'demo';
+    onModeChange(mode);
+    return mode;
+  }
   try {
     const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout ? AbortSignal.timeout(2500) : undefined });
     const data = await res.json();

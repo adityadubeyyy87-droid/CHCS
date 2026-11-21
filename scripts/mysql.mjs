@@ -42,16 +42,26 @@ function portOpen(port = 3306, host = '127.0.0.1') {
   });
 }
 
-function cleanOrphanUndo() {
-  // MySQL 8.4 on Windows can leave an orphan undo_002 (with no undo_001) after
-  // an unclean shutdown. InnoDB then refuses to boot. Safe to clear because the
-  // portable data directory is only ever used for this local demo database.
-  const undo2 = path.join(PORTABLE_DATA, 'undo_002');
-  if (!fs.existsSync(undo2)) return false;
-  fs.rmSync(undo2, { force: true });
-  fs.rmSync(path.join(PORTABLE_DATA, 'undo_2_trunc.log'), { force: true });
-  console.log('Cleared a stale InnoDB undo file and retrying.');
+function rebuildPortable(mysqld) {
+  // The portable datadir holds only seeded demo data. If InnoDB refuses to
+  // boot, the safe fix is a fresh datadir (not deleting individual undo
+  // files, which can orphan a tablespace ID). Keep the old one for forensics.
+  if (!fs.existsSync(PORTABLE_DATA)) return false;
+  const backup = `${PORTABLE_DATA}.corrupt-${Date.now()}`;
+  fs.renameSync(PORTABLE_DATA, backup);
+  console.log(`Moved unbootable data to ${path.basename(backup)} and rebuilding a fresh demo database.`);
+  initializePortable(mysqld);
   return true;
+}
+
+function seedPortable() {
+  const adjacentNpmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const cmd = fs.existsSync(adjacentNpmCli) ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+  const args = fs.existsSync(adjacentNpmCli)
+    ? [adjacentNpmCli, '--prefix', path.join(ROOT, 'backend'), 'run', 'db:setup']
+    : ['--prefix', path.join(ROOT, 'backend'), 'run', 'db:setup'];
+  const result = spawnSync(cmd, args, { stdio: 'inherit', shell: !fs.existsSync(adjacentNpmCli) });
+  if (result.status !== 0) throw new Error('Database seeding failed');
 }
 
 function initializePortable(mysqld) {
@@ -65,7 +75,12 @@ function initializePortable(mysqld) {
     '--console',
   ], { stdio: 'inherit' });
   if (result.status !== 0) throw new Error('MySQL initialisation failed');
-  cleanOrphanUndo();
+
+  // MySQL 8.4 on Windows writes undo_002 during --initialize-insecure, then
+  // tries to create the same tablespace again on first boot. Remove it ONCE
+  // here (never on later boots) so InnoDB can create a consistent pair.
+  fs.rmSync(path.join(PORTABLE_DATA, 'undo_002'), { force: true });
+  fs.rmSync(path.join(PORTABLE_DATA, 'undo_2_trunc.log'), { force: true });
 }
 
 async function boot(mysqld, args, timeoutMs = 16000) {
@@ -95,11 +110,18 @@ async function start() {
   console.log(`Starting ${mysqld}${portable ? ' with the portable data directory' : ini ? ` with ${ini}` : ''} ...`);
   if (await boot(mysqld, args)) { console.log('MySQL is up on :3306.'); return; }
 
-  if (portable && cleanOrphanUndo() && await boot(mysqld, args)) {
-    console.log('MySQL is up on :3306.');
+  if (portable && rebuildPortable(mysqld) && await boot(mysqld, args)) {
+    console.log('MySQL is up on :3306 with a fresh demo database.');
+    try {
+      seedPortable();
+      console.log('Demo data reseeded. Ready for LIVE · MySQL.');
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
     return;
   }
-  console.error('MySQL did not start. Run the mysqld command printed by the backend log manually to see why.');
+  console.error('MySQL did not start. Check the mysqld --console output for the exact InnoDB error.');
   process.exit(1);
 }
 

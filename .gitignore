@@ -38,3 +38,4 @@ yarn-error.log*
 *.err
 *.pid
 backend/.mysql-data/
+backend/.mysql-data.corrupt-*/
