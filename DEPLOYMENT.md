@@ -226,7 +226,7 @@ Before going live:
 - [ ] `.env` is not committed to version control
 - [ ] Test patient registration and login
 - [ ] Test booking flow end-to-end
-- [ ] Run `npm test` — all 67 backend tests pass
+- [ ] Run `npm test` — all 79 backend tests pass (see `docs/TEST_REPORT.md`)
 
 ---
 
@@ -238,6 +238,26 @@ cd frontend && npm run build
 cd ../backend && npm start
 # Open http://localhost:4000 — the backend serves the built frontend
 ```
+
+---
+
+## 13. Current Verification Status (2026-11-21)
+
+The full backend suite is green (**79/79 tests**, see `docs/TEST_REPORT.md`) and the live
+end-to-end harness passes **43/43 checks** (`backend/scripts/verify-live.js`).
+
+**Live deployment has not been executed from this environment.** No public hosting
+credentials or DNS/domain ownership were available, so no public URL has been produced.
+
+To publish:
+
+1. Provision a hosted MySQL instance (RDS / Azure / DigitalOcean / PlanetScale-style managed).
+2. Set production env vars (see section 3) and run `database/schema.sql`.
+3. Deploy the backend (Render / Railway / Fly / AWS Elastic Beanstalk / a VPS with PM2).
+4. Deploy the frontend either from the backend (`frontend/dist/` served at `/`) or a static CDN
+   with `VITE_API_BASE=https://<backend-host>/api`.
+5. Add `https://` to `FRONTEND_ORIGIN` and TLS termination.
+6. Run the verification checklist above and open the public URL.
 
 ---
 
