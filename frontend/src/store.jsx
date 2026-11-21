@@ -48,6 +48,10 @@ export function AppProvider({ children }) {
   useEffect(() => {
     setModeListener(setMode);
     detectMode().then((m) => {
+      // A child page can trigger the memoised probe before this listener is
+      // registered. Adopt the resolved value directly so the chip and every
+      // `simulated` badge always reflect the mode the API actually used.
+      setMode(m);
       if (m === 'live') {
         try {
           const socket = io(SOCKET_BASE || undefined, {

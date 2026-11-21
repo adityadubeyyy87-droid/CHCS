@@ -232,6 +232,10 @@ changed or removed before accepting real patients:
 12. The strict-live Concurrency Proof page no longer offers an enabled button that calls
     the demo-only `/api/demo/concurrency` endpoint; it explains that the invariant is
     covered by real MySQL tests instead.
+13. A child page could trigger the memoised health probe before the app provider
+    registered its mode listener, leaving a live build labelled `DEMO` while live data
+    loaded. `AppProvider` now adopts the resolved mode directly, so the chip and every
+    `simulated` badge match the actual API path.
 
 ---
 
