@@ -208,6 +208,9 @@ body.landing-on {
 .ln-links { display: flex; align-items: center; gap: 6px; }
 .ln-navlink {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
   padding: 8px 12px;
   border: 0;
   background: none;
@@ -275,7 +278,7 @@ body.landing-on {
   white-space: nowrap;
 }
 .ln-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.ln-btn--sm { padding: 9px 15px; font-size: 12.5px; }
+.ln-btn--sm { min-height: 40px; padding: 8px 15px; font-size: 12.5px; }
 .ln-btn--md { padding: 11px 18px; font-size: 13.5px; }
 .ln-btn--lg { padding: 15px 24px; font-size: 14.5px; }
 
@@ -438,6 +441,7 @@ body.landing-on {
   align-items: center;
   gap: 12px;
   margin-top: 40px;
+  min-height: 44px;
   padding: 4px 0;
   border: 0;
   background: none;
@@ -987,7 +991,9 @@ body.landing-on {
   margin: 0 0 10px;
 }
 .ln-footer-link {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 40px;
   border: 0;
   background: none;
   padding: 4px 0;

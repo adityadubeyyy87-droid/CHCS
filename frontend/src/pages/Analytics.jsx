@@ -107,28 +107,28 @@ export default function Analytics() {
       {kpis && (
         <>
           <div className="bento kpi-bento">
-            <InView once>
+            <InView once className="kpi-slot">
               <Card className="kpi-card">
                 <small className="kpi-label">Total registered</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.totalRegistered} /></strong>
                 <span className="muted">community members on the platform</span>
               </Card>
             </InView>
-            <InView once delay={80}>
+            <InView once delay={80} className="kpi-slot">
               <Card className="kpi-card">
                 <small className="kpi-label">Attendance rate</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.attendanceRate} decimals={1} format={(v) => v.toFixed(1)} /></strong>%
                 <span className="muted">of completed screenings attended</span>
               </Card>
             </InView>
-            <InView once delay={160}>
+            <InView once delay={160} className="kpi-slot">
               <Card className="kpi-card">
                 <small className="kpi-label">Waitlist auto-promotions</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.waitlistPromotions} /></strong>
                 <span className="muted">seats rescued by FIFO fairness</span>
               </Card>
             </InView>
-            <InView once delay={240}>
+            <InView once delay={240} className="kpi-slot">
               <Card className="kpi-card">
                 <small className="kpi-label">No-show rate</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.noShowRate} decimals={1} format={(v) => v.toFixed(1)} /></strong>%
@@ -147,7 +147,7 @@ export default function Analytics() {
           </Sci>
 
           <div className="bento chart-bento">
-            <InView once>
+            <InView once className="bento-2 chart-slot">
               <Card className="bento-2">
                 <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone="sim">Seeded demo data</Badge>} />
                 <div className="chart-box">
@@ -165,7 +165,7 @@ export default function Analytics() {
                 </div>
               </Card>
             </InView>
-            <InView once delay={100}>
+            <InView once delay={100} className="bento-2 chart-slot">
               <Card className="bento-2">
                 <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone="sim">Seeded demo data</Badge>} />
                 <div className="chart-box">
@@ -183,7 +183,7 @@ export default function Analytics() {
                 </div>
               </Card>
             </InView>
-            <InView once delay={200}>
+            <InView once delay={200} className="chart-slot">
               <Card>
                 <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone="sim">Seeded demo data</Badge>} />
                 <div className="chart-box">

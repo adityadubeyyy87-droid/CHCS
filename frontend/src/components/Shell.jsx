@@ -6,6 +6,7 @@ import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { cls, relTime } from '../lib/format.js';
 import { Badge, Button, Icon } from './ui.jsx';
+import DemoController from './DemoController.jsx';
 
 const NAV = [
   { id: 'overview', icon: 'home', labelKey: 'nav.overview', label: 'Overview', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
@@ -32,7 +33,6 @@ export default function Shell({ children }) {
   const { user, page, setPage: navigate, t, lang, setLang, theme, setTheme, science, setScience, mode, unread, setUnread, gateway, drawerOpen, setDrawerOpen, screenshotMode, setScreenshotMode } = app;
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [notifOpen, setNotifOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
   const searchRef = useRef(null);
@@ -46,7 +46,7 @@ export default function Shell({ children }) {
         e.preventDefault();
         searchRef.current?.focus();
       }
-      if (e.key === 'Escape') { setMenuOpen(false); setNotifOpen(false); setResults(null); }
+      if (e.key === 'Escape') { setMenuOpen(false); setDrawerOpen(false); setResults(null); }
       if (e.key === 'x' && e.altKey) setCollapsed((c) => !c);
     };
     window.addEventListener('keydown', onKey);
@@ -90,8 +90,9 @@ export default function Shell({ children }) {
             <button
               key={item.id}
               className={cls('nav-item', page === item.id && 'active')}
-              onClick={() => { navigate(item.id); setNotifOpen(false); }}
+              onClick={() => { navigate(item.id); setDrawerOpen(false); }}
               title={collapsed ? item.label : undefined}
+              aria-label={item.label}
               aria-current={page === item.id ? 'page' : undefined}
             >
               <Icon name={item.icon} />
@@ -122,6 +123,9 @@ export default function Shell({ children }) {
 
           <form className="search" onSubmit={runSearch} role="search">
             <Icon name="search" size={15} />
+            <button type="button" className="search-toggle" aria-label="Open global search" onClick={() => searchRef.current?.focus()}>
+              <Icon name="search" size={16} />
+            </button>
             <input ref={searchRef} placeholder={t('label.search')} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Global search" />
             <kbd>/</kbd>
             {results && (
@@ -138,15 +142,16 @@ export default function Shell({ children }) {
           </form>
 
           <div className="topbar-actions">
+            <DemoController />
             <Badge tone={mode === 'live' ? 'ok' : 'sim'} className="mode-badge">
               {mode === 'live' ? 'LIVE · MySQL' : 'DEMO'}
             </Badge>
 
-            <button className={cls('icon-btn', science && 'active')} onClick={() => setScience(!science)} aria-pressed={science} title="Biophilic Science X-Ray — annotate the science behind the interface">
+            <button className={cls('icon-btn', science && 'active')} onClick={() => setScience(!science)} aria-pressed={science} aria-label="Toggle science annotations" title="Biophilic Science X-Ray — annotate the science behind the interface">
               <Icon name="flask" />
             </button>
 
-            <button className="icon-btn" onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} title="English / ಕನ್ನಡ">
+            <button className="icon-btn" onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} aria-label="Switch language" title="English / ಕನ್ನಡ">
               <span className="lang-chip">{lang === 'en' ? 'EN' : 'ಕನ್'}</span>
             </button>
 

@@ -111,6 +111,12 @@ export function LiveQueuePage() {
     }).catch(() => setCamps([]));
   }, []);
 
+  useEffect(() => {
+    const sync = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+
   const goFullscreen = () => {
     const el = document.getElementById('tv-stage');
     if (el?.requestFullscreen) el.requestFullscreen();

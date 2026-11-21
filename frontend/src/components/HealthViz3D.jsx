@@ -3,6 +3,7 @@
 // transitions and hover states. Built with React Three Fiber.
 import React, { useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
 const METRICS = [
@@ -56,7 +57,6 @@ export default function HealthViz3D({ width = 400, height = 300 }) {
 
         {/* Grid floor */}
         <gridHelper args={[20, 20, 0x6ee7b7, 0x10b981]} position={[0, -0.01, 0]} />
-        <gridMaterial transparent={true} opacity={0.1} />
 
         {/* Bar columns */}
         {METRICS.map((m, i) => {

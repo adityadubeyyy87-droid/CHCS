@@ -1,10 +1,9 @@
 // App.jsx — top-level wiring: global provider → auth gate → shell + pages.
-// Page transitions (clip-path reveal), DemoController float, science-on body
+// Page transitions (clip-path reveal), top-bar DemoController, science-on body
 // class, CommandPalette (⌘K), and global audio context start on first click.
 import React, { Suspense, lazy } from 'react';
 import { AppProvider, useApp } from './store.jsx';
 import Shell from './components/Shell.jsx';
-import DemoController from './components/DemoController.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
 import Landing from './pages/Landing.jsx';
 import Login from './pages/Login.jsx';
@@ -37,7 +36,7 @@ const PAGES = {
 };
 
 function Routes() {
-  const { user, page, science } = useApp();
+  const { user, page, science, screenshotMode, setScreenshotMode } = useApp();
   const [prevPage, setPrevPage] = React.useState(page);
   const [transitioning, setTransitioning] = React.useState(false);
   const [audioStarted, setAudioStarted] = React.useState(false);
@@ -59,6 +58,13 @@ function Routes() {
   }, [science]);
 
   React.useEffect(() => {
+    if (!screenshotMode) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setScreenshotMode(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [screenshotMode, setScreenshotMode]);
+
+  React.useEffect(() => {
     if (page === prevPage) return;
     setTransitioning(true);
     const t = setTimeout(() => {
@@ -75,6 +81,11 @@ function Routes() {
 
   return (
     <>
+      {screenshotMode && (
+        <button className="screenshot-exit" onClick={() => setScreenshotMode(false)} aria-label="Exit clean presentation mode">
+          Exit clean mode <kbd>Esc</kbd>
+        </button>
+      )}
       <div className={`page-transition ${transitioning ? 'open' : ''}`} aria-hidden="true" />
       <Shell>
         <div className="page-view" style={{ opacity: transitioning ? 0 : 1 }}>
@@ -84,7 +95,6 @@ function Routes() {
           </Suspense>
         </div>
       </Shell>
-      <DemoController />
     </>
   );
 }

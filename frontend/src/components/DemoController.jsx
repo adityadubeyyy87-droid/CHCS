@@ -1,8 +1,8 @@
-// DemoController.jsx — persistent presentation controller (bottom-left).
+// DemoController.jsx — presentation controller docked in the top bar.
 // Four repeatable demo scenarios + utilities. In live mode, admin-level ops
 // use the real API; in demo mode they run on the local engine and are marked
 // simulated. Every outcome is echoed into the Gateway Interceptor.
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { Badge, Button, Icon } from './ui.jsx';
@@ -27,6 +27,17 @@ export default function DemoController() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(null);
   const [last, setLast] = useState(null);
+
+  useEffect(() => {
+    const onToggle = () => setOpen((value) => !value);
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('chsc:toggle-demo', onToggle);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('chsc:toggle-demo', onToggle);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
 
   if (!user) return null; // controller appears after sign-in
 

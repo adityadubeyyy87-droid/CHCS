@@ -130,7 +130,7 @@ export default function Overview() {
 
       {(isOrganizer || user.role === 'ADMIN') && (
         <Card className={`${'entrance card-tilt'} pulse-card`}>
-          <CardHead icon="chart" title="System pulse" sub="Live aggregates from bookings & camps" actions={<Button size="sm" variant="ghost" onClick={() => {}} />} />
+          <CardHead icon="chart" title="System pulse" sub="Live aggregates from bookings & camps" actions={<Button size="sm" variant="ghost" icon="refresh" onClick={camps.reload}>Refresh</Button>} />
           <HealthViz3D className="w-full h-[260px] my-4" />
           <div className="kpi-strip entrance gap-6">
             <div className="kpi"><strong><AnimatedNumber value={camps.data?.kpis?.totalRegistered || 0} className="text-2xl font-bold" /></strong><span>Registered patients</span></div>
@@ -142,7 +142,7 @@ export default function Overview() {
         </Card>
       )}
       {isStaff && (
-        <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}>
+        <Spotlight className="duty-slot" color="rgba(16, 185, 129, 0.1)" size={500}>
           <Card className={`${'entrance card-tilt'} duty-card`}>
             <CardHead icon="stetho" title="My duty assignments" sub="Where and when you're on camp duty" />
             <div className="camp-rows">

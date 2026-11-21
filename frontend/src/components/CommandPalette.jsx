@@ -31,16 +31,17 @@ export default function CommandPalette() {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setOpen(!open);
-        if (open === true) {
-          audioStart();
-          inputRef.current?.focus();
+        const next = !open;
+        setOpen(next);
+        if (next) {
+          audioStart?.();
+          requestAnimationFrame(() => inputRef.current?.focus());
         }
       }
       if (open && e.key === 'Escape') { setOpen(false); click(); }
-      if (open && e.key === 'ArrowDown') { e.preventDefault(); setSelected((s) => (s + 1) % filtered.length); click(); }
-      if (open && e.key === 'ArrowUp') { e.preventDefault(); setSelected((s - 1 + filtered.length) % filtered.length); click(); }
-      if (open && (e.key === 'Enter')) { e.preventDefault(); run(filtered[selected]); success(); }
+      if (open && filtered.length && e.key === 'ArrowDown') { e.preventDefault(); setSelected((s) => (s + 1) % filtered.length); click(); }
+      if (open && filtered.length && e.key === 'ArrowUp') { e.preventDefault(); setSelected((s - 1 + filtered.length) % filtered.length); click(); }
+      if (open && e.key === 'Enter' && filtered.length) { e.preventDefault(); run(filtered[selected]); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -57,13 +58,16 @@ export default function CommandPalette() {
   }, []);
 
   const run = (cmd) => {
+    if (!cmd) return;
     setOpen(false);
     setQuery('');
     setSelected(0);
-    if (cmd.action === 'demo') { /* demo controller toggles itself */ }
-    else if (cmd.action === 'analytics' && !(user?.role === 'ORGANIZER' || user?.role === 'ADMIN')) { error(); return; }
+    if (cmd.action === 'demo') {
+      window.dispatchEvent(new CustomEvent('chsc:toggle-demo'));
+    } else if (cmd.action === 'analytics' && !(user?.role === 'ORGANIZER' || user?.role === 'ADMIN')) { error(); return; }
     else if ((cmd.action === 'staffDay' || cmd.action === 'liveQueue' || cmd.action === 'manage') && !(user?.role === 'DOCTOR' || user?.role === 'VOLUNTEER' || user?.role === 'ORGANIZER' || user?.role === 'ADMIN')) { error(); return; }
     else setPage(cmd.action);
+    success();
   };
 
   if (!open) return null;
@@ -74,9 +78,8 @@ export default function CommandPalette() {
       role="dialog"
       aria-modal="true"
       aria-label="Command palette"
-      onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
     >
-      <div className="fixed inset-0 bg-black/50" />
+      <button type="button" className="fixed inset-0 bg-black/50 cursor-default" aria-label="Close command palette" onClick={() => setOpen(false)} />
       <div className="relative z-[201] w-full max-w-lg mx-4 rounded-2xl shadow-2xl border border-white/10 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
         <div className="p-5 border-b border-white/5">
           <div className="flex items-center gap-3">
@@ -93,7 +96,7 @@ export default function CommandPalette() {
             <input
               ref={inputRef}
               autoFocus
-              className="w-full pl-10 pr-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all"
+              className="w-full pl-10 pr-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition"
               placeholder="Search camps, pages, actions…"
               value={query}
               onChange={(e) => { setQuery(e.target.value); setSelected(0); click(); }}
@@ -113,8 +116,8 @@ export default function CommandPalette() {
                 return (
                   <button
                     key={cmd.key}
-                    onClick={() => { if (allowed) { run(cmd); success(); } else { error(); } }}
-                    className={`w-full flex items-center gap-3 px-4 py-3 text-left rounded-lg transition-all ${
+                    onClick={() => { if (allowed) run(cmd); else error(); }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 text-left rounded-lg transition ${
                       i === selected ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-500/30' : 'text-slate-300 hover:bg-white/5 hover:border-white/10'
                     } ${!allowed ? 'opacity-50' : ''}`}
                     disabled={!allowed}

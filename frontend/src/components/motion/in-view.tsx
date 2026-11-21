@@ -11,6 +11,7 @@ import {
 
 export type InViewProps = {
   children: ReactNode;
+  className?: string;
   variants?: {
     hidden: Variant;
     visible: Variant;
@@ -19,6 +20,7 @@ export type InViewProps = {
   viewOptions?: UseInViewOptions;
   as?: React.ElementType;
   once?: boolean;
+  style?: React.CSSProperties;
 };
 
 const defaultVariants = {
@@ -28,11 +30,13 @@ const defaultVariants = {
 
 export function InView({
   children,
+  className,
   variants = defaultVariants,
   transition = { duration: 0.6, ease: 'easeOut' },
   viewOptions,
   as = 'div',
   once = true,
+  style,
 }: InViewProps) {
   const ref = useRef(null);
   const isInView = useInView(ref, viewOptions);
@@ -43,6 +47,8 @@ export function InView({
   return (
     <MotionComponent
       ref={ref}
+      className={className}
+      style={style}
       initial='hidden'
       animate={(isInView || (!once && isViewed)) ? 'visible' : 'hidden'}
       variants={variants}
