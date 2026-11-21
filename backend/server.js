@@ -33,6 +33,7 @@ const { parsePagination, buildPagination } = require('./lib/pagination');
 const { createLimiters } = require('./lib/limits');
 const { createProviders } = require('./lib/providers');
 const remindersEngine = require('./lib/reminders');
+const { dbConnectionOptions } = require('./lib/db-config');
 const {
   parseTrustProxy,
   computeDemoAvailability,
@@ -71,19 +72,7 @@ class ApiError extends Error {
   }
 }
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'community_health_scheduler',
-  waitForConnections: true,
-  connectionLimit: Number(process.env.DB_POOL_SIZE || 20),
-  queueLimit: 0,
-  enableKeepAlive: true,
-  decimalNumbers: true,
-  timezone: 'local',
-});
+const pool = mysql.createPool(dbConnectionOptions());
 
 const app = express();
 // TRUST_PROXY is opt-in: false by default, 'loopback' / hop count / IP list when
@@ -1025,8 +1014,8 @@ app.get('/api/health', async (_req, res) => {
   } catch (error) {
     dbVersion = error.code || error.message;
   }
-  res.json({
-    ok: true,
+  res.status(db ? 200 : 503).json({
+    ok: db,
     service: 'CHSC API',
     demoMode: DEMO_MODE,
     database: db ? 'connected' : 'offline',

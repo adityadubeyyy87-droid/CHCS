@@ -3,6 +3,11 @@
 // real database result: every Mode B result carries `simulated: true` and
 // the store displays the operating mode at all times.
 const BASE = import.meta.env.VITE_API_BASE || '';
+// When a real backend origin is explicitly injected into a production build,
+// never substitute the local engine if that backend is unavailable. The app
+// must surface the real error instead of presenting simulated data as live.
+const STRICT_LIVE = Boolean(BASE) && Boolean(import.meta.env.PROD);
+export const isStrictLive = () => STRICT_LIVE;
 let token = localStorage.getItem('chsc_token') || null;
 let mode = 'connecting'; // 'connecting' | 'live' | 'demo'
 let onModeChange = () => {};
@@ -83,9 +88,12 @@ export function detectMode() {
       });
       const text = await res.text();
       const data = text ? JSON.parse(text) : null;
-      mode = data?.database === 'connected' ? 'live' : 'demo';
+      mode = data?.database === 'connected' || STRICT_LIVE ? 'live' : 'demo';
     } catch {
-      mode = 'demo';
+      // In strict-live deployments a failed probe must not activate the demo
+      // engine. Keep the intended live mode and let individual API calls show
+      // the real network error to the user.
+      mode = STRICT_LIVE ? 'live' : 'demo';
     }
     onModeChange(mode);
     return mode;
@@ -111,7 +119,7 @@ async function withFallback(liveFn, engineFn) {
       // Only fall back to the demo engine on a connection failure (no HTTP
       // status = server unreachable). Surface real API errors (4xx/5xx) so
       // they are never silently masked as a demo result.
-      if (err.status !== undefined) throw err;
+      if (STRICT_LIVE || err.status !== undefined) throw err;
       mode = 'demo';
       onModeChange(mode);
     }

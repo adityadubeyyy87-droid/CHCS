@@ -3,7 +3,7 @@
 // theme toggle, science X-ray toggle, profile menu, toasts, mode indicator.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
-import { api } from '../lib/api.js';
+import { api, isStrictLive } from '../lib/api.js';
 import { cls, relTime } from '../lib/format.js';
 import { Badge, Button, Icon } from './ui.jsx';
 import DemoController from './DemoController.jsx';
@@ -152,7 +152,7 @@ export default function Shell({ children }) {
           </form>
 
           <div className="topbar-actions">
-            <DemoController />
+            {!isStrictLive() && <DemoController />}
             <Badge tone={mode === 'live' ? 'ok' : 'sim'} className="mode-badge">
               {mode === 'live' ? 'LIVE · MySQL' : 'DEMO'}
             </Badge>

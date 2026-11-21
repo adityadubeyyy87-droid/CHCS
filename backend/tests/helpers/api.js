@@ -115,7 +115,15 @@ async function createCampFixture(options = {}) {
   const { startsInHours = 72, durationMinutes = 60, campDate, startTime, endTime } = options;
   const startsAt = new Date(Date.now() + startsInHours * 3600 * 1000);
   startsAt.setSeconds(0, 0);
-  const endsAt = new Date(startsAt.getTime() + durationMinutes * 60 * 1000);
+  let endsAt = new Date(startsAt.getTime() + durationMinutes * 60 * 1000);
+
+  // The camps table requires end_time > start_time on the same calendar day.
+  // Near midnight a normal "now + N hours" fixture would wrap to 00:xx and
+  // violate that check, so move such fixtures to a deterministic morning slot.
+  if (localTime(endsAt) <= localTime(startsAt)) {
+    startsAt.setHours(8, 0, 0, 0);
+    endsAt = new Date(startsAt.getTime() + durationMinutes * 60 * 1000);
+  }
 
   // Explicit times make time-sensitive assertions (e.g. reminder ordering)
   // deterministic regardless of the wall-clock hour the suite is run at.

@@ -2,7 +2,7 @@
 // InView staggered form entries, Magnetic buttons.
 import React, { Suspense, lazy, useState } from 'react';
 import { useApp } from '../store.jsx';
-import { api } from '../lib/api.js';
+import { api, isStrictLive } from '../lib/api.js';
 import { Badge, Button, Field, Icon, Input, Select, Sci, Skeleton } from '../components/ui.jsx';
 
 const Hero3D = lazy(() => import('../components/Hero3D.jsx'));
@@ -156,7 +156,7 @@ export default function Login() {
             </InView>
           )}
 
-          <div className="auth-demo mt-8">
+          {!isStrictLive() && <div className="auth-demo mt-8">
             <p className="field-label mb-4">
               {mode === 'live' ? 'One-click demo sessions (seeded MySQL accounts)' : 'One-click demo sessions (local engine)'}
             </p>
@@ -175,7 +175,7 @@ export default function Login() {
             <small className="muted">Mode {mode === 'live' ? 'A' : 'B'} · {mode === 'live' ? 'real MySQL backend connected' : 'backend offline — the local demo engine is active'}.
               <button className="linkish" onClick={() => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light')}>Theme</button>
             </small>
-          </div>
+          </div>}
         </div>
       </main>
     </div>

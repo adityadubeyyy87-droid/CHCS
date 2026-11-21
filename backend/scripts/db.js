@@ -5,7 +5,8 @@
  * Local database helper.
  *
  *   node scripts/db.js start     start the portable MySQL instance (if present)
- *   node scripts/db.js setup     drop + recreate the schema and seed data
+ *   node scripts/db.js setup     drop + recreate the schema and seed data (local only)
+ *   node scripts/db.js setup-production  idempotent hosted schema bootstrap
  *   node scripts/db.js migrate   apply database/migrations/*.sql in order
  *
  * The portable MySQL lives in %LOCALAPPDATA%\chsc-mysql (or MYSQL_HOME).
@@ -16,6 +17,7 @@ const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
 const mysql = require('mysql2/promise');
+const { dbConnectionOptions } = require('../lib/db-config');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
@@ -26,14 +28,7 @@ const MYSQL_HOME =
 const MYSQL_VERSION = process.env.MYSQL_VERSION || 'mysql-8.0.44-winx64';
 
 function connectionOptions(extra = {}) {
-  return {
-    host: process.env.DB_HOST || '127.0.0.1',
-    port: Number(process.env.DB_PORT || 3306),
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    multipleStatements: true,
-    ...extra,
-  };
+  return dbConnectionOptions({ multipleStatements: true, ...extra });
 }
 
 function portOpen(port) {
@@ -112,6 +107,25 @@ async function setup() {
   }
 }
 
+async function setupProduction() {
+  const schema = fs.readFileSync(path.join(ROOT, 'database', 'schema-production.sql'), 'utf8');
+  const conn = await mysql.createConnection(connectionOptions());
+  try {
+    await conn.query(schema);
+    const [rows] = await conn.query(
+      `SELECT
+         (SELECT COUNT(*) FROM users) AS users,
+         (SELECT COUNT(*) FROM camps) AS camps,
+         (SELECT COUNT(*) FROM slots) AS slots,
+         (SELECT COUNT(*) FROM bookings) AS bookings,
+         (SELECT COUNT(*) FROM reminders) AS reminders`,
+    );
+    console.log('Production schema verified:', rows[0]);
+  } finally {
+    await conn.end();
+  }
+}
+
 async function migrate() {
   const dir = path.join(ROOT, 'database', 'migrations');
   const files = fs
@@ -140,7 +154,7 @@ async function migrate() {
 }
 
 const command = process.argv[2];
-const commands = { start, setup, migrate };
+const commands = { start, setup, 'setup-production': setupProduction, migrate };
 
 if (!commands[command]) {
   console.error(`Usage: node scripts/db.js <${Object.keys(commands).join('|')}>`);
