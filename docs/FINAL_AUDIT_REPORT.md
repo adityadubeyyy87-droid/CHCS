@@ -264,3 +264,51 @@ After the A–N report above, the `.ics` invite generator was hardened in `front
 - added 8 frontend unit tests (`frontend/tests/ics.test.mjs`) and wired them into `npm test` and CI.
 
 This does not change any A–N status. N remains blocked only on the Railway dashboard redeploy. A corrected copy of the reported invite was generated from its real fields at `C:\Users\COMPUTER WORLD\Downloads\chsc-CHSC-BLR-750882-fixed.ics`. No address or booking detail was invented.
+
+---
+
+## 8. Finalisation addendum — `11bde03`
+
+The last UI change made the camp facts, slot tiles and generated slot-plan blocks symmetric: four equal columns on desktop, two equal columns below `900px`. It touched only:
+
+- `frontend/src/index.css`
+- `frontend/src/pages/Discover.jsx`
+- `frontend/src/pages/Manage.jsx`
+
+Browser geometry was measured against live MySQL rows: equal cell widths/heights and zero horizontal overflow on both Discover and Manage. `npm test` passed 8/8, both local and hosted `RENDER_API_URL` builds passed, the design detector returned no findings, and the browser console had zero errors.
+
+Final Git state:
+
+```text
+11bde03 fix(frontend): make camp and slot blocks symmetrical
+
+refs/heads/main   11bde038a6031d1724fb373907f6ae94e17256a0
+refs/heads/master 11bde038a6031d1724fb373907f6ae94e17256a0
+```
+
+No force-push was used.
+
+Final GitHub deployment evidence:
+
+| Item | Result |
+|---|---|
+| `CHSC CI` run `45044084810` for `11bde03` | `completed` / `success` |
+| `Deploy CHSC (free public site)` run `45044084863` for `11bde03` | `completed` / `success` |
+| Published Pages entry | `assets/index-BgATRaIV.js` + `assets/index-C2NpWuvB.css` |
+| Published CSS contains symmetric layout rules | `fact-grid-4`, `repeat(var(--slot-cols,4),...)`, 4-column `.slot-plan` — all present |
+| Fresh hosted browser load | `LIVE · MySQL`, real camp rows, login screen reachable, zero console errors |
+| Hosted CORS preflight | HTTP `204`, `access-control-allow-origin: https://adityadubeyyy87-droid.github.io` |
+| Hosted Socket.io polling handshake | HTTP `200`, valid Engine.IO `sid` |
+| Hosted public camps API | HTTP `200`, real MySQL camp rows returned |
+| Backend health | HTTP `200`, `demoMode:false`, `database:connected`, `dbVersion:8.4.13`, `socket:ready` |
+
+### Final published links
+
+- App: `https://adityadubeyyy87-droid.github.io/CHCS/`
+- Repository: `https://github.com/adityadubeyyy87-droid/CHCS`
+- Commit: `https://github.com/adityadubeyyy87-droid/CHCS/commit/11bde038a6031d1724fb373907f6ae94e17256a0`
+- Backend health: `https://exemplary-strength-production-fbfcb823.up.railway.app/api/health`
+
+### Remaining honest deployment gap
+
+A–M remain **PASS**. N remains **BLOCKED** on the Railway dashboard redeploy. At final verification the Railway health endpoint still returned `permissions-policy: camera=(), microphone=(), geolocation=()`, while the committed backend unconditionally serves `camera=(self), microphone=(), geolocation=()`. The backend is live and connected to MySQL, but it is not yet running the current commit. No fake deployment success is claimed. To close N, set the Railway start command from section 5 and redeploy, then confirm the permission header listed in section 5.
