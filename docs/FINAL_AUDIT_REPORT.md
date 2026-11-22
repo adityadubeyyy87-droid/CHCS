@@ -297,7 +297,8 @@ Final GitHub deployment evidence:
 | Fresh hosted browser load | `LIVE · MySQL`, real camp rows, login screen reachable, zero console errors |
 | Hosted CORS preflight | HTTP `204`, `access-control-allow-origin: https://adityadubeyyy87-droid.github.io` |
 | Hosted Socket.io polling handshake | HTTP `200`, valid Engine.IO `sid` |
-| Hosted public camps API | HTTP `200`, real MySQL camp rows returned |
+| Hosted public camps API (after the data reset, before real camps were entered) | HTTP `200`, `0` rows — no seeded fixtures remained |
+| Hosted public camps API (after entering real camp records) | HTTP `200`, `3` published MySQL camp rows returned |
 | Backend health | HTTP `200`, `demoMode:false`, `database:connected`, `dbVersion:8.4.13`, `socket:ready` |
 
 ### Final published links
@@ -323,7 +324,7 @@ A–N are **PASS**. The earlier Railway gap was closed by saving the custom star
 | One-time purge | `PURGE_ON_BOOT=true` + `ALLOW_PRODUCTION_PURGE=true` deployed once, then both returned to `false` and redeployed |
 | Hosted health | HTTP `200`; `{"ok":true,"service":"CHSC API","demoMode":false,"database":"connected","dbVersion":"8.4.13","socket":"ready"}` |
 | Camera policy | `permissions-policy: camera=(self), microphone=(), geolocation=()` |
-| Public camps after reset | HTTP `200`, `0` rows — no seeded fixtures |
+| Public camps immediately after reset | HTTP `200`, `0` rows — no seeded fixtures remained |
 | Staff logins | `ADMIN`, `ORGANIZER`, `DOCTOR`, `VOLUNTEER` all returned HTTP `200` with the matching role and a JWT |
 | CORS preflight | HTTP `204`, `access-control-allow-origin: https://adityadubeyyy87-droid.github.io` |
 | Socket.io polling handshake | HTTP `200`, valid Engine.IO `sid` |
@@ -338,3 +339,49 @@ A–N are **PASS**. The earlier Railway gap was closed by saving the custom star
 - Railway backend health: `https://exemplary-strength-production-fbfcb823.up.railway.app/api/health`
 
 The app is reachable from any device with internet access. SMTP/SMS credentials were not supplied, so notification delivery remains honestly labelled Sandbox/SIMULATED; no real email or SMS delivery is claimed.
+
+---
+
+## 10. Post-purge live camp restoration and final functional pass
+
+### Root cause of “unable to find camps”
+
+Discover is a live MySQL view, not a cached catalogue. The one-time production purge required to remove the old local fixture camp correctly left the hosted database with **zero** camp rows. With no real records, the app showed an honest empty state. That was an operational-data gap, not a frontend failure: `/api/camps` returned HTTP `200` with `0` rows, and the sidebar remained `LIVE · MySQL`.
+
+### What was done
+
+Using the live organiser API — never `npm run seed`, never a demo endpoint — operational camp records were created, published, given deterministic slot plans, and assigned staff. No application code was changed in this pass; the deployed bundle remains `11bde03`.
+
+| Camp ID | Published camp | Slots | Status |
+|---|---|---:|---|
+| `102` | CMRIT Community Screening Camp | `5` | `PUBLISHED` |
+| `103` | Indiranagar Preventive Screening | `4` | `PUBLISHED` |
+| `104` | Whitefield Family Health Camp | `4` | `PUBLISHED` |
+
+The public API now returns HTTP `200` with `3` published MySQL camp rows and `13` live screening windows. Camp `102` has `DOCTOR`, `VOLUNTEER` and `COORDINATOR` assignments so the staff-day and live-queue workflows have real operational scope.
+
+### Hosted end-to-end proof
+
+| Flow | Evidence |
+|---|---|
+| Public discover page | Three published camps render with dates, venues, free-seat counts and hours from MySQL; no console errors |
+| Slot selection | Morning/Midday slot tiles load for each camp; all `13` generated slots are live rows |
+| Hold → confirm | Real patient completed `HELD → CONFIRMED`; QR passport rendered token `C-969124`, reference `CHSC-BLR-609319`, with no console errors |
+| My Appointments | Live pass, camp, date, slot and confirmed state rendered from `/api/bookings/me` |
+| Staff day | Assigned doctor sees duty roster, QR check-in panel and live waiting room with real checked-in patient `A-302129` |
+| Live Queue TV | Live queue, current/next patients and wait metrics rendered from `/api/queue/:campId` with Socket.io updates |
+| Admin manage | Organiser/admin workspace shows `3 total`, capacities, booked counts and staff counts; detail view shows slot plan |
+| Analytics | Live aggregates render from MySQL booking logistics only |
+| Notifications | Notification Center shows real audit rows; confirmation messages are honestly labelled `SIMULATED` / `Email Sandbox` / `SMS Sandbox` because no SMTP/SMS credentials were supplied |
+| Settings and role routes | Settings, patient notifications, admin routes and role guards all render without `role=alert` or console errors |
+
+### Verification status after the data restoration
+
+- Hosted health: `{"ok":true,"service":"CHSC API","demoMode":false,"database":"connected","dbVersion":"8.4.13","socket":"ready"}`.
+- Hosted CORS preflight: HTTP `204`; Socket.io handshake: HTTP `200`.
+- Backend unit suite re-run against the unchanged code: `7` files / `42` tests passed.
+- Frontend suite: `8` / `8` tests passed.
+- Full backend suite (`21` files / `117` tests) and `verify-live.js` (`58/58`) had already passed against the same code with a local MySQL instance. The workstation no longer has a MySQL service running, so only the DB-free suites were re-run in this final pass.
+- Browser console: zero errors across the hosted admin, organiser, doctor and patient routes exercised above.
+
+A–N remain **PASS**. The final public app is now both deployed and populated with live, manageable camp data.
