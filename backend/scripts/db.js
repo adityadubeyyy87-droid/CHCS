@@ -117,10 +117,15 @@ async function applyMigrations(conn, dbName) {
     .filter((file) => file.endsWith('.sql'))
     .sort();
   for (const file of files) {
-    // Migration 001 includes a USE statement for mysql CLI users. Re-select
-    // after every file so a hosted MYSQL_URL database is not silently abandoned.
+    // Migration 001 carries a `USE community_health_scheduler;` line for mysql
+    // CLI users, but hosted installs (Railway MYSQL_URL) name the database
+    // differently. Strip all standalone USE statements so the connection stays
+    // on the database selected below instead of switching to a non-existent one.
+    const sql = fs
+      .readFileSync(path.join(dir, file), 'utf8')
+      .replace(/^\s*USE\s+[^;]+;\s*$/gim, '');
     await conn.query(`USE \`${dbName}\``);
-    await conn.query(fs.readFileSync(path.join(dir, file), 'utf8'));
+    await conn.query(sql);
     console.log(`applied ${file}`);
   }
 }
