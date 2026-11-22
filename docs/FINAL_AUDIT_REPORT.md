@@ -249,3 +249,18 @@ After Railway redeploys, these must be rechecked against the live URL:
 ## 6. Conclusion
 
 The application code is fully strict-live, tested, committed and pushed; the frontend is deployed and verified on GitHub Pages. Every A–M finding from the pre-audit baseline has been fixed and re-tested with real MySQL output. The only remaining item is the Railway dashboard redeploy described above; no fake success or invented deployment credential is claimed.
+
+---
+
+## 7. Post-report calendar export polish
+
+After the A–N report above, the `.ics` invite generator was hardened in `frontend/src/lib/ics.js`:
+
+- added an explicit `VTIMEZONE` for `Asia/Kolkata` (IST, `+0530`) so the event stays pinned to the camp’s local time in every calendar client;
+- replaced the dangling `Venue, ` line with a clean `LOCATION` when no address exists;
+- escaped RFC 5545 text (`\\`, `;`, `,`, newlines) and folded long lines at 75 octets without splitting UTF-8 characters;
+- added honest `STATUS` mapping (`CONFIRMED`, `TENTATIVE`, `CANCELLED`) and `TRANSP:OPAQUE`;
+- made object-URL cleanup reliable in `downloadIcs()`;
+- added 8 frontend unit tests (`frontend/tests/ics.test.mjs`) and wired them into `npm test` and CI.
+
+This does not change any A–N status. N remains blocked only on the Railway dashboard redeploy. A corrected copy of the reported invite was generated from its real fields at `C:\Users\COMPUTER WORLD\Downloads\chsc-CHSC-BLR-750882-fixed.ics`. No address or booking detail was invented.

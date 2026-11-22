@@ -1,40 +1,14 @@
 // Passport.jsx — Digital Health Passport: the appointment pass with QR,
 // ICS calendar export and the Community Health Champion seal.
 // Contains no medical data by design — identity + logistics only.
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import Qr from '../lib/qr.jsx';
-import { Badge, Button, Icon, Modal } from './ui.jsx';
+import { Badge, Button, Modal } from './ui.jsx';
 import { fmtDate, fmtTime12, cls } from '../lib/format.js';
 import { useApp } from '../store.jsx';
+import { downloadIcs } from '../lib/ics.js';
 
-export function bookingToIcs(b) {
-  const date = String(b.campDate || '').slice(0, 10);
-  const [sh, sm] = String(b.startTime || '09:00').split(':');
-  const [eh, em] = String(b.endTime || '09:30').split(':');
-  const stamp = (h, m) => `${date.replace(/-/g, '')}T${h}${m}00`;
-  return [
-    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CHSC//Health Camp//EN', 'BEGIN:VEVENT',
-    `UID:${b.qrToken}@chsc.cmrit.edu`,
-    `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`,
-    `DTSTART;TZID=Asia/Kolkata:${stamp(sh, sm)}`,
-    `DTEND;TZID=Asia/Kolkata:${stamp(eh, em)}`,
-    `SUMMARY:CHSC Screening — ${b.campTitle || 'Community Health Camp'} (${b.tokenNumber})`,
-    `DESCRIPTION:Booking ${b.qrToken}. Arrive 10 minutes early with this pass. Free screening event.`,
-    `LOCATION:${b.venue || ''}, ${b.address || ''}`,
-    'BEGIN:VALARM', 'TRIGGER:-PT60M', 'ACTION:DISPLAY', 'DESCRIPTION:CHSC camp reminder', 'END:VALARM',
-    'END:VEVENT', 'END:VCALENDAR',
-  ].join('\r\n');
-}
-
-export function downloadIcs(b) {
-  const blob = new Blob([bookingToIcs(b)], { type: 'text/calendar;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `chsc-${(b.qrToken || 'pass').replace(/[^A-Z0-9-]/gi, '')}.ics`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+export { bookingToIcs, downloadIcs } from '../lib/ics.js';
 
 const CONFETTI_COLORS = ['#10b981', '#6ee7b7', '#f59e0b', '#60a5fa', '#fcd34d', '#ecfdf5'];
 const CONFETTI = Array.from({ length: 30 }, (_, i) => ({

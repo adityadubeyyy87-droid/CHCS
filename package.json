@@ -9,6 +9,7 @@
     "backend": "node scripts/dev.mjs --backend-only",
     "build": "npm --prefix frontend run build",
     "test": "npm --prefix backend test",
+    "test:frontend": "npm --prefix frontend test",
     "mysql:start": "node scripts/mysql.mjs start",
     "mysql:stop": "node scripts/mysql.mjs stop",
     "pm2:install": "npm install -g pm2",
