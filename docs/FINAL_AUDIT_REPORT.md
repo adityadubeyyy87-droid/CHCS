@@ -385,3 +385,13 @@ The public API now returns HTTP `200` with `3` published MySQL camp rows and `13
 - Browser console: zero errors across the hosted admin, organiser, doctor and patient routes exercised above.
 
 A–N remain **PASS**. The final public app is now both deployed and populated with live, manageable camp data.
+
+Final push evidence for this pass (normal, non-forced pushes only):
+
+| Item | Result |
+|---|---|
+| `master` and `main` after push | Both refs resolved to `35fb0c4ba8c25ae519a83e3485756b1614571984` at the time of verification |
+| `CHSC CI` for the final pushed commit | `45055081125` (`main`) and `45055075863` (`master`): `completed` / `success` |
+| `Deploy CHSC (free public site)` for the final pushed commit | `45055081169` (`main`): `completed` / `success`; the duplicate `master` trigger was superseded/cancelled |
+| Published Pages assets | `assets/index-BgATRaIV.js` + `assets/index-C2NpWuvB.css`; HTTP `200` |
+| Fresh hosted browser after push | Patient Discover shows all three live camps, `LIVE · MySQL`, zero `role=alert`, zero console errors |
