@@ -38,7 +38,6 @@ jobs:
       DB_NAME: community_health_scheduler
       DB_TEST_NAME: community_health_scheduler_test
       JWT_SECRET: chsc-ci-secret-not-for-production
-      DEMO_MODE: "true"
       RATE_LIMIT_DISABLED: "true"
       REMINDER_CRON: "off"
     steps:

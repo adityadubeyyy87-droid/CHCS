@@ -79,7 +79,7 @@ CHSC is a centralized web platform with four role-based dashboards:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Frontend (React 18 + Vite 5)              │
 │  Port 5173 · Hash routing · Recharts · socket.io-client      │
-│  Modes: LIVE (MySQL) / DEMO (local engine, SIMULATED badges)│
+│  Strict live only — no local engine or simulated fallback    │
 └─────────────────────────────────────────────────────────────┘
                             │ HTTPS/WSS
                             ▼
@@ -116,7 +116,7 @@ CHSC is a centralized web platform with four role-based dashboards:
 | Database | MySQL 8.4, mysql2/promise | Relational data, InnoDB row locks |
 | Scheduling | node-cron | Reminder sweeps |
 | Email | Nodemailer | SMTP or sandbox delivery |
-| SMS | Fast2SMS / mock | Sandbox SMS gateway |
+| SMS | Fast2SMS (optional) | Sandbox SMS gateway when no key is configured |
 
 ---
 
@@ -164,7 +164,7 @@ Key constraints:
 
 6. **staff_assignments** — Staff per camp with shift times and clinical load thresholds. Overlap protection via half-open interval check under row lock.
 
-7. **notifications_log** — Audit trail for every SMS/email: channel, type, recipient, provider, status (QUEUED/SENT/SIMULATED/FAILED).
+7. **notifications_log** — Audit trail for every SMS/email: channel, type, recipient, provider and delivery status. Attempts without gateway credentials are labelled Sandbox; no real delivery is claimed.
 
 8. **audit_log** — Decoded before/after snapshots for booking, staff, check-in, close-out and system expiry transitions.
 
@@ -224,7 +224,7 @@ Key constraints:
 **Storage:** MySQL 8 InnoDB with foreign keys and indexes
 **Usage:** Booking flow, waitlist, reminders, analytics, CSV export
 
-**Important distinction:** All current data is seeded demonstration data. No real patient records, hospital partnerships, or medical outcomes are collected or claimed.
+**Important distinction:** Production runs on real data only. There are no seeded patients, camps, slots or bookings in the hosted deployment; charts are empty until real records exist. No hospital partnership or medical outcome is claimed. SMTP/SMS credentials are optional and absent attempts are labelled Sandbox.
 
 ---
 
@@ -249,7 +249,7 @@ Built with Recharts on the `/analytics` page:
 4. **Hourly Utilisation** (line chart): Fill rate by hour of day
 5. **Capacity Advisor** (gauge/bullet): Recommended booking capacity vs physical capacity, with explicit "Rule-Based Statistical Heuristic — NOT Black-Box AI/ML" badge
 
-All queries run against live MySQL; simulated data is clearly tagged.
+All queries run against live MySQL. Empty result sets are shown honestly; no sample values are injected.
 
 ---
 
@@ -283,7 +283,7 @@ All queries run against live MySQL; simulated data is clearly tagged.
 
 For the review, capture these screenshots:
 
-1. **Login page** — Demo role buttons, Mode A/B indicator, theme toggle
+1. **Login page** — real registered account sign-in, live connection status, theme toggle
 2. **Discover / camp browse** — Camp cards with availability badges, 3-step booking progress
 3. **Slot selection** — Morning/Midday/Afternoon groups, travel mode + pledge, 10-minute hold button
 4. **Hold screen** — Live `mm:ss` countdown, confirm/release actions, FIFO-expiry explanation
@@ -292,7 +292,7 @@ For the review, capture these screenshots:
 7. **Manage (organizer)** — Camp CRUD, staff assignment with load warnings
 8. **Live Queue TV** — Current token, next up, average wait
 9. **Analytics** — KPI cards, bar charts, line chart, Capacity Advisor
-10. **Notifications** — Gateway Interceptor audit drawer with SIMULATED badges
+10. **Notifications** — Gateway Interceptor audit drawer with real delivery attempts and Sandbox labels where no credentials are configured
 11. **Concurrency test output** — Terminal showing 10 confirmed / 40 waitlisted / 0 overbooked
 
 ---
@@ -308,10 +308,11 @@ For the review, capture these screenshots:
 - 102/102 backend tests passing across 18 files
 
 **Limitations (honest disclosure):**
-- SMS/Email delivery is sandboxed (SIMULATED) unless SMTP/Fast2SMS credentials configured
-- Mode B (local engine) is for demo reliability; Mode A requires MySQL
+- SMTP/SMS delivery is labelled Sandbox unless gateway credentials are configured; no real delivery is claimed
+- The app requires a reachable Express + MySQL backend; there is no offline fallback
 - No real medical data is collected by design (not a limitation, but a scope boundary)
 - The Capacity Advisor is a statistical heuristic, not a clinical decision tool
+- Hosted data starts empty; no sample patients or camps are shipped in production
 
 ---
 
@@ -338,8 +339,8 @@ A: Yes. Promotion selects the lowest `position` (by `created_at, id`) under the 
 **Q3: Where is the AI/ML?**
 A: There is none, deliberately. The Capacity Advisor is a transparent closed-form heuristic: `min(ceil(C_phys/(1−p)), floor(C_phys×(1+α_max)))`, where `p` is the empirical no-show rate. It's labeled "Rule-Based Statistical Heuristic — NOT Black-Box AI/ML" on screen.
 
-**Q4: What is real vs simulated in the demo?**
-A: The sidebar mode chip and every badge indicate the mode. Mode A = real MySQL transactions, real Socket.io broadcasts. Mode B = local engine with `SIMULATED` badges and "Local Engine" provider tags. Notification delivery is sandboxed in both modes; the interceptor logs metadata either way.
+**Q4: How do you know the data is real?**
+A: There is one runtime path: API → Express → MySQL. The sidebar reports the real connection status and an outage shows an error. The interceptor logs real delivery attempts; with no SMTP/SMS credentials those attempts are labelled Sandbox and no delivery is claimed.
 
 **Q5: What personal data do you store?**
 A: Name, phone, email, age group — nothing else. No medical history, diagnosis, prescriptions, or report fields exist in the schema. Users can purge everything with one tap (DPDP-aligned erasure).
@@ -375,7 +376,7 @@ A: Passwords are hashed with bcrypt (cost 10) before storage. The `password_hash
 A: Auth: 10 failed attempts per 15 minutes keyed by `(IP, identifier)`, plus a 60-attempt per-IP backstop that counts all auth traffic. Booking: 30 requests per minute keyed by `(IP, authenticated user)`, so 50 patients behind one campus IP can all race for one seat. Global API: 300 requests per minute per IP as the account-cycling backstop. Rate limiting can be disabled for tests via `RATE_LIMIT_DISABLED=true`.
 
 **Q16: How does the frontend handle backend outage?**
-A: `api.js` probes `GET /api/health` at startup. Without a configured `VITE_API_BASE`, a failed probe falls back to `engine.js` — a local in-memory demo engine that mirrors every API response shape, with `DEMO` mode and `SIMULATED` badges. The deployed public bundle sets `VITE_API_BASE` to the Railway backend and is strictly live: it shows `LIVE · MySQL` and never substitutes simulated results when the API fails.
+A: `api.js` probes `GET /api/health` and shows the real connection state. There is no local engine: a failed request surfaces the error instead of fabricated results. The Pages build injects `VITE_API_BASE` from the required GitHub variable `RENDER_API_URL`, so the public site always targets the real Railway backend.
 
 **Q17: What is DPDP compliance in this project?**
 A: The Digital Personal Data Protection Act 2023 principle of data minimisation: only name, phone, email, age group are collected. No medical history. A one-tap purge endpoint deletes user data and releases active seats. Users are informed what is collected and why.
@@ -417,8 +418,8 @@ A: All mutations to `booked_count` happen inside the same transaction as the boo
 **Q8: What prevents a patient from booking a slot at a non-published camp?**
 A: The booking transaction checks `camp.status = 'PUBLISHED'` under the slot lock and rejects with `CAMP_NOT_OPEN` (409) otherwise.
 
-**Q9: How does the frontend know which mode it's in?**
-A: `api.js` probes `/api/health` and sets `mode` to `live` or `demo`. The store exposes `mode` to all components; the sidebar shows a visible chip and all simulated results carry `SIMULATED` badges.
+**Q9: How does the frontend show connection state?**
+A: `api.js` probes `/api/health`. The store exposes the real connection state to the sidebar, which shows `LIVE · MySQL` when connected and an honest error otherwise. There is no second mode and no simulated badge path for database results.
 
 **Q10: Why is the frontend chunk 1.78 MB?**
 A: The unminified bundle includes Three.js, Framer Motion, Recharts, and all pages in one chunk. For production, code-splitting via `import()` and `manualChunks` would reduce initial load size. This is a known optimization opportunity.
@@ -433,85 +434,89 @@ Patients can browse upcoming camps, see live slot availability, book appointment
 
 The key engineering guarantee is **zero overbooking**: every booking uses `SELECT ... FOR UPDATE` row locking on MySQL, verified by a 50-way parallel stress test where 10 seats produced exactly 10 confirmed and 40 FIFO waitlisted bookings with zero overbooked seats.
 
-All data is minimised (name, phone, email, age group only — no medical history), and the system runs in two modes: live MySQL backend or a local demo engine for reliable offline demonstrations.
+All data is minimised (name, phone, email, age group only — no medical history), and the system runs strictly against a live MySQL backend with no offline or simulated fallback.
 
 ---
 
-## 5-MINUTE DEMONSTRATION SCRIPT
+## 5-MINUTE PRESENTATION SCRIPT (real data only)
+
+Use accounts created through the real registration flow and staff accounts from the
+production bootstrap. If the database is empty, show the honest empty state and
+create a real camp/booking during the walkthrough — never inject sample rows.
 
 | Time | Action | What to show |
 |---|---|---|
-| 0:00–0:30 | Login as Patient | Show demo role buttons, Mode A (live MySQL) indicator |
-| 0:30–1:00 | Browse camps | Discover page, camp cards with availability badges |
+| 0:00–0:30 | Sign in as Patient | Real account login, live connection status |
+| 0:30–1:00 | Browse camps | Discover page, camp cards with real availability badges |
 | 1:00–1:30 | Hold a slot | Pick camp → select slot → travel mode + pledge → reserve for 10 minutes |
-| 1:30–2:00 | Confirmation | Confirm the hold, then show Health Passport with QR token and confetti |
-| 2:00–2:30 | My Bookings | View booking, show Cancel and Reschedule buttons |
-| 2:30–3:00 | Reschedule | Move booking to another slot, verify reminders re-queued |
-| 3:00–3:30 | Login as Organizer | Manage page: create camp, assign staff, see load warning |
-| 3:30–4:00 | Admin analytics | Show KPIs, charts, Capacity Advisor, CSV export |
-| 4:00–4:30 | Concurrency proof | Run the 50-way test, show 10 held+confirmed / 40 waitlisted / 0 overbooked |
+| 1:30–2:00 | Confirmation | Confirm the hold, then show Health Passport with QR token |
+| 2:00–2:30 | My Bookings | View the real booking, show Cancel and Reschedule actions |
+| 2:30–3:00 | Reschedule | Move the booking to another real slot, verify reminders re-queued |
+| 3:00–3:30 | Sign in as Organizer | Manage page: create a camp, assign staff, see load warning |
+| 3:30–4:00 | Admin analytics | KPIs, charts, Capacity Advisor, CSV export from MySQL |
+| 4:00–4:30 | Concurrency proof | Run the real 50-way test: 10 held+confirmed / 40 waitlisted / 0 overbooked |
 | 4:30–5:00 | Q&A | Address viva questions |
 
 ---
 
-## LIVING EXPERIENCE LAYER — 5-MINUTE WOW DEMO
+## LIVE OPERATIONS WALKTHROUGH
 
-**Goal:** Demonstrate real 3D/motion + human-crafted healthcare feel, plus the strongest evidence for the 10 implementation marks.
+**Goal:** Show real-time behaviour and the strongest evidence for the 10 implementation marks using live MySQL rows.
 
 | Time | Action | What to show |
 |---|---|---|
-| 0:00–0:45 | Login as Organizer → Control Room | Live camp-day board: slot fill bars, check-in queue, staff load warnings, no-show risk badges |
-| 0:45–1:30 | Concurrency Proof page | "Run 50-way race" → 10 confirmed (green), 40 waitlisted (amber, positions 1–40), 0 overbooked, DB verification |
-| 1:30–2:00 | Demo Scenario Loader | Click "waitlist-active" → watch Control Room fill with 8 waiting patients |
-| 2:00–2:45 | QR Check-In (offline tolerance) | Toggle offline → scan queues locally with "pending sync" banner → back online → auto-sync |
-| 2:45–3:15 | Smart Waitlist + No-Show Risk | MyBookings shows "Position #3" for waitlisted; Control Room shows "No-show High/Medium/Low" with reason |
-| 3:15–3:45 | Data Provenance badges | Analytics charts carry "Seeded demo data" SIMULATED badges; meta note explains no field data |
-| 3:45–4:15 | Audit Trail | `/api/admin/audit-log` shows who cancelled which booking and when |
-| 4:15–5:00 | Q&A | 10 technical viva answers below |
+| 0:00–0:45 | Organizer → Control Room | Live camp-day board: real slot fill bars, check-in queue, staff load warnings |
+| 0:45–1:30 | Row-lock proof | Run the backend 50-way concurrency test; show 10 confirmed, 40 waitlisted, 0 overbooked from MySQL |
+| 1:30–2:00 | Real waitlist | Cancel a real confirmed booking for a full slot; first waiter is promoted in the same transaction |
+| 2:00–2:45 | QR Check-In | Verify a real QR token; Live Queue TV updates over Socket.io |
+| 2:45–3:15 | Smart Waitlist + No-Show Risk | Real waitlist position and rule-based no-show risk, staff-facing only |
+| 3:15–3:45 | Analytics provenance | Charts labelled with their real MySQL source; empty states shown honestly |
+| 3:45–4:15 | Audit Trail | `/api/admin/audit-log` shows who changed which real booking and when |
+| 4:15–5:00 | Q&A | Technical viva answers below |
 
 ---
 
-## 10 TECHNICAL VIVA ANSWERS (Living Experience Layer)
+## 10 TECHNICAL VIVA ANSWERS (Live Operations)
 
-**Q1: How do you prove zero overbooking live during the demo?**
-A: The Concurrency Proof page fires 50 simultaneous `SELECT ... FOR UPDATE` transactions against one capacity-10 slot. The page animates 10 confirmed (green) and 40 waitlisted (amber, FIFO positions 1–40) and reads back `booked_count <= capacity` from MySQL. The `zeroOverbooked` flag is `true` only when DB confirms exactly 10 confirmed, 40 waiting, 0 errors.
+**Q1: How do you prove zero overbooking live?**
+A: The backend test fires 50 simultaneous `SELECT ... FOR UPDATE` transactions against one capacity-10 slot. The result is 10 confirmed and 40 waitlisted with FIFO positions 1–40; the test re-reads `booked_count <= capacity` from MySQL and fails unless all 50 requests are accounted for.
 
 **Q2: Is the concurrency proof real or simulated?**
-A: Mode A (live MySQL) runs real InnoDB row-lock transactions; Mode B uses a deterministic engine mirror clearly tagged `simulated: true`. The mode chip and badges make this explicit — never presented as real when it isn't.
+A: Real. It runs against InnoDB row locks in MySQL. There is no simulated concurrency mode.
 
 **Q3: What happens if two staff check in the same patient simultaneously?**
 A: The check-in endpoint locks the booking row with `SELECT ... FOR UPDATE`. The first check-in sets status to CHECKED_IN; the second finds it already CHECKED_IN and rejects with a clear error. No double check-in.
 
-**Q4: How does offline check-in work without losing data?**
-A: When `navigator.onLine` is false, scans are queued locally with a `PENDING_SYNC` flag and shown on an offline banner. On reconnect (`online` event), `syncOffline()` replays them through the normal check-in endpoint. Failed syncs are re-queued with `SYNC_FAILED` status.
+**Q4: What if the venue loses connectivity during check-in?**
+A: Check-in requires the API. A failed request surfaces an error to the staff member; it is never silently accepted or queued as a fake success.
 
 **Q5: How is waitlist position shown and is it really FIFO?**
 A: `myBookings` returns `waitlistPosition` via a LEFT JOIN to the waitlist table. Promotion selects the lowest `position` (by `created_at, id`) under the same slot row lock that releases the seat — atomic, so two simultaneous cancellations can't promote two people into one seat.
 
 **Q6: Is the no-show risk score AI/ML?**
-A: No — explicitly a rule-based heuristic: `no_shows / past_bookings` per patient → Low (<0.3) / Medium (0.3–0.6) / High (>0.6), with a text reason (`"3 no-show in 8 past bookings"`). Labeled "heuristic, not AI prediction" and staff-facing only.
+A: No — explicitly a rule-based heuristic derived from real `bookings` rows, labelled "heuristic, not AI prediction" and staff-facing only.
 
-**Q7: What does the Data Provenance badge prove?**
-A: Every analytics chart carries a "Seeded demo data" badge, and the meta note states no field-collected patient data exists. This defends the 8 data-collection marks honestly — seeded vs. test vs. field data is clearly distinguished.
+**Q7: What is the data provenance of the charts?**
+A: All charts read live MySQL aggregates. If there are no real records, the chart shows an empty state; there is no seeded or synthetic series behind it.
 
 **Q8: How does the audit trail work without slowing requests?**
 A: `auditLog()` writes to `audit_log` inside a try/catch that never throws — if audit logging fails, the primary booking/camp action still completes. It's append-only: actor, action, target, before/after JSON, timestamp.
 
-**Q9: Is the demo scenario loader destructive?**
-A: No. It uses idempotent `INSERT ... ON DUPLICATE KEY UPDATE`-style logic (never DELETE). Scenarios (full-slot, waitlist-active, camp-day) are repeatable and safe to run mid-review.
+**Q9: How is repeatable test state created without polluting production?**
+A: Only the local test suite and local development fixtures create temporary records, in throwaway or local databases. Production bootstraps with migrations and role accounts only; no scenario loader inserts sample data.
 
-**Q10: Why build these "wow" features on top of the stable core?**
-A: Per the pre-mortem, the likeliest demo failure is an empty/unpredictable DB. The scenario loader makes demo state repeatable; the concurrency proof gives visual evidence for the 10 implementation marks; provenance badges defend the 8 data-collection marks. Each adds user value and passes the "so what?" test.
+**Q10: Why build these features on top of the stable core?**
+A: Each feature operates on real operational data: the concurrency proof gives visual evidence for the 10 implementation marks, real-time updates improve camp-day coordination, and provenance labels defend the 8 data-collection marks honestly.
 
 ---
 
-## PRE-MORTEM — 5 LIKELIEST DEMO FAILURES & FIXES
+## PRE-MORTEM — 5 LIKELIEST PRESENTATION FAILURES & FIXES
 
-1. **Empty DB / unpredictable state** → Fixed: Demo scenario loader seeds repeatable scenarios (full-slot, waitlist-active, camp-day).
-2. **Slow network** → Fixed: Concurrency proof fires 50 requests in parallel from one tab; Socket.io falls back to polling.
-3. **WebGL / 3D failure** → Fixed: the sign-in diagnostic scene and landing visuals load lazily and degrade to accessible CSS/SVG fallbacks; reduced-motion users get a still clinical state. Core workflows never depend on WebGL.
-4. **Dead email/SMS service** → Fixed: Reminders are sandboxed/SIMULATED; booking doesn't depend on delivery.
-5. **Stale data** → Fixed: Control Room re-reads from MySQL on every Socket.io event; concurrency proof re-queries `booked_count` after the race.
+1. **Empty DB / no real data yet** → Honest empty state; create a real camp or booking during the walkthrough. No seed injection in the deployed environment.
+2. **Slow network** → The 50-way proof runs as a backend test in parallel; Socket.io falls back to polling.
+3. **WebGL / 3D failure** → Visual scenes are lazy-loaded with CSS/SVG fallbacks; core workflows never depend on WebGL.
+4. **Dead email/SMS service** → Notification attempts are recorded and labelled Sandbox when no credentials are set; booking does not depend on delivery.
+5. **Stale data** → Control Room re-reads from MySQL on Socket.io events; the concurrency proof re-queries `booked_count` after the race.
 
 ---
 

@@ -8,7 +8,7 @@ Third Semester Project Review – 2
 
 ## 1. Overview
 
-CHSC implements a complete, auditable data pipeline from patient registration through camp close-out. Every data category is defined by: (1) what is collected, (2) why, (3) origin, (4) validation, (5) storage, and (6) usage. All data is **demonstration/seeded** — no real patients, hospitals, or medical records are involved.
+CHSC implements a complete, auditable data pipeline from patient registration through camp close-out. Every data category is defined by: (1) what is collected, (2) why, (3) origin, (4) validation, (5) storage, and (6) usage. Production uses **real data only**: records come from API actions against MySQL. No seeded patients, camps, slots or bookings are installed in production; empty states are honest empty states. The repository ships no real patient records, hospital partnerships, or medical outcomes.
 
 ---
 
@@ -20,7 +20,7 @@ CHSC implements a complete, auditable data pipeline from patient registration th
 |---|---|
 | **What is collected** | Name, email, phone (10-digit Indian mobile), password (bcrypt hash), role, age group, preferred language, active flag, timestamps |
 | **Why** | Identity for booking, authentication, contact for reminders, role-based access control, DPDP-compliant data minimisation |
-| **Origin** | `POST /api/auth/register` (patient self-registration) or seed data (demo accounts) |
+| **Origin** | `POST /api/auth/register` (patient self-registration), or the production bootstrap for the four staff roles from `BOOTSTRAP_*` environment variables |
 | **Validation** | Zod schema: name 2–120 chars, email format, phone `^[0-9]{10}$`, password 8–72 chars with letter+number, age group enum, language enum |
 | **Storage** | MySQL `users` table (InnoDB), `password_hash` via bcrypt (cost 10), unique indexes on email and phone |
 | **Usage** | Login/JWT issuance, booking ownership, reminder recipients, admin user management, analytics registration counts |
@@ -31,7 +31,7 @@ CHSC implements a complete, auditable data pipeline from patient registration th
 |---|---|
 | **What is collected** | Title, descriptions (EN/KN), venue, address, city, camp date, start/end time, slot duration, total capacity, physical capacity, status, creator |
 | **Why** | Define screening camp schedule, location, capacity, and lifecycle state; patients browse and book against camps |
-| **Origin** | `POST /api/camps` (organizer/admin creates), seed data (3 upcoming + 3 historical Bengaluru camps) |
+| **Origin** | `POST /api/camps` (organizer/admin creates) |
 | **Validation** | Zod: title 3–180, venue 2–180, address 4–255, date ISO, HH:MM times, end > start, duration ≥5 min, capacity ≥1, CHECK constraints in MySQL |
 | **Storage** | MySQL `camps` table, foreign key `created_by → users.id`, indexes on `(camp_date, status)` and `venue` |
 | **Usage** | Public discovery, booking eligibility, analytics grouping, CSV export, staff assignment scope |
@@ -64,7 +64,7 @@ CHSC implements a complete, auditable data pipeline from patient registration th
 |---|---|
 | **What is collected** | Slot, camp, patient, QR token, token number, status, travel mode, on-time pledge, timestamps (booked, checked-in, cancelled) |
 | **Why** | The core transactional record: a reserved screening seat with verifiable identity and logistics (no medical data) |
-| **Origin** | `POST /api/slots/:id/book` (patient), cancellation/reschedule promotion (system), seed data |
+| **Origin** | `POST /api/slots/:id/book` (patient), cancellation/reschedule promotion (system) |
 | **Validation** | Zod on travel mode enum; database unique indexes `uq_slot_patient` and `uq_one_active_booking_per_camp` (generated column); status enum CHECK |
 | **Storage** | MySQL `bookings` table (InnoDB), foreign keys to `slots`, `camps`, `users`; indexes on `(camp_id, status)` and `(patient_id, status)` |
 | **Usage** | Patient booking history, waitlist promotion, check-in, attendance analytics, no-show tracking, audit trail |
@@ -86,7 +86,7 @@ CHSC implements a complete, auditable data pipeline from patient registration th
 |---|---|
 | **What is collected** | Camp, user, role at camp (DOCTOR/VOLUNTEER/NURSE/COORDINATOR), shift start/end, expected load/hr, max patients/hr, duties |
 | **Why** | Camp-day staffing plan; clinical load balancing with warnings when expected load exceeds safe threshold |
-| **Origin** | `POST /api/camps/:campId/staff` (organizer/admin), seed data (doctors + volunteers per camp) |
+| **Origin** | `POST /api/camps/:campId/staff` (organizer/admin) |
 | **Validation** | Shift end > start; no overlapping shifts for same user on same day (`SELECT ... FOR UPDATE` half-open interval check); one assignment per user per camp |
 | **Storage** | MySQL `staff_assignments` table, unique index on `(camp_id, user_id)`, foreign keys to `camps` and `users` |
 | **Usage** | Staff day view, load-balancer warnings, camp-day coordination, analytics staff allocation |
@@ -117,7 +117,7 @@ CHSC implements a complete, auditable data pipeline from patient registration th
 
 | Attribute | Detail |
 |---|---|
-| **What is collected** | Booking, type (REMINDER_24H / REMINDER_2H), send_at, status (PENDING/SENDING/SENT/FAILED/CANCELLED), attempts, last error, channel, recipient, provider, simulated flag |
+| **What is collected** | Booking, type (REMINDER_24H / REMINDER_2H), send_at, status (PENDING/SENDING/SENT/FAILED/CANCELLED), attempts, last error, channel, recipient, provider, sandbox flag |
 | **Why** | Timely nudges 24h and 2h before appointments; audit trail for every SMS/email; idempotent, retryable delivery |
 | **Origin** | `scheduleForBooking()` (on booking/confirm/reschedule), `runReminderSweep()` (cron every minute or manual admin trigger) |
 | **Validation** | One row per booking/type (unique key `uq_reminder_booking_type`); max 50 attempts; stale SENDING rows recycled after 10 min |
@@ -183,16 +183,17 @@ Camp Discovery → Slot Selection → Booking
 
 ---
 
-## 6. Seeded vs. Real Data Distinction
+## 6. Data Provenance
 
-All data in the current deployment is **seeded demonstration data** for academic review purposes:
+The hosted deployment is **strict live**: every displayed row originates from a real request against MySQL.
 
-- **Demo accounts**: 5 seeded users (Admin, Organizer, Doctor, Volunteer, Patient) with known passwords
-- **Seed camps**: 3 upcoming Bengaluru camps + 3 historical camps with deterministic slots and bookings
-- **Historical no-show data**: 26 historical bookings with 5 NO_SHOW (19.23% empirical rate) used by the Capacity Advisor
-- **Notification log**: Seeded SIMULATED entries showing SMS/email audit format
+- **Staff accounts**: created once by `backend/scripts/bootstrap-production.js` from `BOOTSTRAP_*` environment variables; credentials are supplied as secrets and never committed.
+- **Patient accounts, camps, slots, bookings, waitlist and attendance**: created only through API actions by real users. No sample records are inserted by `setup-production` or any deploy step.
+- **Analytics and the Capacity Advisor**: computed from whatever real rows exist. With no historical bookings, no-show rate is undefined/zero and the UI says so rather than showing a fabricated percentage.
+- **Notification audit log**: records real delivery attempts. If SMTP/SMS credentials are absent, attempts are labelled **Sandbox** and no real delivery is claimed.
+- **Local development and tests only**: `database/schema.sql` fixtures and `backend/seed.js` may create temporary local data. They must never be run against a hosted or production database.
 
-No real patients, hospital partnerships, survey results, or screening outcomes are collected or claimed. The system is designed so real-world deployment would collect only the minimal fields listed above, with explicit consent and DPDP compliance.
+No real patients, hospital partnerships, survey results, or screening outcomes are shipped with the repository. Real-world deployment collects only the minimal fields listed above, with explicit consent and DPDP-aligned handling.
 
 ---
 
@@ -205,7 +206,7 @@ All charts on the `/analytics` page are generated from live MySQL aggregate quer
 3. **Hourly Utilisation** — SUM(booked) / SUM(capacity) grouped by HOUR(slot start time)
 4. **Capacity Advisor** — `min(ceil(C_phys/(1−p)), floor(C_phys×(1+α_max)))` where `p` = empirical no-show rate from historical bookings
 
-Each chart carries a "demonstration data" tag where seeded values are used.
+Each chart is labelled with its real MySQL source. When there are no records, charts show an empty state; no placeholder or synthetic series is rendered.
 
 ---
 

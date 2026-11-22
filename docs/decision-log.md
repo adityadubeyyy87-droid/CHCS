@@ -1,159 +1,157 @@
-# Decision Log — CHSC "Living" Experience Layer
+# Decision Log — CHSC Live Experience Layer
 
 Format per entry:
 1. Problem: whose pain does this solve?
 2. Options: at least 2 alternatives, with trade-offs
-3. Choice: what I picked and why, with evidence (a test, a metric, or a user flow)
+3. Choice: what was picked and why, with evidence
 4. Risk: how this could fail, and the fallback
+
+All entries assume the strict-live runtime: real API → Express → MySQL. No demo engine, seed fixtures in production, or simulated database results were accepted.
 
 ---
 
-## Entry 1: Live Concurrency Proof Page
+## Entry 1: Row-Lock Concurrency Proof (backend, not a browser fixture)
 
-**Problem:** Evaluators need to see the zero-overbooking guarantee in action, not just read about it. The existing `concurrency-test.js` runs in a terminal — invisible during a demo.
+**Problem:** Evaluators need to see the zero-overbooking guarantee, not just read about it. A terminal test is reproducible but not visual.
 
 **Options:**
-A) A dedicated `/demo/concurrency` page with a "Run 50-way race" button that fires 50 simultaneous bookings against a capacity-10 slot and animates 10 confirmed + 40 waitlisted live. (Pro: visual proof, matches the 10 implementation marks. Cons: requires a dedicated demo slot and backend endpoint to accept 50 rapid requests.)
-B) Animate the existing terminal test output in an overlay. (Pro: reuses existing test. Cons: not interactive, requires copying terminal output.)
-C) No change — rely on `concurrency-test.js` alone. (Pro: zero dev time. Cons: invisible during demo, weak evidence.)
+A) A browser "race" that creates temporary booking rows and animates results. (Pro: visual. Cons: pollutes real data and needs a disposable slot.)
+B) Run the existing backend concurrency test against a throwaway MySQL database and show its output. (Pro: real InnoDB locks, no production data touched. Cons: terminal output.)
+C) No proof. (Cons: weak evidence for the 10 implementation marks.)
 
-**Choice:** A — build a Live Concurrency Proof page. Evidence: the backend concurrency test already proves 10/40/0; the page visualizes it live via Socket.io and the existing `/api/slots/:id/book` endpoint. Fallback: if WebSockets fail, poll the slot's `booked_count` every 500ms.
+**Choice:** B — the mandatory proof is `backend/tests/integration/concurrency.test.js` (50 requests / 10 seats → 10 held+confirmed, 40 waitlisted, 0 overbooked), runnable against the live database through `backend/concurrency-test.js` with proof-only row cleanup. A browser page may explain the mechanism but never fabricates a result.
 
-**Risk:** 50 rapid requests could hit rate limits or lock timeouts. Fallback: temporarily disable rate limiter for the demo route, or spread requests in small batches with `Promise.all` per batch.
-
-**Pre-mortem fixes:**
-1. Empty DB — use a seeded demo slot with capacity 10 and no existing bookings.
-2. Slow network — fire all 50 via `Promise.all` from one tab so latency is parallel, not serial.
-3. WebGL failure — the page uses CSS/SVG animation, not WebGL.
-4. Dead email service — reminders are sandboxed/SIMULATED; booking doesn't depend on delivery.
-5. Stale data — the page re-reads `booked_count` from the DB after the race.
+**Risk:** Rate limits or lock timeouts. Fallback: run in CI/local with `RATE_LIMIT_DISABLED=true` against a throwaway database; never weaken production limits to stage a proof.
 
 ---
 
 ## Entry 2: Camp Day Control Room
 
-**Problem:** Organizers need a single real-time board showing slot fill, check-in queue, staff status, and no-show countdown during the camp — currently split across Manage, LiveQueueTV, and Analytics.
+**Problem:** Organizers need one real-time board for slot fill, check-in queue and staff status during a camp.
 
 **Options:**
-A) A new `/organizer/control-room` page subscribing to Socket.io events (`booking:confirmed`, `checkin:new`, `attendance:updated`, `queue:updated`). (Pro: live, one screen. Cons: new page to build and test.)
-B) Add widgets to the existing Manage page. (Pro: no new route. Cons: Manage is already dense; control room needs a dedicated focused layout.)
-C) No change. (Cons: organizers switch tabs during camp day — error-prone.)
+A) Dedicated camp-day page subscribing to Socket.io events. (Pro: live, one screen. Cons: new page to build/test.)
+B) Add widgets to Manage. (Pro: no new route. Cons: Manage is already dense.)
+C) No change. (Cons: organizers switch tabs under time pressure.)
 
-**Choice:** A — dedicated control room page. Evidence: Socket.io already broadcasts all needed events; the page subscribes and aggregates. Fallback: if Socket.io disconnects, poll `/api/queue/:campId` every 3 seconds.
+**Choice:** A — dedicated control room fed by real API/Socket.io events. Fallback: poll `/api/queue/:campId` if sockets disconnect.
 
-**Risk:** Too much real-time data overwhelms the organizer. Fallback: limit to current slot, next 3 check-ins, staff count, and no-show count — four KPIs max.
+**Risk:** Too much real-time data overwhelms staff. Fallback: limit to current slot, next three check-ins, staff count and no-show count.
 
 ---
 
-## Entry 3: QR Check-In Offline Tolerance
+## Entry 3: QR Check-In Requires the API
 
-**Problem:** Venues often have poor signal; staff can't check in patients without internet.
+**Problem:** Venues can have poor signal; staff want to keep checking people in.
 
 **Options:**
-A) PWA with service worker + IndexedDB local queue: scan stores locally, syncs when online. (Pro: works offline. Cons: significant complexity, service worker debugging hard in demo.)
-B) Cache the last N valid QR tokens in memory; if offline, accept any cached token and mark "pending sync". (Pro: simple, covers most camp-day scans. Cons: not durable across refresh.)
-C) No offline support — require internet. (Cons: fails at real venues.)
+A) PWA with local queue and later sync. (Pro: offline tolerance. Cons: complex; risks accepting unverified tokens.)
+B) Cache valid tokens in memory with "pending sync". (Pro: simple. Cons: not durable; duplicate risk.)
+C) Require a successful API call for every check-in. (Pro: no fake success, database stays authoritative. Cons: fails without connectivity.)
 
-**Choice:** B — in-memory offline tolerance with pending-sync marker. Evidence: most camp-day check-ins happen within one session; refresh is rare mid-camp. Fallback: clear the offline queue on reconnect and show a "sync needed" banner.
+**Choice:** C — a failed check-in shows an error. A locally accepted "checked-in" state that never reaches MySQL would be a fabricated outcome.
 
-**Risk:** Duplicate check-ins if the same token is scanned offline in two tabs. Fallback: mark tokens as "checked-in (offline)" in memory and reject repeats until sync.
+**Risk:** A real venue loses connectivity. Fallback: operational (network/venue planning), not a simulated success path.
 
 ---
 
 ## Entry 4: Smart Waitlist
 
-**Problem:** Waitlisted patients don't know their position or whether they'll get in; organizers can't see the queue.
+**Problem:** Waitlisted patients want to know their position; organizers need to see the queue.
 
 **Options:**
-A) Show live position on the booking page (`/api/slots/:id` returns `waiting_count` and patient's position) + auto-promotion on cancellation (already exists) + 15-minute claim window via a `claimed_at`/`expires_at` on promoted bookings. (Pro: transparent, uses existing waitlist table. Cons: need a new expiry column.)
-B) No position visibility — just "you're on the waitlist". (Cons: anxiety, support calls.)
-C) No change. (Cons: weak for the demo.)
+A) Show real position from the waitlist table + atomic promotion + 15-minute claim window. (Pro: transparent. Cons: needs migration.)
+B) Show only "you're on the waitlist". (Cons: uncertainty and support calls.)
+C) Neither. (Cons: weak fairness story.)
 
-**Choice:** A — visible position + existing auto-promotion + a 15-minute claim window implemented as a `promotion_expires_at` column on promoted bookings. Evidence: waitlist already uses FIFO under row lock; position is `COUNT(*) WHERE created_at < mine`. Fallback: if the new column migration fails, compute expiry as `promoted_at + 15 min` in the app layer.
+**Choice:** A — `promotion_expires_at` and FIFO ordering under the slot row lock. Evidence: existing `waitlist` table already orders by `created_at, id`; migration 002 adds the expiry column/index.
 
-**Risk:** Expired promotions block the slot. Fallback: a cron/job that releases expired promoted bookings back to the waitlist.
+**Risk:** Expired promotions block a seat. Fallback: hold-expiry sweep releases and promotes the next FIFO patient atomically.
 
 ---
 
 ## Entry 5: Explainable No-Show Risk Score
 
-**Problem:** Organizers want to know who might not show up, so they can overbook slightly or call ahead — but we must not claim AI.
+**Problem:** Organizers want to prioritise follow-up without claiming AI.
 
 **Options:**
-A) Rule-based score: `past_no_shows * 0.5 + (hours_until_slot < 24 ? 0.3 : 0) + (reminder_sent ? -0.2 : 0.3)` → Low/Medium/High with reason text. Labeled "heuristic, not AI prediction". (Pro: explainable, deterministic, traces to DB. Cons: not predictive.)
-B) ML model. (Banned by the "not AI" rule and project scope.)
-C) No risk score. (Cons: organizers can't prioritize.)
+A) Deterministic rule-based Low/Medium/High score from real booking history, with a reason. (Pro: explainable. Cons: not predictive.)
+B) ML model. (Rejected: explicitly out of scope and banned by the brief.)
+C) No score. (Cons: no prioritisation.)
 
-**Choice:** A — deterministic rule-based score computed from `bookings` + `reminders` + `camp_date`. Evidence: each input column exists in the schema; the score is a pure function of stored rows. Fallback: show "No data" if the patient has no history.
+**Choice:** A — labelled "heuristic, not AI prediction", staff-facing only. Shows "No data" when a patient has no history.
 
-**Risk:** A patient sees "High risk" and feels judged. Fallback: the score is staff-facing only (Control Room / Manage), not patient-facing.
+**Risk:** Patients feel judged by a label. Fallback: never expose the score in patient-facing screens.
 
 ---
 
-## Entry 6: Data Provenance Badges
+## Entry 6: Data Provenance Labels
 
-**Problem:** The 8 data-collection marks require proving which numbers are real vs. seeded vs. test.
+**Problem:** The 8 data-collection marks require an honest account of where numbers come from.
 
 **Options:**
-A) A `provenance` enum ("seeded" / "test" / "field") attached to every analytics query result, rendered as a badge on each chart. (Pro: honest, traceable. Cons: need to tag each query.)
-B) A single global disclaimer at the bottom of Analytics. (Pro: simple. Cons: per-chart honesty lost.)
-C) No badges. (Cons: can't defend data-collection marks.)
+A) Per-chart label naming the real MySQL source and sample size; explicit empty state. (Pro: auditable. Cons: extra UI work.)
+B) One global disclaimer. (Cons: loses per-chart honesty.)
+C) No labels. (Cons: unverifiable claims.)
 
-**Choice:** A — per-chart provenance badges. Evidence: seeded data is known (seed file), test data is known (test DB), field data is empty (clearly labeled "no field data collected"). Fallback: if a chart's source is ambiguous, default to "seeded demo".
+**Choice:** A — every chart states its live source. There are no "seeded", "test" or "synthetic" series in production; local test data exists only in throwaway databases. SMTP/SMS attempts without credentials are labelled Sandbox, which is a delivery-provider status, not a data-provenance claim.
+
+**Risk:** Empty charts look broken to evaluators. Fallback: an explicit "no real records yet" state with a link to create a real camp — never sample values.
 
 ---
 
 ## Entry 7: Multilingual UI (English + Kannada)
 
-**Problem:** Bengaluru patients may prefer Kannada; the project already has partial Kannada strings.
+**Problem:** Bengaluru patients may prefer Kannada; partial translations already exist.
 
 **Options:**
-A) Extend the existing `i18n.js` with Kannada translations for the patient booking flow (camp cards, slot picker, confirm, passport) using the `lang` store already in place. (Pro: reuses existing infra. Cons: translation effort.)
-B) Full site translation including dashboards. (Cons: high effort, low marginal demo value.)
+A) Translate the patient booking flow using the existing `i18n.js`/`lang` store. (Pro: reuses infra. Cons: translation effort.)
+B) Full site translation. (Cons: high effort, low marginal value.)
 C) English only. (Cons: misses the bilingual commitment.)
 
-**Choice:** A — translate the patient-facing booking flow only (Discover, MyBookings, Passport), keeping dashboards in English. Evidence: `i18n.js` + `lang` store already exist; `preferred_language` column exists on users. Fallback: fall back to English for any missing key.
+**Choice:** A — patient-facing booking flow translated; dashboards remain English. Fallback to English for missing keys.
+
+**Risk:** Mixed-language screens. Fallback: keep a consistent language toggle and interpolate numbers with tabular numerals.
 
 ---
 
 ## Entry 8: Audit Trail
 
-**Problem:** Admins need to know who changed a booking or camp and when — for accountability during camp day.
+**Problem:** Admins need to know who changed a booking or camp and when.
 
 **Options:**
-A) An `audit_log` table: `(actor_id, action, target_type, target_id, before, after, created_at)` written by middleware around mutating endpoints. (Pro: complete, queryable. Cons: new table + middleware.)
-B) Rely on `updated_at` + `created_by` on existing tables. (Cons: no `before/after`, no actor on patient-initiated changes.)
-C) No audit trail. (Cons: no accountability.)
+A) `audit_log` table with actor, action, target and before/after JSON. (Pro: queryable. Cons: new table.)
+B) Rely on `created_at`/`updated_at`. (Cons: no actor or before/after.)
+C) No trail. (Cons: no accountability.)
 
-**Choice:** A — `audit_log` table with a small Express middleware that logs `PATCH/POST/DELETE` on `/api/bookings/*` and `/api/camps/*`. Evidence: schema already uses `created_by` on camps; audit adds `before/after` JSON. Fallback: log only `action` and `target_id` if JSON serialization is problematic.
+**Choice:** A — append-only audit rows written from real mutations. Evidence: schema already had `created_by` on camps; audit extends it. Fallback: log action and target only if JSON serialisation fails.
+
+**Risk:** Audit writes slow requests. Fallback: non-fatal logging; the primary transaction still commits.
 
 ---
 
-## Entry 9: Demo Mode Scenario Loader
+## Entry 9: No Demo Scenario Loader
 
-**Problem:** The demo must be repeatable and non-destructive — never a `DROP DATABASE` mid-review.
+**Problem:** Presentations want repeatable state (full slot, active waitlist, camp day).
 
 **Options:**
-A) A `/api/demo/scenario/:name` endpoint that seeds a known scenario (e.g., "full slot", "waitlist active", "camp day") using INSERT ... ON DUPLICATE KEY UPDATE, never DELETE. (Pro: repeatable, safe. Cons: need to define scenarios.)
-B) `mysql -u root -p < database/schema.sql` reset. (Cons: destructive, wipes all data.)
-C) No scenario loader. (Cons: demo state is unpredictable.)
+A) A scenario endpoint that upserts sample rows. (Rejected: writes non-real records into the deployed database.)
+B) Re-run local schema fixtures before a talk. (Rejected in production: destructive and would wipe real data.)
+C) Build a real camp/booking during the walkthrough, or use a throwaway local database for rehearsal. (Pro: honest, no production pollution.)
 
-**Choice:** A — non-destructive scenario loader using idempotent upserts. Evidence: the existing `/api/demo/reset-notice` already hints at this pattern; `ON DUPLICATE KEY UPDATE` makes it idempotent. Fallback: if a scenario fails, return 409 with a clear message and leave the DB untouched.
+**Choice:** C — no scenario loader exists in production. Local development and tests may use `database/schema.sql` fixtures and `backend/seed.js`; those are never deploy steps.
 
----
+**Risk:** An empty hosted database makes a talk less lively. Fallback: show the honest empty state and create real records live with a registered test account.
+
 ---
 
 ## IMPLEMENTATION CONFIRMATION
 
-All 9 decision-log entries were implemented on branch living-experience-layer:
-- Entry 1 (Concurrency Proof): /api/demo/concurrency + ConcurrencyProof.jsx � verified 10 confirmed / 40 waitlisted / 0 overbooked
-- Entry 2 (Control Room): /api/camps/:campId/control-room + ControlRoom.jsx � Socket.io live updates
-- Entry 3 (QR offline tolerance): StaffDay.jsx local scan queue + sync-on-reconnect
-- Entry 4 (Smart waitlist): waitlist_position + promotion_expires_at + MyBookings position display
-- Entry 5 (No-show risk): rule-based Low/Medium/High score with reason in Control Room
-- Entry 6 (Data provenance): provenance: 'seeded' per chart + SIMULATED badges on Analytics
-- Entry 7 (Multilingual): EN/KN nav labels added to i18n.js
-- Entry 8 (Audit trail): udit_log table + uditLog() helper + /api/admin/audit-log
-- Entry 9 (Demo scenario loader): /api/demo/scenario/:name idempotent upserts, never DELETE
+Current direction is strict live end to end:
 
-Backend test suite: **69/69 passing** (12 files). Frontend: production build OK.
+- Live connection status instead of a mode switch; backend outages show real errors
+- Row-lock concurrency proven by real MySQL tests, not a browser simulation
+- Hold/confirm, FIFO promotion, QR check-in and audit trail operate on real rows
+- Charts labelled with real sources; SMS/email sandbox labels limited to delivery attempts
+- Production startup = migrations + bootstrap role accounts only; no seed, no sample data
+- Local fixtures are confined to local development and throwaway test databases

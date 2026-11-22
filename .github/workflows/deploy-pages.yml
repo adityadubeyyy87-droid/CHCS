@@ -29,10 +29,10 @@ jobs:
         working-directory: frontend
 
       - name: Build static frontend
-        # No repository variable set → the site runs the clearly-labelled DEMO
-        # engine and can never go black. Set RENDER_API_URL (a repo variable)
-        # to your backend URL to make this a strict-live production build: it
-        # uses LIVE mode and never substitutes simulated data if the API fails.
+        # Strict live: the repository variable RENDER_API_URL is injected as
+        # VITE_API_BASE. Set it in Settings → Secrets and variables → Variables.
+        # With no value the app cannot find an API and shows an honest
+        # connection error.
         env:
           VITE_API_BASE: ${{ vars.RENDER_API_URL }}
         run: npm run build

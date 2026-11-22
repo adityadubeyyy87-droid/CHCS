@@ -4,6 +4,8 @@
 **Source:** nextlevelbuilder/ui-ux-pro-max-skill — product rule #58 (Medical Clinic), style rules #1/#8/#28/#29, chart rules #1/#2/#8/#19/#21, UX guidelines #28–46/#70–108/#111–120  
 **Applies to:** `frontend/src/index.css`, `frontend/src/components/Shell.jsx`, `frontend/src/App.jsx`, all pages
 
+**Data rule:** this system renders real MySQL state only. There is no demo mode or simulated dataset; empty states are honest empty states. A dashed **Sandbox** label may be used only for SMTP/SMS delivery attempts when no gateway credentials are configured, never for database results.
+
 ---
 
 ## 1. Style recommendations (per product rule #58)

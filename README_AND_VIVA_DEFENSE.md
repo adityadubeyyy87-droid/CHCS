@@ -15,19 +15,20 @@ Full-stack HealthTech platform for running free community health screening camps
 | Motion | `motion` (Framer Motion v11) — cinematic page transitions, scroll reveals, magnetic buttons, 3D tilt effects, text shimmer/scramble/morph, animated number counters, spotlight effects, confetti celebrations |
 | 3D | Three.js + React Three Fiber — emerald diagnostic cell on sign-in and a scroll-linked clinical beacon on the welcome page; both lazy-loaded with CSS/SVG fallbacks and reduced-motion support |
 
-## 2. Quick start
+## 2. Quick start — strict live
 
-### Mode A — real MySQL + Socket.io
+The application has one runtime mode: real Express + MySQL + Socket.io. There is no local engine, no demo login and no offline simulation. A failed backend request shows the real error.
+
+### Local development
 
 ```bash
-# 1. Database (creates schema + deterministic seed data)
+# 1. Local MySQL — schema.sql includes LOCAL-ONLY fixtures for development/tests
 mysql -u root -p < database/schema.sql
 
 # 2. Backend  (http://localhost:4000)
 cd backend
-copy .env.example .env      # then edit DB credentials if needed
+copy .env.example .env      # then edit DB credentials and JWT_SECRET
 npm install
-npm run seed                # optional: reseed demo dataset
 node server.js
 
 # 3. Frontend (http://localhost:5173 — proxies /api and /socket.io to :4000)
@@ -36,45 +37,41 @@ npm install
 npm run dev
 ```
 
-When the backend is reachable the UI shows a green **“Backend Connected · MySQL”** chip and a `LIVE · MySQL` badge. Every write is a real InnoDB transaction.
+`backend/seed.js` / `npm run seed` are **LOCAL ONLY**; never run them against a hosted or production database.
 
-### Mode B — local demo engine (no MySQL needed)
+### Production (migrations only, no seed)
 
 ```bash
-cd frontend
-npm install
-npm run dev                 # backend offline → app auto-falls back
+cd backend
+node scripts/db.js setup-production
+node scripts/bootstrap-production.js
+node server.js
+# or: npm run start:production
 ```
 
-`src/lib/api.js` probes `GET /api/health` at startup. When no `VITE_API_BASE` is configured and the backend is down, the same components run against `src/lib/engine.js` — an in-memory engine that mirrors every API response shape. The mode chip switches to amber **“DEMO”** and every simulated artifact is stamped `SIMULATED` (dashed badges, "Local Engine" provider tags). Simulated results are **never** presented as real database results. The deployed public bundle sets `VITE_API_BASE`, so it is strictly live and never falls back.
+`setup-production` applies `database/schema-production.sql` (DDL only) and `database/migrations/*.sql`. No sample users, camps, slots, bookings, waitlist rows, staff assignments or notifications are inserted. `bootstrap-production.js` creates only the real staff accounts from `BOOTSTRAP_*` variables; patients self-register. Regenerate the data-free DDL with `node scripts/generate-production-schema.mjs`.
 
-## 3. Demo accounts (seeded)
+Required Railway variables: `NODE_ENV=production`, `JWT_SECRET`, `MYSQL_URL` / `DB_NAME=railway`, `FRONTEND_ORIGIN`, `TRUST_PROXY=2`, `BOOTSTRAP_ADMIN_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_ORGANIZER_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_DOCTOR_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_VOLUNTEER_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_PHONE_SEED`, `PURGE_ON_BOOT=false`. To replace an older seeded database, set `PURGE_ON_BOOT=true` and `ALLOW_PRODUCTION_PURGE=true` for one deployment, then return both to `false`. SMTP/SMS variables are optional; without credentials, delivery is labelled Sandbox and no real email/SMS delivery is claimed.
 
-| Role | Email | Password |
-|---|---|---|
-| Admin | `admin@cmrit.edu` | `Admin@123` |
-| Organizer | `organizer@cmrit.edu` | `Password@123` |
-| Doctor | `doctor@cmrit.edu` | `Password@123` |
-| Volunteer | `volunteer@cmrit.edu` | `Password@123` |
-| Patient | `patient@cmrit.edu` | `Password@123` |
+## 3. Accounts
 
-The Login screen also has one-click **demo role shortcuts** (they use `POST /api/auth/demo-login` in Mode A, the local engine in Mode B).
+There are no seeded accounts. Four staff accounts (admin, organizer, doctor, volunteer) are created once by `bootstrap-production.js` from the `BOOTSTRAP_*` environment variables. Patients create their own accounts through `POST /api/auth/register`. Never commit bootstrap passwords or use sample credentials in a deployed environment.
 
-## 4. The four presentation scenarios
+## 4. The four presentation scenarios (real data only)
 
-Use the floating **Demo** controller (bottom-left after sign-in):
+These use records created through the API in the running MySQL instance. Never fabricate a scenario with sample rows in a deployed environment.
 
-1. **Last-Seat Concurrency** — the Concurrency Proof page (Analytics) races 20 requests for 1 seat in DEMO mode and labels the result `SIMULATED`. The *real* MySQL proofs are:
+1. **Last-Seat Concurrency** — run the real row-lock proofs:
    ```bash
    cd backend && node concurrency-test.js   # 20 requests / 1 seat → 1 held+confirmed, 19 FIFO-waitlisted, 0 overbooked
    cd backend && npm test                   # includes 50 requests / 10 seats → 10 held+confirmed, 40 waitlisted, 0 overbooked
    ```
    The 50-way proof is the mandatory invariant and is reproduced by `backend/scripts/verify-live.js` against the running Express + MySQL stack.
-2. **Waitlist Auto-Promotion** — releases demo booking `CHSC-BLR-104`; the first waiting neighbour is promoted inside the same transaction, and the Gateway Interceptor shows the simulated SMS/email.
-3. **QR Check-In** — verifies token `CHSC-BLR-104` and broadcasts it to the Live Queue TV (Socket.io event `checkin:new` / `queue:updated`).
-4. **Smart Analytics** — executive KPIs and the Capacity Advisor walkthrough.
+2. **Waitlist Auto-Promotion** — cancel a real confirmed booking for a full slot; the first waiting neighbour is promoted inside the same transaction, and the notification audit log records the attempt (Sandbox-labelled when no gateway credentials are configured).
+3. **QR Check-In** — verify a real QR token from a confirmed booking and watch the Live Queue TV update over Socket.io (`checkin:new` / `queue:updated`).
+4. **Smart Analytics** — executive KPIs and the Capacity Advisor computed from real MySQL aggregates.
 
-Utilities: **Reset demo data** (local engine re-seeds; for MySQL re-run `database/schema.sql`), **Simulate rush hour**, **Clean PPT screenshot mode**, **Viva Science X-Ray**.
+Utilities: **Viva Science X-Ray** and screenshot-friendly layouts. There is no scenario loader, no simulated rush hour and no demo-data reset button.
 
 ## 5. Feature map
 
@@ -84,11 +81,11 @@ Utilities: **Reset demo data** (local engine re-seeds; for MySQL re-run `databas
 - **FIFO waitlist with claim windows** — cancellation or hold expiry atomically promotes position 1 into a `PROMOTED` hold; an unclaimed promotion expires and flows to the next patient.
 - **Zero-guilt cancellation** — one tap, no penalty; the seat flows to a waiting neighbour.
 - **QR Health Passport** — inline SVG QR + `.ics` download; offline-cacheable; issued only after confirmation and check-in accepts only `CONFIRMED` bookings; glass effect reserved for the passport and sidebar only.
-- **Live Queue TV** — full-bleed dark panel, huge tabular-numeral token, NOW SCREENING / UP NEXT, average-wait stats; broadcasts over Socket.io in Mode A.
+- **Live Queue TV** — full-bleed dark panel, huge tabular-numeral token, NOW SCREENING / UP NEXT, average-wait stats; broadcasts over Socket.io from live bookings.
 - **Camp management** — deterministic auto-slot generator (`k = floor(ΔT/Δt)`, remainder spread earliest-first), staff matrix with clinical load warnings (≥25 warn / ≥30 critical per doctor-shift).
-- **Analytics** — honest KPIs, bookings-vs-capacity, attendance-vs-no-show, hourly utilisation, CSV export (real endpoint in Mode A; clearly-labelled in-browser export in Mode B).
+- **Analytics** — KPIs, bookings-vs-capacity, attendance-vs-no-show and hourly utilisation computed from real MySQL aggregates, plus server-side CSV export.
 - **Capacity Advisor** — `min( ceil(C_phys/(1−p)), floor(C_phys×(1+α_max)) )`, α_max = 25%. Explicitly labelled **"Rule-Based Statistical Heuristic — NOT Black-Box AI/ML"**.
-- **Notifications** — Gateway Interceptor audit log for every SMS/email; node-cron sweeps at 24h and 2h; de-duplicated per booking + type; sandboxed providers, rows stamped `SIMULATED` when not delivered by a real gateway.
+- **Notifications** — Gateway Interceptor audit log for every SMS/email; node-cron sweeps at 24h and 2h; de-duplicated per booking + type. With no SMTP/SMS credentials configured, attempts are labelled **Sandbox**; no real delivery is claimed.
 - **Privacy by design** — schema holds only name, phone, email, age group. No medical history fields exist. One-tap purge (`DELETE /api/users/me/purge`, DPDP-aligned).
 - **Bilingual** — English + ಕನ್ನಡ navigation and primary actions (partial localization, stated honestly).
 - **Dark/light themes**, reduced-motion support, print/screenshot-ready layouts.
@@ -96,18 +93,21 @@ Utilities: **Reset demo data** (local engine re-seeds; for MySQL re-run `databas
 ## 6. Project layout
 
 ```
-database/schema.sql        9 InnoDB tables + CHECK constraints + seed data
-backend/server.js          Express API, JWT auth, row-lock transactions, Socket.io, cron
-backend/concurrency-test.js 20-way last-seat race (real MySQL proof)
-backend/tests/integration/ 102 tests incl. 50-way / 10-seat proof and hold expiry
-backend/seed.js            reseed helper
-backend/.env.example       DB + JWT + mail configuration template
-frontend/src/App.jsx       provider → auth gate → shell + pages
-frontend/src/store.jsx     global state (auth, mode, theme, lang, toasts, socket)
-frontend/src/lib/api.js    the ONLY network boundary — Mode A/B switching lives here
-frontend/src/lib/engine.js Mode B local demo engine (mirrors API shapes)
-frontend/src/components/   Shell, Passport, LiveQueueTV, ConcurrencyArena, DemoController, ui primitives
-frontend/src/pages/        Login, Overview, Discover, MyBookings, StaffDay, Manage, Analytics, Notifications, Settings
+database/schema.sql              Local development schema + LOCAL-ONLY fixtures
+database/schema-production.sql   Generated DDL-only production bootstrap (no data rows)
+database/migrations/            Incremental DDL migrations
+backend/scripts/db.js            Local setup + idempotent production schema/migrations
+backend/scripts/bootstrap-production.js  Creates real staff accounts from env vars
+backend/server.js                Express API, JWT auth, row-lock transactions, Socket.io, cron
+backend/concurrency-test.js      50-way last-seat race (10/40/0, real MySQL proof)
+backend/tests/integration/       50-way / 10-seat proof and hold-expiry tests
+backend/seed.js                  LOCAL ONLY — never run in production
+backend/.env.example             DB + JWT + mail configuration template
+frontend/src/App.jsx             provider → auth gate → shell + pages
+frontend/src/store.jsx           global state (auth, status, theme, lang, toasts, socket)
+frontend/src/lib/api.js          the ONLY network boundary — strict live, no fallback
+frontend/src/components/         Shell, Passport, LiveQueueTV, ui primitives
+frontend/src/pages/              Login, Overview, Discover, MyBookings, StaffDay, Manage, Analytics, ConcurrencyProof, ControlRoom, AuditLog, Notifications, Settings
 ```
 
 ## 7. Production build
@@ -128,8 +128,8 @@ Yes — promotion takes the lowest `position` with status `WAITING` under the sa
 **Q: Where is the AI/ML?**
 There is none, deliberately. The Capacity Advisor is a transparent closed-form heuristic with an explicit safety ceiling; its inputs (empirical no-show rate) and formula are displayed on screen. The no-show *reduction* KPI is labelled "modelled" (Gollwitzer meta-analytic range), not measured causally.
 
-**Q: What is real vs simulated in the demo?**
-The mode chip in the sidebar and every badge tell you. Mode A = real MySQL transactions, real Socket.io broadcasts. Mode B = local engine; results carry `SIMULATED` badges and "Local Engine" provider tags. Notification delivery is a sandboxed gateway in both modes — the interceptor logs metadata either way.
+**Q: How do you know the data is real?**
+There is only one runtime path: API → Express → MySQL. The sidebar reports live connection status; an outage produces a real error. Analytics and queues read real tables. The only sandbox label is for SMTP/SMS attempts when no gateway credentials are configured — it never refers to database records.
 
 **Q: What personal data do you store?**
 Name, phone, email, age group — nothing else. No medical history, diagnosis, prescription or report fields exist in the schema. Users can purge everything with one tap.
@@ -137,5 +137,5 @@ Name, phone, email, age group — nothing else. No medical history, diagnosis, p
 **Q: Behavioral science claims?**
 Each one is annotated by the Viva Science X-Ray (Hick, Miller, Fitts, Jakob, Zeigarnik, Peak-End, Gollwitzer's implementation intentions, FIFO fairness, privacy by design) — toggle the flask icon in the top bar.
 
-**Q: Why a local engine at all?**
-Viva reliability: when there is no configured backend, the full product must demo without MySQL installed, without network access, and without dead buttons. The engine mirrors API response shapes exactly, so the same UI code runs in both modes and the difference is always visible via `DEMO` badges. The deployed build pins `VITE_API_BASE` and is strictly live — a backend outage shows an error rather than simulated data.
+**Q: What happens if the backend is unreachable?**
+The app shows the real network error. There is no local engine to switch to, because fabricated results would be indistinguishable from real bookings. The Pages build pins `VITE_API_BASE` from the required GitHub variable `RENDER_API_URL`, so the public site always targets the real Railway backend.

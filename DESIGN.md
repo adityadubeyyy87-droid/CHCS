@@ -4,7 +4,7 @@
 
 ## World — Biophilic Clinical Precision
 
-A dark clinical command-center world with a light patient-facing mode. Emerald is the single brand hue; everything else is slate, mint, and precise amber/red/blue signals. Nature is present as texture, not illustration: soft radial "biophilic" washes, hairline grids, seeded-dot patterns. Depth comes from layered surfaces and one soft shadow system — never glow.
+A dark clinical command-center world with a light patient-facing mode. Emerald is the single brand hue; everything else is slate, mint, and precise amber/red/blue signals. Nature is present as texture, not illustration: soft radial "biophilic" washes, hairline grids, fine-dot patterns. Depth comes from layered surfaces and one soft shadow system — never glow.
 
 ## Tokens
 
@@ -49,10 +49,10 @@ A dark clinical command-center world with a light patient-facing mode. Emerald i
 ## Components
 
 - Buttons: 40px min height (Fitts), pill or 10px radius, emerald primary / ghost secondary; focus ring 2px emerald offset 2px.
-- Badges for status: confirmed (emerald tint), waitlisted (amber), cancelled (red), checked-in (blue), simulated (dashed border + "SIM" tag — always visually distinct).
+- Badges for status: confirmed (emerald tint), waitlisted (amber), cancelled (red), checked-in (blue). A dashed "Sandbox" tag is used only for SMTP/SMS attempts when no gateway credentials are configured — never for database records.
 - Toasts bottom-right, spring-in, auto-dismiss 4.5s, stackable.
 - Tables: hairline rows, tabular numerals, sticky headers in long lists.
 
 ## Data viz
 
-Recharts; emerald for primary series, amber for no-show, blue for capacity ceiling. Grid lines hairline `--line`, axis 12px muted, legends inline with swatches. Every chart labeled with units and, where applicable, a "demonstration data" tag.
+Recharts; emerald for primary series, amber for no-show, blue for capacity ceiling. Grid lines hairline `--line`, axis 12px muted, legends inline with swatches. Every chart labelled with units and its real MySQL source; empty data sets render an explicit "no real records yet" state rather than sample values.

@@ -16,12 +16,12 @@
 
 **What it is NOT:** a medical product. It schedules appointments; it never diagnoses, stores medical history, or collects anything beyond name, phone, email, age group. Privacy-by-design and DPDP-aware (assumption labeled: Indian Digital Personal Data Protection Act, 2023).
 
-**Platform:** web app, desktop + tablet + mobile. Works in two explicit modes — Mode A "Backend Connected" (Express + MySQL + Socket.io) and Mode B "Local Demo" (deterministic in-browser engine, no services required). The active mode is always visible; simulated outcomes are never presented as real database/gateway outcomes.
+**Platform:** web app, desktop + tablet + mobile. Strict-live only: Express + MySQL + Socket.io with no local simulation or offline fallback. Connection status is visible; a backend outage surfaces a real error rather than fabricated data.
 
 **Success criteria:**
-- A professor can be shown SELECT … FOR UPDATE concurrency (1 confirmed / 19 waitlisted / 0 overbooked) in one click.
-- A real community member could book a camp in three steps without instruction.
-- Every screen is presentation-ready; no dead buttons; demo scenarios are repeatable.
+- A professor can be shown SELECT … FOR UPDATE concurrency (1 confirmed / 19 waitlisted / 0 overbooked) via the backend proof scripts.
+- A real community member can book a camp in three steps without instruction.
+- Every screen is presentation-ready with real data; no dead buttons and no fabricated outcomes.
 
 ## Design
 
@@ -38,6 +38,7 @@
 ## Constraints
 
 - Stack is fixed: React 18 + Vite + Recharts + socket.io-client + inline-SVG QR on the front; Node/Express/JWT/bcryptjs/node-cron/Nodemailer/Socket.io + MySQL (mysql2/promise, InnoDB) on the back. Do not substitute.
-- Must run locally on Windows without external services (demo mode), and with them (Mode A).
+- Local development runs on Windows with MySQL 8 and the Express backend; the production bootstrap is migrations-only with no seed data.
 - Behavioral-science annotations ("Viva Science X-Ray") must cite mechanisms honestly, without unsupported claims of guaranteed improvement.
+- SMTP/SMS credentials are optional; with none configured, delivery attempts are labelled Sandbox and no real delivery is claimed.
 - Academic context: CMR Institute of Technology, Bengaluru — B.E. ISE, 2nd year, team of 3, guide Dr. Srividya R.
