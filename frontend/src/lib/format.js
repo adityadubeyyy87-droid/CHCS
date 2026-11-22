@@ -42,3 +42,16 @@ export function slotTone(remaining, capacity) {
 export function cls(...args) {
   return args.filter(Boolean).join(' ');
 }
+
+/** Seconds remaining in a 10-minute reservation, clamped at zero. */
+export function holdSecondsLeft(expiresAt, now = Date.now()) {
+  const end = new Date(expiresAt).getTime();
+  if (!Number.isFinite(end)) return 0;
+  return Math.max(0, Math.ceil((end - now) / 1000));
+}
+
+/** mm:ss countdown used by the hold and waitlist-promotion surfaces. */
+export function fmtCountdown(seconds) {
+  const s = Math.max(0, Number(seconds) || 0);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}

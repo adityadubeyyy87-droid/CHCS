@@ -137,12 +137,73 @@ async function createCampFixture(options = {}) {
   return { ...fixture, startsAt, endsAt };
 }
 
-/** Book via the real API and assert nothing about the result. */
-async function book({ token, slotId, body = {} }) {
-  return request(app)
-    .post(`/api/slots/${slotId}/book`)
-    .set('Authorization', `Bearer ${token}`)
-    .send(body);
+/** Adds supertest-style .expect() to a plain response promise. */
+function withExpect(promise) {
+  const wrapped = promise.then((response) => response);
+  wrapped.expect = (status) =>
+    wrapped.then((response) => {
+      if (response.status !== status) {
+        const error = new Error(
+          `Expected HTTP ${status}, received ${response.status}: ${JSON.stringify(response.body)}`,
+        );
+        error.response = response;
+        throw error;
+      }
+      return response;
+    });
+  return wrapped;
+}
+
+/** Create only the timed hold, without confirming it. */
+function hold({ token, slotId, body = {} }) {
+  return withExpect(
+    request(app)
+      .post(`/api/slots/${slotId}/book`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body),
+  );
+}
+
+/** Confirm a held booking through the real two-phase API. */
+function confirm({ token, bookingId }) {
+  return withExpect(
+    request(app)
+      .post(`/api/bookings/${bookingId}/confirm`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({}),
+  );
+}
+
+/**
+ * Book via the real API and confirm the hold by default. Older integration
+ * tests keep their "booking means an active seat" semantics; hold-specific
+ * tests pass { confirmHold: false } to inspect the intermediate state.
+ */
+function book({ token, slotId, body = {}, confirmHold = true }) {
+  return withExpect(
+    (async () => {
+      const created = await hold({ token, slotId, body });
+      if (!confirmHold || created.status !== 201 || created.body?.booking?.status !== 'HELD') {
+        return created;
+      }
+      const confirmed = await confirm({ token, bookingId: created.body.booking.id });
+      // Older suites treat booking as one action returning 201. Keep that
+      // contract while still exercising the real two-phase network flow.
+      return { ...created, status: 201, body: confirmed.body };
+    })(),
+  );
+}
+
+/** Direct fixture: assign staff to a camp for check-in scope tests. */
+async function assignStaff(user, campId, roleAtCamp = 'DOCTOR') {
+  await pool.query(
+    `INSERT INTO staff_assignments
+       (camp_id, user_id, role_at_camp, shift_start, shift_end, expected_load_per_hour)
+     VALUES (?, ?, ?, '00:00:00', '23:59:00', 0)
+     ON DUPLICATE KEY UPDATE role_at_camp = VALUES(role_at_camp)`,
+    [campId, user.id, roleAtCamp],
+  );
+  return user;
 }
 
 async function countRows(sql, params = []) {
@@ -161,6 +222,9 @@ module.exports = {
   createCampFixture,
   createCampAt,
   book,
+  hold,
+  confirm,
+  assignStaff,
   countRows,
   tokenFor,
   uniqueEmail,

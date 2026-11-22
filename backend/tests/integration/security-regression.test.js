@@ -7,6 +7,7 @@ const {
   insertUser,
   createCampFixture,
   countRows,
+  book,
 } = require('../helpers/api');
 const { remindersEngine } = require('../../server');
 
@@ -90,11 +91,7 @@ describe('P0/P1 security and correctness regressions', () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 4, startsInHours: 96 });
-    const booked = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
     const bookingId = booked.body.booking.id;
 
     const response = await request(app)
@@ -118,11 +115,7 @@ describe('P0/P1 security and correctness regressions', () => {
     const doctor = await insertUser({ role: 'DOCTOR' });
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 4, startsInHours: 96 });
-    const booked = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
     const bookingId = booked.body.booking.id;
 
     await request(app)
@@ -187,16 +180,8 @@ describe('P0/P1 security and correctness regressions', () => {
        VALUES (?, 2, ?, ?, 4, 0)`,
       [fixture.campId, '08:00:00', '09:00:00'],
     );
-    await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patientA.token}`)
-      .send({})
-      .expect(201);
-    await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patientB.token}`)
-      .send({})
-      .expect(201);
+    await book({ token: patientA.token, slotId: fixture.slotId }).expect(201);
+    await book({ token: patientB.token, slotId: fixture.slotId }).expect(201);
 
     const response = await request(app)
       .get('/api/admin/reports/export.csv')
@@ -220,11 +205,7 @@ describe('P0/P1 security and correctness regressions', () => {
     const conn = await pool.getConnection();
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 3, startsInHours: 96 });
-    const booked = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
     const bookingId = booked.body.booking.id;
     await conn.query("UPDATE reminders SET status = 'SENT' WHERE booking_id = ? AND type = 'REMINDER_24H'", [bookingId]);
 

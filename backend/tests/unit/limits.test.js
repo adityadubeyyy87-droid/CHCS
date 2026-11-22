@@ -9,7 +9,7 @@
  * broken" during a live demo.
  */
 
-const { createLimiters, authKey, ipKey, normaliseIp } = require('../../lib/limits');
+const { createLimiters, authKey, bookingKey, ipKey, normaliseIp } = require('../../lib/limits');
 
 describe('rate limiters', () => {
   const limiters = createLimiters({ disabled: false });
@@ -50,6 +50,17 @@ describe('rate limiters', () => {
   it('counts every attempt against the per-identifier bucket', () => {
     const key = authKey({ ip: '10.0.0.5', body: { identifier: 'alice@cmrit.edu' } });
     expect(key).toContain('alice@cmrit.edu');
+  });
+
+  it('keys the booking bucket per authenticated user, not per IP alone', () => {
+    const req = { ip: '10.0.0.5', user: { id: 41 } };
+    const a = bookingKey(req);
+    const b = bookingKey({ ...req, user: { id: 42 } });
+    const anon = bookingKey({ ip: '10.0.0.5' });
+
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(anon);
+    expect(bookingKey({ ...req, user: { id: 41 } })).toBe(a);
   });
 
   it('normalises IPv6-mapped addresses so the bucket cannot be side-stepped', () => {

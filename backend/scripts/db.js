@@ -107,11 +107,34 @@ async function setup() {
   }
 }
 
+async function applyMigrations(conn, dbName) {
+  if (!/^[a-zA-Z0-9_]+$/.test(String(dbName || ''))) {
+    throw new Error(`Unsafe database name: ${dbName}`);
+  }
+  const dir = path.join(ROOT, 'database', 'migrations');
+  const files = fs
+    .readdirSync(dir)
+    .filter((file) => file.endsWith('.sql'))
+    .sort();
+  for (const file of files) {
+    // Migration 001 includes a USE statement for mysql CLI users. Re-select
+    // after every file so a hosted MYSQL_URL database is not silently abandoned.
+    await conn.query(`USE \`${dbName}\``);
+    await conn.query(fs.readFileSync(path.join(dir, file), 'utf8'));
+    console.log(`applied ${file}`);
+  }
+}
+
 async function setupProduction() {
+  const options = connectionOptions();
   const schema = fs.readFileSync(path.join(ROOT, 'database', 'schema-production.sql'), 'utf8');
-  const conn = await mysql.createConnection(connectionOptions());
+  const conn = await mysql.createConnection(options);
   try {
     await conn.query(schema);
+    // CREATE TABLE IF NOT EXISTS cannot upgrade an existing table. Always run the
+    // idempotent migrations so Railway installations gain hold/expiry columns
+    // on the next deploy without losing live data.
+    await applyMigrations(conn, options.database);
     const [rows] = await conn.query(
       `SELECT
          (SELECT COUNT(*) FROM users) AS users,
@@ -127,27 +150,10 @@ async function setupProduction() {
 }
 
 async function migrate() {
-  const dir = path.join(ROOT, 'database', 'migrations');
-  const files = fs
-    .readdirSync(dir)
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
-
-  // Unlike setup(), migrations need a selected database: they inspect
-  // information_schema with DATABASE() and the migration files do not USE one.
-  const dbName = process.env.DB_NAME || 'community_health_scheduler';
-  if (!/^[a-zA-Z0-9_]+$/.test(dbName)) {
-    throw new Error(`Unsafe DB_NAME: ${dbName}`);
-  }
-  const conn = await mysql.createConnection(connectionOptions({ database: dbName }));
+  const options = connectionOptions();
+  const conn = await mysql.createConnection(options);
   try {
-    for (const file of files) {
-      // Migration 001 includes a USE statement for mysql CLI users. Re-select
-      // after every file so a custom DB_NAME is not silently abandoned.
-      await conn.query(`USE \`${dbName}\``);
-      await conn.query(fs.readFileSync(path.join(dir, file), 'utf8'));
-      console.log(`applied ${file}`);
-    }
+    await applyMigrations(conn, options.database);
   } finally {
     await conn.end();
   }

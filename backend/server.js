@@ -54,6 +54,19 @@ const ALLOWED_ORIGINS = FRONTEND_ORIGIN.split(',').map((s) => s.trim()).filter(B
 const ALPHA_MAX = Number(process.env.ALPHA_MAX || 0.25);
 const ALLOW_DESTRUCTIVE_SLOT_REBUILD =
   String(process.env.ALLOW_DESTRUCTIVE_SLOT_REBUILD || '').toLowerCase() === 'true';
+
+/** Bounded integer environment settings for seat holds and expiry sweeps. */
+function boundedIntEnv(name, fallback, min, max) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+const BOOKING_HOLD_MINUTES = boundedIntEnv('BOOKING_HOLD_MINUTES', 10, 1, 1440);
+const PROMOTION_HOLD_MINUTES = boundedIntEnv('PROMOTION_HOLD_MINUTES', 15, 1, 1440);
+const HOLD_EXPIRY_BATCH_SIZE = boundedIntEnv('HOLD_EXPIRY_BATCH_SIZE', 100, 1, 1000);
+const HOLD_EXPIRY_CRON = String(process.env.HOLD_EXPIRY_CRON || '* * * * *');
+const ACTIVE_BOOKING_STATUSES = ['HELD', 'CONFIRMED', 'CHECKED_IN', 'COMPLETED'];
+
 const DEMO_AVAILABILITY = computeDemoAvailability({
   nodeEnv: process.env.NODE_ENV,
   demoMode: DEMO_MODE,
@@ -265,6 +278,12 @@ function publicStaff(row) {
   };
 }
 
+function toIso(value) {
+  if (value === null || value === undefined || value === '') return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 function publicBooking(row) {
   if (!row) return null;
   return {
@@ -279,6 +298,7 @@ function publicBooking(row) {
     travelMode: row.travel_mode,
     pledgeOnTime: Boolean(row.pledge_on_time),
     bookedAt: row.booked_at,
+    holdExpiresAt: toIso(row.hold_expires_at),
     checkedInAt: row.checked_in_at,
     cancelledAt: row.cancelled_at,
     waitlistPosition: row.waitlist_position !== undefined ? Number(row.waitlist_position) : undefined,
@@ -354,6 +374,405 @@ async function withTransaction(work) {
   } finally {
     conn.release();
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Seat holds, confirmation and expiry
+ *
+ * A successful booking reserves inventory but is deliberately HELD for a short,
+ * bounded window. Confirmation is a second, atomic mutation under the same slot
+ * row lock. Expiry releases inventory and hands the seat to the next FIFO
+ * waiter, so an abandoned checkout can never leak capacity.
+ * ------------------------------------------------------------------------- */
+
+function auditEvent(action, targetType, targetId, before, after) {
+  return { action, targetType, targetId, before, after };
+}
+
+async function writeAuditEvents(events = [], actor = null) {
+  for (const event of events) {
+    await auditLog({
+      actorId: actor?.id || null,
+      actorName: actor?.name || 'system',
+      ...event,
+    });
+  }
+}
+
+async function fetchBookingRow(conn, bookingId) {
+  const [rows] = await conn.query('SELECT * FROM bookings WHERE id = ? FOR UPDATE', [bookingId]);
+  return rows[0] || null;
+}
+
+async function fetchPatientRow(conn, patientId) {
+  const [rows] = await conn.query(
+    'SELECT id, name, phone, email FROM users WHERE id = ? AND is_active = 1',
+    [patientId],
+  );
+  return rows[0] || null;
+}
+
+/** Create (or reuse a cancelled/expired row for) a timed seat reservation. */
+async function createHoldBooking(
+  conn,
+  { slot, camp, patient, travelMode = null, pledge = false, minutes = BOOKING_HOLD_MINUTES, existing = null },
+) {
+  const qrToken = makeQrToken();
+  const tokenNumber = makeTokenNumber();
+  let bookingId;
+  if (existing?.id) {
+    await conn.query(
+      `UPDATE bookings
+       SET status = 'HELD', qr_token = ?, token_number = ?, travel_mode = ?, pledge_on_time = ?,
+           hold_expires_at = DATE_ADD(NOW(), INTERVAL ? MINUTE),
+           booked_at = NOW(), checked_in_at = NULL, cancelled_at = NULL
+       WHERE id = ?`,
+      [qrToken, tokenNumber, travelMode, pledge ? 1 : 0, minutes, existing.id],
+    );
+    bookingId = existing.id;
+  } else {
+    const [insert] = await conn.query(
+      `INSERT INTO bookings
+         (slot_id, camp_id, patient_id, qr_token, token_number, status,
+          travel_mode, pledge_on_time, hold_expires_at)
+       VALUES (?, ?, ?, ?, ?, 'HELD', ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+      [slot.id, camp.id || camp.camp_id, patient.id, qrToken, tokenNumber, travelMode, pledge ? 1 : 0, minutes],
+    );
+    bookingId = insert.insertId;
+  }
+  return fetchBookingRow(conn, bookingId);
+}
+
+async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
+  const before = { status: booking.status, holdExpiresAt: toIso(booking.hold_expires_at) };
+  await conn.query(
+    `UPDATE bookings
+     SET status = 'CONFIRMED', hold_expires_at = NULL, cancelled_at = NULL
+     WHERE id = ? AND status = 'HELD'`,
+    [booking.id],
+  );
+  await conn.query(
+    `UPDATE waitlist
+     SET status = 'CANCELLED', promotion_expires_at = NULL
+     WHERE slot_id = ? AND patient_id = ? AND status = 'PROMOTED'`,
+    [booking.slot_id, booking.patient_id],
+  );
+  await remindersEngine.scheduleForBooking(conn, {
+    bookingId: booking.id,
+    campDate: camp.camp_date,
+    startTime: slot.start_time,
+  });
+
+  const message =
+    `CHSC confirmed: ${patient.name}, token ${booking.token_number} for ${camp.title} at ` +
+    `${formatTime12(slot.start_time)}. Pass ${booking.qr_token}. Arrive 10 min early. ` +
+    `Zero-penalty release available in My Bookings.`;
+  const notifications = [
+    await insertNotification(conn, {
+      bookingId: booking.id,
+      userId: patient.id,
+      channel: 'SMS',
+      type: 'BOOKING_CONFIRMED',
+      recipient: patient.phone,
+      message,
+      provider: providerFor('SMS'),
+      status: 'SIMULATED',
+      payload: { slotId: slot.id, token: booking.qr_token },
+    }),
+    await insertNotification(conn, {
+      bookingId: booking.id,
+      userId: patient.id,
+      channel: 'EMAIL',
+      type: 'BOOKING_CONFIRMED',
+      recipient: patient.email,
+      subject: `Your health camp pass · ${booking.token_number}`,
+      message,
+      provider: providerFor('EMAIL'),
+      status: 'SIMULATED',
+      payload: { slotId: slot.id, token: booking.qr_token },
+    }),
+  ];
+
+  return {
+    booking: { ...booking, status: 'CONFIRMED', hold_expires_at: null },
+    notifications,
+    audit: auditEvent(
+      'CONFIRM_HOLD',
+      'booking',
+      booking.id,
+      before,
+      { status: 'CONFIRMED', confirmedAt: new Date().toISOString() },
+    ),
+  };
+}
+
+/** Atomically give a released seat to the next eligible FIFO waiter as a HELD claim. */
+async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
+  const [slotRows] = await conn.query(
+    `SELECT s.*, c.title, c.camp_date, c.status AS camp_status
+     FROM slots s JOIN camps c ON c.id = s.camp_id
+     WHERE s.id = ? FOR UPDATE`,
+    [slotId],
+  );
+  if (!slotRows.length) return null;
+  const slot = slotRows[0];
+  if (slot.camp_status !== 'PUBLISHED') return null;
+  if (Number(slot.booked_count) >= Number(slot.capacity)) return null;
+
+  const [waiters] = await conn.query(
+    `SELECT w.*, p.name, p.phone, p.email
+     FROM waitlist w JOIN users p ON p.id = w.patient_id
+     WHERE w.slot_id = ? AND w.camp_id = ? AND w.status = 'WAITING'
+       AND NOT EXISTS (
+         SELECT 1 FROM bookings b2
+         WHERE b2.patient_id = w.patient_id AND b2.camp_id = w.camp_id
+           AND b2.status IN (${ACTIVE_BOOKING_STATUSES.map(() => '?').join(',')})
+       )
+     ORDER BY w.created_at ASC, w.id ASC
+     LIMIT 1 FOR UPDATE`,
+    [slotId, campId, ...ACTIVE_BOOKING_STATUSES],
+  );
+  if (!waiters.length) return null;
+  const waiter = waiters[0];
+
+  const [existing] = await conn.query(
+    'SELECT * FROM bookings WHERE slot_id = ? AND patient_id = ? FOR UPDATE',
+    [slotId, waiter.patient_id],
+  );
+  const booking = await createHoldBooking(conn, {
+    slot,
+    camp: { id: campId, title: slot.title, camp_date: slot.camp_date },
+    patient: { id: waiter.patient_id, name: waiter.name, phone: waiter.phone, email: waiter.email },
+    minutes: PROMOTION_HOLD_MINUTES,
+    existing: existing[0] || null,
+  });
+
+  const [seatUpdate] = await conn.query(
+    `UPDATE slots SET booked_count = booked_count + 1
+     WHERE id = ? AND booked_count < capacity`,
+    [slotId],
+  );
+  if (seatUpdate.affectedRows !== 1) {
+    throw new ApiError(409, 'Seat changed unexpectedly. Please retry.', 'SEAT_RACE_RETRY');
+  }
+
+  await conn.query(
+    `UPDATE waitlist SET status = 'PROMOTED', promoted_at = NOW(),
+       promotion_expires_at = ? WHERE id = ?`,
+    [booking.hold_expires_at, waiter.id],
+  );
+
+  const message =
+    `Great news ${waiter.name}! A neighbour released a seat. Claim your place for ` +
+    `${slot.title} at ${formatTime12(slot.start_time)} within ${PROMOTION_HOLD_MINUTES} minutes. ` +
+    `Pass ${booking.qr_token}. No payment or penalty.`;
+  const notifications = [
+    await insertNotification(conn, {
+      bookingId: booking.id,
+      userId: waiter.patient_id,
+      channel: 'SMS',
+      type: 'WAITLIST_PROMOTED',
+      recipient: waiter.phone,
+      message,
+      provider: providerFor('SMS'),
+      status: 'SIMULATED',
+      payload: { fromWaitlistId: waiter.id, slotId, holdExpiresAt: toIso(booking.hold_expires_at) },
+    }),
+    await insertNotification(conn, {
+      bookingId: booking.id,
+      userId: waiter.patient_id,
+      channel: 'EMAIL',
+      type: 'WAITLIST_PROMOTED',
+      recipient: waiter.email,
+      subject: `Claim your health camp pass ${booking.token_number}`,
+      message,
+      provider: providerFor('EMAIL'),
+      status: 'SIMULATED',
+      payload: { fromWaitlistId: waiter.id, slotId, holdExpiresAt: toIso(booking.hold_expires_at) },
+    }),
+  ];
+
+  return {
+    booking,
+    patient: { id: waiter.patient_id, name: waiter.name, phone: waiter.phone, email: waiter.email },
+    waitlistId: waiter.id,
+    notifications,
+    source,
+    audit: auditEvent(
+      'PROMOTE_WAITLIST',
+      'booking',
+      booking.id,
+      { waitlistStatus: 'WAITING' },
+      { status: 'HELD', waitlistStatus: 'PROMOTED', source },
+    ),
+  };
+}
+
+/** Release a reserved seat. Used by patient cancellation and both expiry sweeps. */
+async function releaseReservedSeat(
+  conn,
+  booking,
+  { finalStatus = 'EXPIRED', reason = 'hold_expired' } = {},
+) {
+  const [slotRows] = await conn.query(
+    `SELECT s.*, c.title, c.camp_date, c.status AS camp_status
+     FROM slots s JOIN camps c ON c.id = s.camp_id
+     WHERE s.id = ? FOR UPDATE`,
+    [booking.slot_id],
+  );
+  if (!slotRows.length) throw new ApiError(404, 'Slot not found.', 'SLOT_NOT_FOUND');
+  const slot = slotRows[0];
+  const patient = await fetchPatientRow(conn, booking.patient_id);
+
+  await conn.query(
+    `UPDATE bookings SET status = ?, cancelled_at = NOW()
+     WHERE id = ? AND status = 'HELD'`,
+    [finalStatus, booking.id],
+  );
+  await remindersEngine.cancelForBooking(conn, booking.id);
+  await conn.query(
+    'UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?',
+    [booking.slot_id],
+  );
+  await conn.query(
+    `UPDATE waitlist SET status = 'EXPIRED', promotion_expires_at = NULL
+     WHERE slot_id = ? AND patient_id = ? AND status = 'PROMOTED'`,
+    [booking.slot_id, booking.patient_id],
+  );
+
+  const notifications = [];
+  if (patient) {
+    const message =
+      `CHSC: ${patient.name}, your ${reason === 'patient_cancelled' ? 'cancelled' : 'expired'} ` +
+      `reservation for ${slot.title} was released. No penalty was applied.`;
+    notifications.push(
+      await insertNotification(conn, {
+        bookingId: booking.id,
+        userId: patient.id,
+        channel: 'SMS',
+        type: 'CANCELLATION',
+        recipient: patient.phone,
+        message,
+        provider: providerFor('SMS'),
+        status: 'SIMULATED',
+        payload: { reason },
+      }),
+    );
+  }
+
+  const promoted = await promoteNextWaiter(conn, {
+    slotId: booking.slot_id,
+    campId: booking.camp_id,
+    source: reason,
+  });
+  if (promoted) notifications.push(...promoted.notifications);
+
+  return {
+    releasedBooking: { ...booking, status: finalStatus, cancelled_at: new Date() },
+    promoted,
+    notifications,
+    slotId: booking.slot_id,
+    campId: booking.camp_id,
+    audits: [
+      auditEvent(
+        finalStatus === 'CANCELLED' ? 'CANCEL_BOOKING' : 'EXPIRE_HOLD',
+        'booking',
+        booking.id,
+        { status: 'HELD', holdExpiresAt: toIso(booking.hold_expires_at) },
+        { status: finalStatus, reason },
+      ),
+      ...(promoted ? [promoted.audit] : []),
+    ],
+  };
+}
+
+async function runHoldExpirySweep(trigger = 'cron') {
+  const summary = await withTransaction(async (conn) => {
+    const result = {
+      expiredHolds: 0,
+      expiredPromotions: 0,
+      promotedWaiters: 0,
+      notifications: [],
+      audits: [],
+      slotIds: new Set(),
+    };
+
+    const [expiredHolds] = await conn.query(
+      `SELECT id FROM bookings
+       WHERE status = 'HELD' AND hold_expires_at <= NOW()
+       ORDER BY hold_expires_at ASC, id ASC
+       LIMIT ? FOR UPDATE SKIP LOCKED`,
+      [HOLD_EXPIRY_BATCH_SIZE],
+    );
+    for (const row of expiredHolds) {
+      const booking = await fetchBookingRow(conn, row.id);
+      if (!booking || booking.status !== 'HELD') continue;
+      const outcome = await releaseReservedSeat(conn, booking, {
+        finalStatus: 'EXPIRED',
+        reason: 'hold_expired',
+      });
+      result.expiredHolds += 1;
+      result.slotIds.add(outcome.slotId);
+      result.notifications.push(...outcome.notifications);
+      result.audits.push(...outcome.audits);
+      if (outcome.promoted) result.promotedWaiters += 1;
+    }
+
+    const [expiredPromotions] = await conn.query(
+      `SELECT id FROM waitlist
+       WHERE status = 'PROMOTED' AND promotion_expires_at <= NOW()
+       ORDER BY promotion_expires_at ASC, id ASC
+       LIMIT ? FOR UPDATE SKIP LOCKED`,
+      [HOLD_EXPIRY_BATCH_SIZE],
+    );
+    for (const row of expiredPromotions) {
+      const [rows] = await conn.query(
+        'SELECT * FROM waitlist WHERE id = ? AND status = \'PROMOTED\' FOR UPDATE',
+        [row.id],
+      );
+      const waitlist = rows[0];
+      if (!waitlist) continue;
+      const [bookingRows] = await conn.query(
+        `SELECT * FROM bookings
+         WHERE slot_id = ? AND patient_id = ? AND status = 'HELD'
+         LIMIT 1 FOR UPDATE`,
+        [waitlist.slot_id, waitlist.patient_id],
+      );
+      if (bookingRows.length) {
+        const outcome = await releaseReservedSeat(conn, bookingRows[0], {
+          finalStatus: 'EXPIRED',
+          reason: 'promotion_expired',
+        });
+        result.expiredPromotions += 1;
+        result.slotIds.add(outcome.slotId);
+        result.notifications.push(...outcome.notifications);
+        result.audits.push(...outcome.audits);
+        if (outcome.promoted) result.promotedWaiters += 1;
+      } else {
+        await conn.query(
+          `UPDATE waitlist SET status = 'EXPIRED', promotion_expires_at = NULL WHERE id = ?`,
+          [waitlist.id],
+        );
+        result.expiredPromotions += 1;
+        result.audits.push(
+          auditEvent('EXPIRE_PROMOTION', 'waitlist', waitlist.id, { status: 'PROMOTED' }, { status: 'EXPIRED' }),
+        );
+      }
+    }
+
+    return { ...result, slotIds: [...result.slotIds] };
+  });
+
+  await writeAuditEvents(summary.audits, { id: null, name: 'system' });
+  publishNotifications(summary.notifications);
+  emitBounded(io, 'holds:expired', { trigger, ...summary });
+  return {
+    trigger,
+    expiredHolds: summary.expiredHolds,
+    expiredPromotions: summary.expiredPromotions,
+    promotedWaiters: summary.promotedWaiters,
+    slotIds: summary.slotIds,
+  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1000,6 +1419,15 @@ if (process.env.NODE_ENV !== 'test' && REMINDER_CRON !== 'off') {
   });
 }
 
+// One sweep handles both abandoned booking holds and unclaimed waitlist
+// promotions. It is idempotent and safe to run from several workers because
+// rows are claimed with FOR UPDATE SKIP LOCKED.
+if (process.env.NODE_ENV !== 'test' && HOLD_EXPIRY_CRON !== 'off') {
+  cron.schedule(HOLD_EXPIRY_CRON, () => {
+    runHoldExpirySweep('cron').catch((error) => console.warn('[hold expiry cron]', error.message));
+  });
+}
+
 /* ---------------------------------------------------------------------------
  * HEALTH & AUTH
  * ------------------------------------------------------------------------- */
@@ -1187,6 +1615,8 @@ app.get(
   }),
 );
 
+// Public TV board by design: only opaque token numbers are broadcast, never
+// patient names or contact details. Mutating queue operations remain staff-only.
 app.get(
   '/api/queue/:campId',
   asyncHandler(async (req, res) => {
@@ -1297,6 +1727,15 @@ app.post(
     });
 
     const camp = await loadCampBundle(result);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'CREATE_CAMP',
+      targetType: 'camp',
+      targetId: camp.id,
+      before: null,
+      after: { title: camp.title, campDate: camp.camp_date, status: camp.status, slotCount: plan.length },
+    });
     emitBounded(io, 'camp:created', { campId: camp.id, camp });
     res.status(201).json({
       camp,
@@ -1473,12 +1912,24 @@ app.patch(
     if (!['DRAFT', 'PUBLISHED', 'COMPLETED', 'CANCELLED'].includes(status)) {
       throw new ApiError(400, 'Invalid camp status.', 'INVALID_STATUS');
     }
+    const [beforeRows] = await pool.query('SELECT status FROM camps WHERE id = ?', [req.params.id]);
+    if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const previousStatus = beforeRows[0].status;
     const [result] = await pool.query('UPDATE camps SET status = ? WHERE id = ?', [
       status,
       req.params.id,
     ]);
     if (!result.affectedRows) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
     const camp = await loadCampBundle(Number(req.params.id));
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'CHANGE_CAMP_STATUS',
+      targetType: 'camp',
+      targetId: camp.id,
+      before: { status: previousStatus },
+      after: { status },
+    });
     emitBounded(io, 'camp:updated', { campId: camp.id, status });
     res.json({ camp });
   }),
@@ -1502,6 +1953,12 @@ app.patch(
       address: 'address',
       city: 'city',
     };
+    const [beforeRows] = await pool.query(
+      'SELECT title, description_en, description_kn, venue, address, city FROM camps WHERE id = ?',
+      [campId],
+    );
+    if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const before = beforeRows[0];
     const sets = [];
     const values = [];
     for (const [key, column] of Object.entries(columns)) {
@@ -1517,6 +1974,22 @@ app.patch(
     );
     if (!result.affectedRows) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
     const camp = await loadCampBundle(campId);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'UPDATE_CAMP',
+      targetType: 'camp',
+      targetId: campId,
+      before,
+      after: {
+        title: camp.title,
+        descriptionEn: camp.descriptionEn,
+        descriptionKn: camp.descriptionKn,
+        venue: camp.venue,
+        address: camp.address,
+        city: camp.city,
+      },
+    });
     emitBounded(io, 'camp:updated', { campId, camp });
     res.json({ camp });
   }),
@@ -1542,8 +2015,19 @@ app.delete(
         { bookings: Number(total) },
       );
     }
+    const [beforeRows] = await pool.query('SELECT title, camp_date, status FROM camps WHERE id = ?', [campId]);
+    if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
     const [result] = await pool.query('DELETE FROM camps WHERE id = ?', [campId]);
     if (!result.affectedRows) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'DELETE_CAMP',
+      targetType: 'camp',
+      targetId: campId,
+      before: beforeRows[0],
+      after: null,
+    });
     emitBounded(io, 'camp:deleted', { campId });
     res.json({ deleted: true, campId });
   }),
@@ -1605,7 +2089,7 @@ app.post(
 
       if (
         existingRows.length &&
-        ['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(existingRows[0].status)
+        ACTIVE_BOOKING_STATUSES.includes(existingRows[0].status)
       ) {
         return {
           kind: 'duplicate',
@@ -1619,9 +2103,9 @@ app.post(
       const [campActive] = await conn.query(
         `SELECT id, slot_id FROM bookings
          WHERE patient_id = ? AND camp_id = ?
-           AND status IN ('CONFIRMED','CHECKED_IN','COMPLETED')
+           AND status IN (${ACTIVE_BOOKING_STATUSES.map(() => '?').join(',')})
          FOR UPDATE`,
-        [patient.id, camp.id],
+        [patient.id, camp.id, ...ACTIVE_BOOKING_STATUSES],
       );
       if (campActive.length) {
         return {
@@ -1697,7 +2181,9 @@ app.post(
         };
       }
 
-      // STEP 3: Seat is available while holding the lock → mutate atomically.
+      // STEP 3: Seat is available while holding the lock → reserve it as HELD.
+      // Reminders and the confirmation notification are deliberately deferred
+      // until POST /api/bookings/:id/confirm.
       const [seatUpdate] = await conn.query(
         `UPDATE slots SET booked_count = booked_count + 1
          WHERE id = ? AND booked_count < capacity`,
@@ -1708,48 +2194,15 @@ app.post(
         throw new ApiError(409, 'Seat changed unexpectedly. Please retry.', 'SEAT_RACE_RETRY');
       }
 
-      let booking;
-      if (existingRows.length && existingRows[0].status === 'CANCELLED') {
-        const qrToken = makeQrToken();
-        const tokenNumber = makeTokenNumber();
-        await conn.query(
-          `UPDATE bookings
-           SET status = 'CONFIRMED', travel_mode = ?, pledge_on_time = ?, qr_token = ?,
-               token_number = ?, booked_at = NOW(), cancelled_at = NULL, checked_in_at = NULL
-           WHERE id = ?`,
-          [travelMode, pledge ? 1 : 0, qrToken, tokenNumber, existingRows[0].id],
-        );
-        booking = {
-          ...existingRows[0],
-          status: 'CONFIRMED',
-          travel_mode: travelMode,
-          pledge_on_time: pledge ? 1 : 0,
-          qr_token: qrToken,
-          token_number: tokenNumber,
-        };
-      } else {
-        const qrToken = makeQrToken();
-        const tokenNumber = makeTokenNumber();
-        const [bookingInsert] = await conn.query(
-          `INSERT INTO bookings
-             (slot_id, camp_id, patient_id, qr_token, token_number, status,
-              travel_mode, pledge_on_time)
-           VALUES (?, ?, ?, ?, ?, 'CONFIRMED', ?, ?)`,
-          [slotId, camp.id, patient.id, qrToken, tokenNumber, travelMode, pledge ? 1 : 0],
-        );
-        booking = {
-          id: bookingInsert.insertId,
-          slot_id: slotId,
-          camp_id: camp.id,
-          patient_id: patient.id,
-          qr_token: qrToken,
-          token_number: tokenNumber,
-          status: 'CONFIRMED',
-          travel_mode: travelMode,
-          pledge_on_time: pledge ? 1 : 0,
-          booked_at: new Date(),
-        };
-      }
+      const booking = await createHoldBooking(conn, {
+        slot,
+        camp,
+        patient,
+        travelMode,
+        pledge,
+        minutes: BOOKING_HOLD_MINUTES,
+        existing: existingRows[0] || null,
+      });
 
       await conn.query(
         `UPDATE waitlist SET status = 'CANCELLED'
@@ -1757,47 +2210,20 @@ app.post(
         [slotId, patient.id],
       );
 
-      await remindersEngine.scheduleForBooking(conn, {
-        bookingId: booking.id,
-        campDate: camp.camp_date,
-        startTime: slot.start_time,
-      });
-
-      const message =
-        `CHSC confirmed: ${patient.name}, token ${booking.token_number} for ${camp.title} at ` +
-        `${formatTime12(slot.start_time)}. Pass ${booking.qr_token}. Arrive 10 min early. ` +
-        `Zero-penalty release available in My Bookings.`;
-      const sms = await insertNotification(conn, {
-        bookingId: booking.id,
-        userId: patient.id,
-        channel: 'SMS',
-        type: 'BOOKING_CONFIRMED',
-        recipient: patient.phone,
-        message,
-        provider: providerFor('SMS'),
-        status: 'SIMULATED',
-        payload: { slotId, token: booking.qr_token },
-      });
-      const email = await insertNotification(conn, {
-        bookingId: booking.id,
-        userId: patient.id,
-        channel: 'EMAIL',
-        type: 'BOOKING_CONFIRMED',
-        recipient: patient.email,
-        subject: `Your health camp pass · ${booking.token_number}`,
-        message,
-        provider: providerFor('EMAIL'),
-        status: 'SIMULATED',
-        payload: { slotId, token: booking.qr_token },
-      });
-
       return {
-        kind: 'confirmed',
+        kind: 'held',
         booking,
         slot: { ...slot, booked_count: Number(slot.booked_count) + 1 },
         camp,
         patient,
-        notifications: [sms, email],
+        notifications: [],
+        audit: auditEvent(
+          'CREATE_HOLD',
+          'booking',
+          booking.id,
+          existingRows.length ? { status: existingRows[0].status } : null,
+          { status: 'HELD', holdExpiresAt: toIso(booking.hold_expires_at) },
+        ),
       };
     });
 
@@ -1814,6 +2240,7 @@ app.post(
     }
 
     publishNotifications(outcome.notifications || []);
+    if (outcome.audit) await auditLog({ actorId: req.user.id, actorName: req.user.name, ...outcome.audit });
     emitBounded(io, 'slot:updated', {
       slotId,
       bookedCount: outcome.kind === 'waitlisted' ? Number(outcome.slot.booked_count) : undefined,
@@ -1835,11 +2262,118 @@ app.post(
     }
 
     const payload = publicBooking(outcome.booking);
-    emitBounded(io, 'booking:confirmed', { booking: safeSocketBooking(outcome.booking), at: new Date().toISOString() });
+    emitBounded(io, 'booking:held', { booking: safeSocketBooking(outcome.booking), at: new Date().toISOString() });
     return res.status(201).json({
-      status: 'CONFIRMED',
-      message: 'Seat locked and confirmed. Queued reminders are now scheduled.',
+      status: 'HELD',
+      message: `Seat reserved for ${BOOKING_HOLD_MINUTES} minutes. Confirm before ${payload.holdExpiresAt} to finalise it.`,
+      holdExpiresAt: payload.holdExpiresAt,
       booking: payload,
+    });
+  }),
+);
+
+/**
+ * Confirm a HELD reservation atomically. The slot row is locked again so an
+ * expiry sweep cannot free the same seat between the expiry check and commit.
+ */
+app.post(
+  '/api/bookings/:id/confirm',
+  authenticate,
+  limiters.booking,
+  asyncHandler(async (req, res) => {
+    const bookingId = Number(req.params.id);
+
+    const outcome = await withTransaction(async (conn) => {
+      const [rows] = await conn.query(
+        `SELECT b.*, s.capacity, s.booked_count, s.start_time, s.end_time,
+                c.title, c.venue, c.camp_date, c.status AS camp_status,
+                p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
+         FROM bookings b
+         JOIN slots s ON s.id = b.slot_id
+         JOIN camps c ON c.id = b.camp_id
+         JOIN users p ON p.id = b.patient_id
+         WHERE b.id = ? FOR UPDATE`,
+        [bookingId],
+      );
+      if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+      const booking = rows[0];
+
+      if (req.user.role === 'PATIENT' && booking.patient_id !== req.user.id) {
+        throw new ApiError(403, 'You cannot confirm this booking.', 'CONFIRM_FORBIDDEN');
+      }
+      if (!['PATIENT', 'ADMIN', 'ORGANIZER'].includes(req.user.role)) {
+        throw new ApiError(403, 'You cannot confirm this booking.', 'CONFIRM_FORBIDDEN');
+      }
+
+      if (booking.status === 'CONFIRMED') {
+        return { kind: 'already_confirmed', booking };
+      }
+      if (booking.status !== 'HELD') {
+        throw new ApiError(409, 'Only a held booking can be confirmed.', 'NOT_HELD', {
+          status: booking.status,
+        });
+      }
+
+      const [[clock]] = await conn.query('SELECT NOW() AS now, hold_expires_at FROM bookings WHERE id = ?', [bookingId]);
+      if (!clock.hold_expires_at || new Date(clock.hold_expires_at).getTime() <= new Date(clock.now).getTime()) {
+        const released = await releaseReservedSeat(conn, booking, {
+          finalStatus: 'EXPIRED',
+          reason: 'hold_expired',
+        });
+        return { kind: 'expired', released };
+      }
+      if (booking.camp_status !== 'PUBLISHED') {
+        throw new ApiError(409, 'This camp is not accepting bookings.', 'CAMP_NOT_OPEN');
+      }
+
+      const patient = {
+        id: booking.patient_id,
+        name: booking.patient_name,
+        phone: booking.patient_phone,
+        email: booking.patient_email,
+      };
+      const confirmed = await confirmHeldBooking(conn, booking, {
+        slot: { ...rows[0], id: booking.slot_id },
+        camp: { ...rows[0], id: booking.camp_id },
+        patient,
+      });
+      return { kind: 'confirmed', ...confirmed };
+    });
+
+    if (outcome.kind === 'expired') {
+      await writeAuditEvents(outcome.released.audits, req.user);
+      publishNotifications(outcome.released.notifications);
+      emitBounded(io, 'slot:updated', { slotId: outcome.released.slotId, action: 'hold_expired' });
+      if (outcome.released.promoted) {
+        emitBounded(io, 'waitlist:promoted', {
+          slotId: outcome.released.slotId,
+          booking: safeSocketBooking(outcome.released.promoted.booking),
+          at: new Date().toISOString(),
+        });
+      }
+      throw new ApiError(409, 'Your seat hold expired and the seat was released.', 'HOLD_EXPIRED', {
+        booking: publicBooking(outcome.released.releasedBooking),
+      });
+    }
+
+    if (outcome.kind === 'already_confirmed') {
+      return res.json({
+        status: 'CONFIRMED',
+        message: 'This booking was already confirmed.',
+        booking: publicBooking(outcome.booking),
+      });
+    }
+
+    await auditLog({ actorId: req.user.id, actorName: req.user.name, ...outcome.audit });
+    publishNotifications(outcome.notifications);
+    emitBounded(io, 'booking:confirmed', {
+      booking: safeSocketBooking(outcome.booking),
+      at: new Date().toISOString(),
+    });
+    return res.json({
+      status: 'CONFIRMED',
+      message: 'Seat confirmed. Queued reminders are now scheduled.',
+      booking: publicBooking(outcome.booking),
     });
   }),
 );
@@ -1875,10 +2409,24 @@ app.patch(
       ) {
         throw new ApiError(403, 'You cannot cancel this booking.', 'CANCEL_FORBIDDEN');
       }
+      if (booking.status === 'HELD') {
+        const released = await releaseReservedSeat(conn, booking, {
+          finalStatus: 'CANCELLED',
+          reason: 'patient_cancelled',
+        });
+        return {
+          ...released,
+          cancelledBooking: released.releasedBooking,
+          promotedBooking: released.promoted?.booking || null,
+          promotedPatient: released.promoted?.patient || null,
+          autoPromoted: Boolean(released.promoted),
+        };
+      }
       if (!['CONFIRMED', 'CHECKED_IN'].includes(booking.status)) {
-        throw new ApiError(409, 'Only an active confirmed booking can be released.', 'NOT_ACTIVE');
+        throw new ApiError(409, 'Only an active booking can be released.', 'NOT_ACTIVE');
       }
 
+      const beforeStatus = booking.status;
       await conn.query(
         `UPDATE bookings SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = ?`,
         [bookingId],
@@ -1889,124 +2437,12 @@ app.patch(
         [booking.slot_id],
       );
 
-      // Skip waiters who already hold an active booking at this camp — the
-      // one-active-booking-per-camp invariant wins over FIFO order.
-      const [waiters] = await conn.query(
-        `SELECT w.*, p.name, p.phone, p.email
-         FROM waitlist w JOIN users p ON p.id = w.patient_id
-         WHERE w.slot_id = ? AND w.status = 'WAITING'
-           AND NOT EXISTS (
-             SELECT 1 FROM bookings b2
-             WHERE b2.patient_id = w.patient_id AND b2.camp_id = w.camp_id
-               AND b2.status IN ('CONFIRMED','CHECKED_IN','COMPLETED')
-           )
-         ORDER BY w.created_at ASC, w.id ASC
-         LIMIT 1 FOR UPDATE`,
-        [booking.slot_id],
-      );
-
-      let promotedBooking = null;
-      let promotedPatient = null;
+      const promoted = await promoteNextWaiter(conn, {
+        slotId: booking.slot_id,
+        campId: booking.camp_id,
+        source: 'cancellation',
+      });
       const notifications = [];
-      let autoPromoted = false;
-
-      if (waiters.length) {
-        autoPromoted = true;
-        const waiter = waiters[0];
-        promotedPatient = {
-          id: waiter.patient_id,
-          name: waiter.name,
-          phone: waiter.phone,
-          email: waiter.email,
-        };
-
-        const [existing] = await conn.query(
-          `SELECT * FROM bookings WHERE slot_id = ? AND patient_id = ? FOR UPDATE`,
-          [booking.slot_id, waiter.patient_id],
-        );
-
-        const qrToken = makeQrToken();
-        const tokenNumber = makeTokenNumber();
-        if (existing.length) {
-          await conn.query(
-            `UPDATE bookings SET status='CONFIRMED', qr_token=?, token_number=?, booked_at=NOW(),
-               cancelled_at=NULL, checked_in_at=NULL WHERE id=?`,
-            [qrToken, tokenNumber, existing[0].id],
-          );
-          promotedBooking = {
-            ...existing[0],
-            status: 'CONFIRMED',
-            qr_token: qrToken,
-            token_number: tokenNumber,
-          };
-        } else {
-          const [insert] = await conn.query(
-            `INSERT INTO bookings
-               (slot_id, camp_id, patient_id, qr_token, token_number, status, travel_mode, pledge_on_time)
-             VALUES (?, ?, ?, ?, ?, 'CONFIRMED', NULL, 0)`,
-            [booking.slot_id, booking.camp_id, waiter.patient_id, qrToken, tokenNumber],
-          );
-          promotedBooking = {
-            id: insert.insertId,
-            slot_id: booking.slot_id,
-            camp_id: booking.camp_id,
-            patient_id: waiter.patient_id,
-            qr_token: qrToken,
-            token_number: tokenNumber,
-            status: 'CONFIRMED',
-            travel_mode: null,
-            pledge_on_time: 0,
-            booked_at: new Date(),
-          };
-        }
-
-        await conn.query(
-          `UPDATE slots SET booked_count = booked_count + 1 WHERE id = ? AND booked_count < capacity`,
-          [booking.slot_id],
-        );
-        await conn.query(
-          `UPDATE waitlist SET status='PROMOTED', promoted_at=NOW(), promotion_expires_at=DATE_ADD(NOW(), INTERVAL 15 MINUTE) WHERE id=?`,
-          [waiter.id],
-        );
-
-        await remindersEngine.scheduleForBooking(conn, {
-          bookingId: promotedBooking.id,
-          campDate: booking.camp_date,
-          startTime: booking.start_time,
-        });
-
-        const message =
-          `Great news ${waiter.name}! A neighbour released a seat. You are now CONFIRMED for ` +
-          `${booking.title} at ${formatTime12(booking.start_time)}. Pass ${qrToken}. ` +
-          `Please arrive 10 minutes early.`;
-        notifications.push(
-          await insertNotification(conn, {
-            bookingId: promotedBooking.id,
-            userId: waiter.patient_id,
-            channel: 'SMS',
-            type: 'WAITLIST_PROMOTED',
-            recipient: waiter.phone,
-            message,
-            provider: providerFor('SMS'),
-            status: 'SIMULATED',
-            payload: { fromWaitlistId: waiter.id, slotId: booking.slot_id },
-          }),
-        );
-        notifications.push(
-          await insertNotification(conn, {
-            bookingId: promotedBooking.id,
-            userId: waiter.patient_id,
-            channel: 'EMAIL',
-            type: 'WAITLIST_PROMOTED',
-            recipient: waiter.email,
-            subject: `You're in! Health camp pass ${tokenNumber}`,
-            message,
-            provider: providerFor('EMAIL'),
-            status: 'SIMULATED',
-            payload: { fromWaitlistId: waiter.id, slotId: booking.slot_id },
-          }),
-        );
-      }
 
       const cancelMessage =
         `CHSC: ${booking.patient_name}, your booking for ${booking.title} at ` +
@@ -2022,26 +2458,32 @@ app.patch(
           message: cancelMessage,
           provider: providerFor('SMS'),
           status: 'SIMULATED',
-          payload: { autoPromoted },
+          payload: { autoPromoted: Boolean(promoted) },
         }),
       );
+      if (promoted) notifications.push(...promoted.notifications);
 
       return {
         cancelledBooking: { ...booking, status: 'CANCELLED' },
-        promotedBooking,
-        promotedPatient,
-        autoPromoted,
+        promotedBooking: promoted?.booking || null,
+        promotedPatient: promoted?.patient || null,
+        autoPromoted: Boolean(promoted),
         notifications,
+        audits: [
+          auditEvent(
+            'CANCEL_BOOKING',
+            'booking',
+            bookingId,
+            { status: beforeStatus },
+            { status: 'CANCELLED', autoPromoted: Boolean(promoted) },
+          ),
+          ...(promoted ? [promoted.audit] : []),
+        ],
         slotId: booking.slot_id,
         campId: booking.camp_id,
       };
     });
-    await auditLog({
-      actorId: req.user.id, actorName: req.user.name, action: 'CANCEL_BOOKING',
-      targetType: 'booking', targetId: bookingId,
-      before: { status: 'CONFIRMED' },
-      after: { status: 'CANCELLED', autoPromoted: outcome.autoPromoted },
-    });
+    await writeAuditEvents(outcome.audits, req.user);
     publishNotifications(outcome.notifications);
     emitBounded(io, 'slot:updated', {
       slotId: outcome.slotId,
@@ -2251,14 +2693,31 @@ app.post(
       );
       if (!rows.length) throw new ApiError(404, 'QR token not recognised.', 'TOKEN_NOT_FOUND');
       const booking = rows[0];
+
+      // Role alone is not enough: a doctor or volunteer may only scan passes at
+      // camps where they are actually assigned. Organizers/admins manage all camps.
+      if (!(await canJoinCampRoom(req.user, booking.camp_id, conn))) {
+        throw new ApiError(403, 'You are not assigned to this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
+
+      if (booking.status === 'CHECKED_IN') {
+        return { alreadyCheckedIn: true, booking };
+      }
       if (booking.status === 'CANCELLED') {
         throw new ApiError(409, 'This booking was cancelled.', 'BOOKING_CANCELLED');
       }
       if (booking.status === 'NO_SHOW') {
         throw new ApiError(409, 'This booking is marked NO_SHOW.', 'BOOKING_NO_SHOW');
       }
-      if (booking.status === 'CHECKED_IN') {
-        return { alreadyCheckedIn: true, booking };
+      // A QR pass is a claim only after confirmation. HELD/EXPIRED/COMPLETED and
+      // any unknown status must never be silently promoted into the queue.
+      if (booking.status !== 'CONFIRMED') {
+        throw new ApiError(
+          409,
+          `A ${booking.status} booking cannot be checked in. Confirm the seat first.`,
+          'INVALID_CHECKIN_STATUS',
+          { status: booking.status },
+        );
       }
 
       await conn.query(
@@ -2268,6 +2727,7 @@ app.post(
       await remindersEngine.cancelForBooking(conn, booking.id);
       return {
         alreadyCheckedIn: false,
+        beforeStatus: booking.status,
         booking: { ...booking, status: 'CHECKED_IN', checked_in_at: new Date() },
       };
     });
@@ -2292,7 +2752,7 @@ app.post(
         action: 'CHECK_IN',
         targetType: 'booking',
         targetId: outcome.booking.id,
-        before: { status: 'CONFIRMED' },
+        before: { status: outcome.beforeStatus || 'CONFIRMED' },
         after: { status: 'CHECKED_IN' },
       });
     }
@@ -2336,6 +2796,10 @@ app.patch(
       if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
       const row = rows[0];
 
+      if (!(await canJoinCampRoom(req.user, row.camp_id, conn))) {
+        throw new ApiError(403, 'You are not assigned to this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
+
       const allowed = {
         CONFIRMED: ['CHECKED_IN', 'NO_SHOW'],
         NO_SHOW: ['CHECKED_IN'],
@@ -2372,9 +2836,24 @@ app.patch(
       const checkedInAt = next === 'CHECKED_IN'
         ? (row.checked_in_at ?? now)
         : row.checked_in_at;
-      return { ...row, status: next, checked_in_at: checkedInAt };
+      return {
+        ...row,
+        status: next,
+        checked_in_at: checkedInAt,
+        beforeStatus: row.status,
+        beforeCheckedInAt: row.checked_in_at,
+      };
     });
 
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'UPDATE_ATTENDANCE',
+      targetType: 'booking',
+      targetId: bookingId,
+      before: { status: booking.beforeStatus, checkedInAt: toIso(booking.beforeCheckedInAt) },
+      after: { status: next, checkedInAt: toIso(booking.checked_in_at) },
+    });
     emitBounded(io, 'attendance:updated', {
       bookingId,
       campId: Number(booking.camp_id),
@@ -2422,6 +2901,7 @@ app.post(
       );
 
       return {
+        previousStatus: camps[0].status,
         noShowMarked: noShows.affectedRows,
         checkedIn: Number(counts.checked_in || 0),
         completed: Number(counts.completed || 0),
@@ -2429,6 +2909,15 @@ app.post(
       };
     });
 
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'CLOSE_OUT_CAMP',
+      targetType: 'camp',
+      targetId: campId,
+      before: { status: result.previousStatus },
+      after: { status: 'COMPLETED', noShowMarked: result.noShowMarked },
+    });
     emitBounded(io, 'camp:closed', { campId, ...result });
     res.json({ status: 'COMPLETED', campId, ...result });
   }),
@@ -2751,9 +3240,21 @@ app.delete(
   authenticate,
   requireRole('ORGANIZER', 'ADMIN'),
   asyncHandler(async (req, res) => {
-    const [result] = await pool.query('DELETE FROM staff_assignments WHERE id = ?', [req.params.id]);
+    const staffId = Number(req.params.id);
+    const [beforeRows] = await pool.query('SELECT * FROM staff_assignments WHERE id = ?', [staffId]);
+    if (!beforeRows.length) throw new ApiError(404, 'Assignment not found.', 'STAFF_NOT_FOUND');
+    const [result] = await pool.query('DELETE FROM staff_assignments WHERE id = ?', [staffId]);
     if (!result.affectedRows) throw new ApiError(404, 'Assignment not found.', 'STAFF_NOT_FOUND');
-    emitBounded(io, 'staff:removed', { staffId: Number(req.params.id) });
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'REMOVE_STAFF',
+      targetType: 'staff_assignment',
+      targetId: staffId,
+      before: beforeRows[0],
+      after: null,
+    });
+    emitBounded(io, 'staff:removed', { staffId });
     res.json({ deleted: true, staffId: Number(req.params.id) });
   }),
 );
@@ -2911,6 +3412,22 @@ app.post(
     res.json({
       ...result,
       note: 'Reminders are claimed with SELECT … FOR UPDATE SKIP LOCKED; a booking/type pair can only be sent once per claim and retries back off exponentially.',
+    });
+  }),
+);
+
+/** Manual, idempotent equivalent of the hold/promotion expiry cron. */
+app.post(
+  '/api/admin/holds/expire',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (_req, res) => {
+    const result = await runHoldExpirySweep('manual');
+    res.json({
+      ...result,
+      bookingHoldMinutes: BOOKING_HOLD_MINUTES,
+      promotionHoldMinutes: PROMOTION_HOLD_MINUTES,
+      note: 'Expired HELD bookings release their seat; expired promotions hand it to the next FIFO waiter.',
     });
   }),
 );
@@ -3193,17 +3710,24 @@ app.post(
           const recipientPhone = u.length ? u[0].phone : '0000000000';
           const qr = `CHSC-BLR-${crypto.randomInt(100000, 999999)}`;
           const tn = `A-${crypto.randomInt(100000, 999999)}`;
-          await conn.query(
-            `INSERT INTO bookings (slot_id, camp_id, patient_id, qr_token, token_number, status)
-             VALUES (?, ?, ?, ?, ?, 'CONFIRMED')`,
-            [slotId, campId, patientId, qr, tn],
+          const [bookingInsert] = await conn.query(
+            `INSERT INTO bookings
+               (slot_id, camp_id, patient_id, qr_token, token_number, status, hold_expires_at)
+             VALUES (?, ?, ?, ?, ?, 'HELD', DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+            [slotId, campId, patientId, qr, tn, BOOKING_HOLD_MINUTES],
           );
-            await conn.query(
-              `INSERT INTO notifications_log
-               (booking_id, user_id, channel, type, recipient, message, provider, status)
-               VALUES (LAST_INSERT_ID(), ?, 'SMS', 'BOOKING_CONFIRMED', ?, ?, 'Demo', 'SIMULATED')`,
-              [patientId, recipientPhone, `Confirmed ${tn}`],
-            );
+          // Same lock, same transaction: HELD → CONFIRMED proves the two-phase
+          // hold flow without changing the proof's observable 10/40/0 result.
+          await conn.query(
+            `UPDATE bookings SET status = 'CONFIRMED', hold_expires_at = NULL WHERE id = ?`,
+            [bookingInsert.insertId],
+          );
+          await conn.query(
+            `INSERT INTO notifications_log
+             (booking_id, user_id, channel, type, recipient, message, provider, status)
+             VALUES (?, ?, 'SMS', 'BOOKING_CONFIRMED', ?, ?, 'Demo', 'SIMULATED')`,
+            [bookingInsert.insertId, patientId, recipientPhone, `Confirmed ${tn}`],
+          );
           return { status: 201, patientId };
         }),
       ),
@@ -3614,7 +4138,11 @@ module.exports = {
   loadCampBundle,
   loadCampCollection,
   publicSlot,
+  publicBooking,
   remindersEngine,
+  runHoldExpirySweep,
+  bookingHoldMinutes: BOOKING_HOLD_MINUTES,
+  promotionHoldMinutes: PROMOTION_HOLD_MINUTES,
   providers,
   limiters,
 };

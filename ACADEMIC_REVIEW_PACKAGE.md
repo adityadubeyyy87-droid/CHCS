@@ -93,8 +93,9 @@ CHSC is a centralized web platform with four role-based dashboards:
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                   Database (MySQL 8, InnoDB)                 │
-│  8 tables · SELECT … FOR UPDATE row locks · CHECK constraints │
-│  7 tables + reminders + notifications_log                    │
+│  9 tables · SELECT … FOR UPDATE row locks · CHECK constraints │
+│  users, camps, slots, bookings, waitlist, staff_assignments, │
+│  notifications_log, audit_log, reminders                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -112,7 +113,7 @@ CHSC is a centralized web platform with four role-based dashboards:
 | Auth | JWT, bcryptjs | Stateless sessions, password hashing |
 | Validation | Zod | Request schema validation |
 | Rate limiting | express-rate-limit | Brute-force and seat-grabbing protection |
-| Database | MySQL 8, mysql2/promise | Relational data, InnoDB row locks |
+| Database | MySQL 8.4, mysql2/promise | Relational data, InnoDB row locks |
 | Scheduling | node-cron | Reminder sweeps |
 | Email | Nodemailer | SMTP or sandbox delivery |
 | SMS | Fast2SMS / mock | Sandbox SMS gateway |
@@ -149,7 +150,7 @@ Key constraints:
 
 ## 9. DATABASE SCHEMA EXPLANATION
 
-**8 tables** in the `community_health_scheduler` database:
+**9 tables** in the `community_health_scheduler` database:
 
 1. **users** — Patients, organizers, doctors, volunteers, admins. Data-minimised: name, email, phone, password hash, role, age group, language. No medical history.
 
@@ -157,30 +158,33 @@ Key constraints:
 
 3. **slots** — Time-slot rows within a camp. The `booked_count` column is the mutex for `SELECT ... FOR UPDATE` pessimistic booking. CHECK: `booked_count <= capacity`.
 
-4. **bookings** — Core transactional record. Unique indexes: `uq_slot_patient` (no double booking on same slot), `uq_one_active_booking_per_camp` (generated column — one active booking per patient per camp).
+4. **bookings** — Core transactional record. A booking starts as `HELD` with `hold_expires_at` (10-minute claim window) and becomes `CONFIRMED` only through `POST /api/bookings/:id/confirm`; QR check-in requires `CONFIRMED`. Unique indexes: `uq_slot_patient` (no double booking on same slot), `uq_one_active_booking_per_camp` (generated column — one active hold/booking per patient per camp).
 
-5. **waitlist** — FIFO waitlist ordered by `created_at, id`. Status: WAITING/PROMOTED/CANCELLED/EXPIRED.
+5. **waitlist** — FIFO waitlist ordered by `created_at, id`. Status: WAITING/PROMOTED/CANCELLED/EXPIRED. A promoted waiter receives a bounded claim window via `promotion_expires_at`; if it lapses, the seat moves to the next FIFO patient.
 
 6. **staff_assignments** — Staff per camp with shift times and clinical load thresholds. Overlap protection via half-open interval check under row lock.
 
 7. **notifications_log** — Audit trail for every SMS/email: channel, type, recipient, provider, status (QUEUED/SENT/SIMULATED/FAILED).
 
-8. **reminders** — One row per booking/reminder-type. Lifecycle: PENDING → SENDING → SENT/FAILED/CANCELLED. Claimed with `FOR UPDATE SKIP LOCKED` for idempotent delivery.
+8. **audit_log** — Decoded before/after snapshots for booking, staff, check-in, close-out and system expiry transitions.
+
+9. **reminders** — One row per booking/reminder-type. Lifecycle: PENDING → SENDING → SENT/FAILED/CANCELLED. Claimed with `FOR UPDATE SKIP LOCKED` for idempotent delivery.
 
 ---
 
 ## 10. MAJOR IMPLEMENTATION FEATURES
 
 1. **Transactional booking** — `SELECT ... FOR UPDATE` on slot row; `booked_count <= capacity` enforced by CHECK constraint; overbooking structurally impossible
-2. **FIFO waitlist** — Cancellation atomically promotes position 1 inside the same transaction
-3. **Zero-guilt cancellation** — One tap, no penalty; seat flows to waiting neighbour
-4. **QR Health Passport** — Inline SVG QR + `.ics` calendar export; no medical data
-5. **Live Queue TV** — Full-bleed waiting-room display with Socket.io broadcast
-6. **Camp management** — Deterministic auto-slot generator; staff matrix with clinical load warnings
-7. **Analytics** — KPIs, bookings vs capacity, attendance vs no-show, hourly utilisation, CSV export
-8. **Capacity Advisor** — `min(ceil(C_phys/(1−p)), floor(C_phys×(1+α_max)))` — explicitly rule-based, NOT AI/ML
-9. **Reminders** — 24h and 2h nudges; idempotent; retry with exponential backoff; delivery audit
-10. **Privacy** — Right to erasure (DPDP-aligned); data minimisation
+2. **Bounded 10-minute hold** — A successful booking first creates `HELD` with a live countdown; an explicit confirm commits the seat, QR pass and reminders
+3. **FIFO waitlist with claim windows** — Cancellation or hold expiry atomically promotes position 1 into a bounded claim window; unclaimed promotions expire FIFO inside the same transaction
+4. **Zero-guilt cancellation** — One tap, no penalty; seat flows to waiting neighbour
+5. **QR Health Passport** — Inline SVG QR + `.ics` calendar export; no medical data; only `CONFIRMED` bookings can check in
+6. **Live Queue TV** — Full-bleed waiting-room display with Socket.io broadcast
+7. **Camp management** — Deterministic auto-slot generator; staff matrix with clinical load warnings
+8. **Analytics** — KPIs, bookings vs capacity, attendance vs no-show, hourly utilisation, CSV export
+9. **Capacity Advisor** — `min(ceil(C_phys/(1−p)), floor(C_phys×(1+α_max)))` — explicitly rule-based, NOT AI/ML
+10. **Reminders** — 24h and 2h nudges; idempotent; retry with exponential backoff; delivery audit
+11. **Privacy** — Right to erasure (DPDP-aligned); data minimisation
 
 ---
 
@@ -191,10 +195,11 @@ Key constraints:
 1. A booking request begins a transaction at `READ COMMITTED` isolation
 2. `SELECT capacity, booked_count FROM slots WHERE id = ? FOR UPDATE` acquires an exclusive X-lock on the slot row
 3. Concurrent requests for the same slot block at step 2 until the first transaction commits or rolls back
-4. The transaction checks `booked_count < capacity`; if true, increments `booked_count` and inserts a booking row; if false, joins the FIFO waitlist
-5. The MySQL CHECK constraint `booked_count <= capacity` is the database-level backstop
+4. The transaction checks `booked_count < capacity`; if true, increments `booked_count` and inserts a `HELD` booking with a 10-minute expiry; if false, joins the FIFO waitlist
+5. `POST /api/bookings/:id/confirm` re-locks the booking under an expiry check before committing it to `CONFIRMED`; expired holds and unclaimed FIFO promotions release the seat atomically
+6. The MySQL CHECK constraint `booked_count <= capacity` is the database-level backstop
 
-**Stress test proof:** `backend/concurrency-test.js` runs 50 parallel `POST /api/slots/:id/book` requests against one slot with capacity 10. Result: exactly 10 confirmed (201), 40 waitlisted (202) with FIFO positions 1–40, zero 500 errors, zero duplicate active bookings, `booked_count == 10 == capacity`.
+**Stress test proof:** `backend/tests/integration/concurrency.test.js` runs 50 parallel `POST /api/slots/:id/book` requests against one slot with capacity 10, then confirms the 10 held seats. Result: exactly 10 confirmed, 40 waitlisted (202) with FIFO positions 1–40, zero 500 errors, zero duplicate active bookings, `booked_count == 10 == capacity`.
 
 ---
 
@@ -254,13 +259,14 @@ All queries run against live MySQL; simulated data is clearly tagged.
 |---|---|---|
 | Authentication | tests/integration/auth.test.js | ✅ 5/5 pass |
 | Authorization | tests/integration/auth.test.js | ✅ Role enforcement |
-| Validation | tests/unit/validation.test.js | ✅ 8/8 pass |
+| Validation | tests/unit/validation.test.js | ✅ 9/9 pass |
 | Camp management | tests/integration/camps.test.js | ✅ 6/6 pass |
 | Slot management | tests/unit/slots.test.js | ✅ 6/6 pass |
 | Booking | tests/integration/booking.test.js | ✅ 8/8 pass |
+| Hold + confirm | tests/integration/holds.test.js | ✅ 3/3 pass |
 | Cancellation | tests/integration/booking.test.js | ✅ FIFO promotion |
 | Rescheduling | tests/integration/booking.test.js | ✅ Reminder re-queue |
-| Concurrency | tests/integration/concurrency.test.js | ✅ 50→10 confirmed, 40 waitlisted |
+| Concurrency | tests/integration/concurrency.test.js | ✅ 50→10 held+confirmed, 40 waitlisted |
 | Staff conflicts | tests/integration/staff.test.js | ✅ 7/7 pass |
 | Reminder scheduling | tests/integration/reminders.test.js | ✅ Idempotent delivery |
 | Reminder idempotency | tests/integration/reminders.test.js | ✅ SKIP LOCKED |
@@ -269,7 +275,7 @@ All queries run against live MySQL; simulated data is clearly tagged.
 | Analytics | tests/integration/attendance.test.js | ✅ Post-close-out analytics |
 | CSV export | (endpoint implemented) | ✅ /api/admin/reports/export.csv |
 
-**Total: 67/67 tests passing.** Concurrency test is the mandatory proof: 50 parallel bookings vs 10 seats → exactly 10 confirmed, 40 waitlisted, zero overbooked.
+**Total: 102/102 tests passing across 18 files.** Concurrency test is the mandatory proof: 50 parallel bookings vs 10 seats → exactly 10 held then confirmed, 40 waitlisted, zero overbooked. Hold-expiry and promotion-expiry tests verify the FIFO claim windows.
 
 ---
 
@@ -279,14 +285,15 @@ For the review, capture these screenshots:
 
 1. **Login page** — Demo role buttons, Mode A/B indicator, theme toggle
 2. **Discover / camp browse** — Camp cards with availability badges, 3-step booking progress
-3. **Slot selection** — Morning/Midday/Afternoon groups, travel mode + pledge, confirm button
-4. **Confirmation / Health Passport** — QR token, token number, confetti celebration
-5. **My Bookings** — List with Cancel / Reschedule / Calendar / Pass actions
-6. **Manage (organizer)** — Camp CRUD, staff assignment with load warnings
-7. **Live Queue TV** — Current token, next up, average wait
-8. **Analytics** — KPI cards, bar charts, line chart, Capacity Advisor
-9. **Notifications** — Gateway Interceptor audit drawer with SIMULATED badges
-10. **Concurrency test output** — Terminal showing 10 confirmed / 40 waitlisted / 0 overbooked
+3. **Slot selection** — Morning/Midday/Afternoon groups, travel mode + pledge, 10-minute hold button
+4. **Hold screen** — Live `mm:ss` countdown, confirm/release actions, FIFO-expiry explanation
+5. **Confirmation / Health Passport** — QR token, token number, confetti celebration
+6. **My Bookings** — List with Hold countdown / Confirm / Release / Reschedule / Pass actions
+7. **Manage (organizer)** — Camp CRUD, staff assignment with load warnings
+8. **Live Queue TV** — Current token, next up, average wait
+9. **Analytics** — KPI cards, bar charts, line chart, Capacity Advisor
+10. **Notifications** — Gateway Interceptor audit drawer with SIMULATED badges
+11. **Concurrency test output** — Terminal showing 10 confirmed / 40 waitlisted / 0 overbooked
 
 ---
 
@@ -298,7 +305,7 @@ For the review, capture these screenshots:
 - Atomic cancellation → promotion in one transaction
 - Idempotent reminder delivery (no double-send)
 - State-machine-enforced attendance transitions
-- 67/67 backend tests passing
+- 102/102 backend tests passing across 18 files
 
 **Limitations (honest disclosure):**
 - SMS/Email delivery is sandboxed (SIMULATED) unless SMTP/Fast2SMS credentials configured
@@ -338,7 +345,7 @@ A: The sidebar mode chip and every badge indicate the mode. Mode A = real MySQL 
 A: Name, phone, email, age group — nothing else. No medical history, diagnosis, prescriptions, or report fields exist in the schema. Users can purge everything with one tap (DPDP-aligned erasure).
 
 **Q6: How does the FIFO waitlist auto-promotion work?**
-A: When a booking is cancelled, the transaction decrements `booked_count`, then selects the first WAITING waitlist entry for that slot (ordered by created_at). That entry is promoted to CONFIRMED inside the same transaction, with reminders re-scheduled. All atomic — no seat is ever double-allocated.
+A: When a booking is cancelled or a hold expires, the transaction decrements `booked_count`, then selects the first WAITING waitlist entry for that slot (ordered by `created_at, id`). That entry is promoted into a `HELD` claim window (`promotion_expires_at`, 15 minutes) inside the same transaction. Confirming the hold commits reminders and the QR pass; if the window lapses, the sweep releases the seat and promotes the next patient atomically. No seat is ever double-allocated.
 
 **Q7: How are reminders prevented from being sent twice?**
 A: The `reminders` table has `uq_reminder_booking_type` (one row per booking/type). The sweep claims rows with `SELECT ... FOR UPDATE SKIP LOCKED`, marks them SENDING, increments attempts, and only marks SENT after successful delivery. A second worker can never claim the same row.
@@ -356,7 +363,7 @@ A: All remaining CONFIRMED bookings become NO_SHOW, all PENDING/SENDING reminder
 A: MySQL 8 InnoDB provides `SELECT ... FOR UPDATE` pessimistic row locking and CHECK constraints, which are essential for the zero-overbooking guarantee. The stack was specified for the project and is a good fit for relational camp/booking data.
 
 **Q12: How does the one-active-booking-per-camp rule work?**
-A: A generated column `active_camp_id` is non-NULL only while the booking is CONFIRMED/CHECKED_IN/COMPLETED. A UNIQUE index on `(patient_id, active_camp_id)` makes it a database invariant: a patient can have only one active booking per camp. The application also checks this explicitly for a precise error message.
+A: A generated column `active_camp_id` is non-NULL only while the booking is HELD/CONFIRMED/CHECKED_IN/COMPLETED. A UNIQUE index on `(patient_id, active_camp_id)` makes it a database invariant: a patient cannot hold two seats at the same camp, including while a checkout is in flight. The application also checks this explicitly for a precise error message.
 
 **Q13: What is the Capacity Advisor formula?**
 A: `recommended = min(ceil(C_phys / (1 - p)), floor(C_phys × (1 + α_max)))`, where `C_phys` is physical capacity, `p` is empirical no-show rate, and `α_max = 0.25` (25% max overbooking safety cap). The result is bounded between physical capacity and the safety ceiling.
@@ -365,10 +372,10 @@ A: `recommended = min(ceil(C_phys / (1 - p)), floor(C_phys × (1 + α_max)))`, w
 A: Passwords are hashed with bcrypt (cost 10) before storage. The `password_hash` column never contains plain text. Login uses `bcrypt.compare()` for constant-time comparison.
 
 **Q15: What rate limits are in place?**
-A: Auth: 10 requests per 15 minutes. Booking: 30 requests per minute. Global API: 300 requests per minute. Rate limiting can be disabled for tests via `RATE_LIMIT_DISABLED=true`.
+A: Auth: 10 failed attempts per 15 minutes keyed by `(IP, identifier)`, plus a 60-attempt per-IP backstop that counts all auth traffic. Booking: 30 requests per minute keyed by `(IP, authenticated user)`, so 50 patients behind one campus IP can all race for one seat. Global API: 300 requests per minute per IP as the account-cycling backstop. Rate limiting can be disabled for tests via `RATE_LIMIT_DISABLED=true`.
 
 **Q16: How does the frontend handle backend outage?**
-A: `api.js` probes `GET /api/health` at startup. If the backend is down, it falls back to `engine.js` — a local in-memory demo engine that mirrors every API response shape. The mode chip shows LIVE/DEMO and all simulated results carry `SIMULATED` badges.
+A: `api.js` probes `GET /api/health` at startup. Without a configured `VITE_API_BASE`, a failed probe falls back to `engine.js` — a local in-memory demo engine that mirrors every API response shape, with `DEMO` mode and `SIMULATED` badges. The deployed public bundle sets `VITE_API_BASE` to the Railway backend and is strictly live: it shows `LIVE · MySQL` and never substitutes simulated results when the API fails.
 
 **Q17: What is DPDP compliance in this project?**
 A: The Digital Personal Data Protection Act 2023 principle of data minimisation: only name, phone, email, age group are collected. No medical history. A one-tap purge endpoint deletes user data and releases active seats. Users are informed what is collected and why.
@@ -436,13 +443,13 @@ All data is minimised (name, phone, email, age group only — no medical history
 |---|---|---|
 | 0:00–0:30 | Login as Patient | Show demo role buttons, Mode A (live MySQL) indicator |
 | 0:30–1:00 | Browse camps | Discover page, camp cards with availability badges |
-| 1:00–1:30 | Book a slot | Pick camp → select slot → travel mode + pledge → confirm |
-| 1:30–2:00 | Confirmation | Health Passport with QR token, confetti animation |
+| 1:00–1:30 | Hold a slot | Pick camp → select slot → travel mode + pledge → reserve for 10 minutes |
+| 1:30–2:00 | Confirmation | Confirm the hold, then show Health Passport with QR token and confetti |
 | 2:00–2:30 | My Bookings | View booking, show Cancel and Reschedule buttons |
 | 2:30–3:00 | Reschedule | Move booking to another slot, verify reminders re-queued |
 | 3:00–3:30 | Login as Organizer | Manage page: create camp, assign staff, see load warning |
 | 3:30–4:00 | Admin analytics | Show KPIs, charts, Capacity Advisor, CSV export |
-| 4:00–4:30 | Concurrency proof | Run `node concurrency-test.js`, show 10/40/0 result |
+| 4:00–4:30 | Concurrency proof | Run the 50-way test, show 10 held+confirmed / 40 waitlisted / 0 overbooked |
 | 4:30–5:00 | Q&A | Address viva questions |
 
 ---
@@ -502,7 +509,7 @@ A: Per the pre-mortem, the likeliest demo failure is an empty/unpredictable DB. 
 
 1. **Empty DB / unpredictable state** → Fixed: Demo scenario loader seeds repeatable scenarios (full-slot, waitlist-active, camp-day).
 2. **Slow network** → Fixed: Concurrency proof fires 50 requests in parallel from one tab; Socket.io falls back to polling.
-3. **WebGL / 3D failure** → Fixed: No WebGL used; all animation is CSS/SVG; works with `prefers-reduced-motion`.
+3. **WebGL / 3D failure** → Fixed: the sign-in diagnostic scene and landing visuals load lazily and degrade to accessible CSS/SVG fallbacks; reduced-motion users get a still clinical state. Core workflows never depend on WebGL.
 4. **Dead email/SMS service** → Fixed: Reminders are sandboxed/SIMULATED; booking doesn't depend on delivery.
 5. **Stale data** → Fixed: Control Room re-reads from MySQL on every Socket.io event; concurrency proof re-queries `booked_count` after the race.
 

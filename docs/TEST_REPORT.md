@@ -67,9 +67,9 @@ Command: `cd backend && npm test`
 | Suite | Files | Result |
 |---|---|---|
 | Unit | `validation`, `pagination`, `reminders`, `slots`, `limits`, `security` | PASS |
-| Integration | `auth`, `booking`, `camps`, `staff`, `attendance`, `export`, `reminders`, `concurrency`, `audit`, `frontend-serve`, `security-regression` | PASS |
+| Integration | `auth`, `booking`, `holds`, `camps`, `staff`, `attendance`, `export`, `reminders`, `concurrency`, `audit`, `frontend-serve`, `security-regression` | PASS |
 
-**Total: 17 test files · 98 tests · 98 passing.**
+**Total: 18 test files · 102 tests · 102 passing.**
 
 Security/correctness regressions added or extended in this pass:
 
@@ -81,6 +81,9 @@ Security/correctness regressions added or extended in this pass:
 - reschedule authority is restricted and never resurrects a `SENT` reminder
 - CSV fan-out, reminder re-queue safety and migration idempotency are covered
 - `ALPHA_MAX` is honoured when the query parameter is absent
+- bookings are `HELD` until explicit confirm; QR check-in rejects `HELD` and accepts only `CONFIRMED`
+- doctor/volunteer HTTP mutations are restricted to assigned camps; `/api/queue/:campId` stays public for the TV
+- expired holds and unclaimed FIFO promotions release seats and hand them to the next patient
 
 Additional mechanical checks:
 
@@ -99,10 +102,14 @@ Additional mechanical checks:
 `database/migrations/002_waitlist_expiry.sql` was rewritten without the mysql-client
 `DELIMITER` directive and verified through the repo's own runner:
 
-1. Fresh schema + `npm run db:migrate` twice → all three migrations applied both times.
-2. Legacy-shaped `waitlist` table without the expiry column/index → migration added
+1. Fresh schema + `npm run db:migrate` twice → all four migrations applied both times.
+2. Legacy-shaped `waitlist` table without the expiry column/index → migration 002 added
    `promotion_expires_at` and `idx_wait_expires` safely.
-3. `backend/scripts/db.js` now selects `DB_NAME` before every migration file, so an
+3. Legacy-shaped `bookings` table with the old five-value status enum and without
+   hold columns/indexes → migration 004 applied twice; final state had `HELD`/`EXPIRED`
+   statuses, `hold_expires_at`, a `HELD`-aware `active_camp_id` expression,
+   `idx_bookings_hold_expiry`, and the 002 waitlist objects. Re-applying 004 changed nothing.
+4. `backend/scripts/db.js` now selects `DB_NAME` before every migration file, so an
    earlier file's `USE` statement cannot redirect later migrations.
 
 ---
@@ -112,19 +119,20 @@ Additional mechanical checks:
 Script: `backend/scripts/verify-live.js` against `http://127.0.0.1:4000`
 (real HTTP → Express → MySQL).
 
-**Result: 43 / 43 checks passed.**
+**Result: 47 / 47 checks passed.**
 
 Coverage includes health/database/socket, demo login for all five roles, register/login
 and validation, role guards, camp creation and slot generation, staff assignment and
-overlap 409, booking/duplicate-booking/cancel/rebook/reschedule, FIFO waitlist
-promotion, QR check-in, control room, analytics, advisor labelling, notifications,
-audit log, CSV export, idempotent reminder sweep, camp close-out and the mandatory
-concurrency proof.
+overlap 409, `HELD` booking → explicit `CONFIRMED` confirmation, duplicate-booking
+guards, cancel/rebook/reschedule, FIFO waitlist promotion into a bounded claim window,
+QR check-in of confirmed bookings only, control room, analytics, advisor labelling,
+notifications, audit log, CSV export, idempotent reminder sweep, camp close-out and the
+mandatory concurrency proof.
 
 Concurrency proof result:
 
 ```json
-{"confirmed":10,"waitlisted":40,"errors":0,"zeroOverbooked":true}
+{"held":10,"confirmed":10,"waitlisted":40,"errors":0,"zeroOverbooked":true}
 ```
 
 ---

@@ -1,7 +1,7 @@
 -- ============================================================================
 --  COMMUNITY HEALTH SCREENING CAMP SCHEDULER (CHSC)
 --  CMR Institute of Technology, Bengaluru · Department of ISE
---  MySQL 8.0+ schema — 7 mandatory tables + deterministic Bengaluru seed data
+--  MySQL 8.4+ schema — 9 InnoDB tables + deterministic Bengaluru seed data
 -- ============================================================================
 --  Run:
 --    mysql -u root -p < database/schema.sql
@@ -117,16 +117,17 @@ CREATE TABLE bookings (
   patient_id      BIGINT UNSIGNED NOT NULL,
   qr_token        VARCHAR(64) NOT NULL,
   token_number    VARCHAR(20) NOT NULL,
-  status          ENUM('CONFIRMED','CANCELLED','CHECKED_IN','NO_SHOW','COMPLETED') NOT NULL DEFAULT 'CONFIRMED',
-  -- Derived key: non-NULL only while the booking is active. The unique index
-  -- below makes "one active booking per patient per camp" a database invariant,
-  -- not an application convention.
+  status          ENUM('HELD','EXPIRED','CONFIRMED','CANCELLED','CHECKED_IN','NO_SHOW','COMPLETED') NOT NULL DEFAULT 'CONFIRMED',
+  -- Derived key: non-NULL only while the booking is active. HELD reservations
+  -- participate so one patient cannot hold two seats at the same camp while a
+  -- checkout is in flight.
   active_camp_id  BIGINT UNSIGNED GENERATED ALWAYS AS (
-                    CASE WHEN status IN ('CONFIRMED','CHECKED_IN','COMPLETED') THEN camp_id END
+                    CASE WHEN status IN ('HELD','CONFIRMED','CHECKED_IN','COMPLETED') THEN camp_id END
                   ) VIRTUAL,
   travel_mode     ENUM('WALK','AUTO_BUS','TWO_WHEELER','WITH_FAMILY') NULL,
   pledge_on_time  TINYINT(1) NOT NULL DEFAULT 0,
   booked_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  hold_expires_at DATETIME NULL,
   checked_in_at   TIMESTAMP NULL,
   cancelled_at    TIMESTAMP NULL,
   PRIMARY KEY (id),
@@ -136,6 +137,7 @@ CREATE TABLE bookings (
   UNIQUE KEY uq_bookings_token_number (token_number),
   KEY idx_bookings_camp_status (camp_id, status),
   KEY idx_bookings_patient (patient_id, status),
+  KEY idx_bookings_hold_expiry (status, hold_expires_at),
   KEY idx_bookings_checked_in (camp_id, checked_in_at),
   CONSTRAINT fk_bookings_slot FOREIGN KEY (slot_id) REFERENCES slots (id)
     ON DELETE CASCADE ON UPDATE CASCADE,
@@ -164,6 +166,7 @@ CREATE TABLE waitlist (
   KEY idx_wait_fifo (slot_id, status, created_at, id),
   KEY idx_wait_camp (camp_id, status),
   KEY idx_wait_patient (patient_id, status),
+  KEY idx_wait_expires (promotion_expires_at, status),
   CONSTRAINT fk_wait_slot FOREIGN KEY (slot_id) REFERENCES slots (id)
     ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT fk_wait_camp FOREIGN KEY (camp_id) REFERENCES camps (id)

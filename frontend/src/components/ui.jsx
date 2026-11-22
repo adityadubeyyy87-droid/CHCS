@@ -69,8 +69,8 @@ export function Button({ variant = 'primary', size = 'md', icon, children, class
 /* ------------------------------- badges ------------------------------ */
 const TONE_MAP = {
   CONFIRMED: 'ok', COMPLETED: 'ok', PUBLISHED: 'ok', SENT: 'ok', PROMOTED: 'ok', LIVE: 'ok',
-  WAITLISTED: 'warn', WAITING: 'warn', ALMOST: 'warn', REVIEW: 'warn', QUEUED: 'warn',
-  CANCELLED: 'bad', NO_SHOW: 'bad', FAILED: 'bad', CRITICAL: 'bad', DRAFT: 'muted',
+  WAITLISTED: 'warn', WAITING: 'warn', ALMOST: 'warn', REVIEW: 'warn', QUEUED: 'warn', HELD: 'warn',
+  CANCELLED: 'bad', NO_SHOW: 'bad', EXPIRED: 'bad', FAILED: 'bad', CRITICAL: 'bad', DRAFT: 'muted',
   CHECKED_IN: 'info', CHECKIN: 'info', SIMULATED: 'sim', DRAFTX: 'muted',
 };
 export function Badge({ status, children, tone: toneProp, className }) {

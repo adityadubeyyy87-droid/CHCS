@@ -1,6 +1,6 @@
 # CHSC — Community Health Screening Camp Scheduler
 
-Full-stack HealthTech platform for running free community health screening camps in Bengaluru — built as a CMRIT ISE mini project. Four roles (Patient, Organizer, Doctor, Volunteer, Admin), transactional seat booking under row locks, FIFO waitlist auto-promotion, QR check-in, a live waiting-room TV, and a rule-based Capacity Advisor.
+Full-stack HealthTech platform for running free community health screening camps in Bengaluru — built as a CMRIT ISE mini project. Five roles (Patient, Organizer, Doctor, Volunteer, Admin), bounded transactional seat holds under row locks, FIFO waitlist auto-promotion, QR check-in, a live waiting-room TV, and a rule-based Capacity Advisor.
 
 ---
 
@@ -10,10 +10,10 @@ Full-stack HealthTech platform for running free community health screening camps
 |---|---|
 | Frontend | React 18 + Vite 5, Recharts, socket.io-client, inline-SVG QR (`qrcode` renders to SVG; no images) |
 | Backend | Node.js, Express, JWT (`jsonwebtoken`), `bcryptjs`, `node-cron`, Nodemailer, Socket.io |
-| Database | MySQL 8, `mysql2/promise`, InnoDB, `SELECT … FOR UPDATE` row locks |
-| Design | "Biophilic Future — Intelligent Healthcare for Everyone" — premium Apple-inspired minimalism, futuristic medical technology, organic 3D environments, sophisticated glass surfaces, cinematic visual storytelling, emerald & mint lighting, Inter + Plus Jakarta Sans + Noto Sans Kannada, dark clinical default |
+| Database | MySQL 8.4, `mysql2/promise`, InnoDB, `SELECT … FOR UPDATE` row locks |
+| Design | "Biophilic Clinical Precision" — emerald/mint signal system on slate, hairline grids, bento layouts, one quiet shadow system, glass reserved for sidebar and Health Passport, Inter + Plus Jakarta Sans + Noto Sans Kannada + JetBrains Mono, dark clinical default with a light theme |
 | Motion | `motion` (Framer Motion v11) — cinematic page transitions, scroll reveals, magnetic buttons, 3D tilt effects, text shimmer/scramble/morph, animated number counters, spotlight effects, confetti celebrations |
-| 3D | Three.js + React Three Fiber — cinematic 3D health emblem on login, 3D health data visualizations on analytics, biophilic orb backgrounds |
+| 3D | Three.js + React Three Fiber — emerald diagnostic cell on sign-in and a scroll-linked clinical beacon on the welcome page; both lazy-loaded with CSS/SVG fallbacks and reduced-motion support |
 
 ## 2. Quick start
 
@@ -46,7 +46,7 @@ npm install
 npm run dev                 # backend offline → app auto-falls back
 ```
 
-`src/lib/api.js` probes `GET /api/health` at startup. If the backend is down, the same components run against `src/lib/engine.js` — an in-memory engine that mirrors every API response shape. The mode chip switches to amber **“Local Demo Mode”** and every simulated artifact is stamped `SIMULATED` (dashed badges, "Local Engine" provider tags). Simulated results are **never** presented as real database results.
+`src/lib/api.js` probes `GET /api/health` at startup. When no `VITE_API_BASE` is configured and the backend is down, the same components run against `src/lib/engine.js` — an in-memory engine that mirrors every API response shape. The mode chip switches to amber **“DEMO”** and every simulated artifact is stamped `SIMULATED` (dashed badges, "Local Engine" provider tags). Simulated results are **never** presented as real database results. The deployed public bundle sets `VITE_API_BASE`, so it is strictly live and never falls back.
 
 ## 3. Demo accounts (seeded)
 
@@ -64,11 +64,12 @@ The Login screen also has one-click **demo role shortcuts** (they use `POST /api
 
 Use the floating **Demo** controller (bottom-left after sign-in):
 
-1. **Last-Seat Concurrency** — the Concurrency Arena (Analytics page) races 20 requests for 1 seat through the exact `FOR UPDATE` transaction path: 1 confirmed, 19 FIFO-waitlisted, **0 overbooked**. The *real* MySQL verification is `backend/concurrency-test.js`:
+1. **Last-Seat Concurrency** — the Concurrency Proof page (Analytics) races 20 requests for 1 seat in DEMO mode and labels the result `SIMULATED`. The *real* MySQL proofs are:
    ```bash
-   cd backend && node concurrency-test.js
+   cd backend && node concurrency-test.js   # 20 requests / 1 seat → 1 held+confirmed, 19 FIFO-waitlisted, 0 overbooked
+   cd backend && npm test                   # includes 50 requests / 10 seats → 10 held+confirmed, 40 waitlisted, 0 overbooked
    ```
-   Expect: 20 parallel `POST /api/slots/:id/book` with `mysql2` pool → exactly 1 `CONFIRMED`, 19 `WAITLISTED` in arrival order.
+   The 50-way proof is the mandatory invariant and is reproduced by `backend/scripts/verify-live.js` against the running Express + MySQL stack.
 2. **Waitlist Auto-Promotion** — releases demo booking `CHSC-BLR-104`; the first waiting neighbour is promoted inside the same transaction, and the Gateway Interceptor shows the simulated SMS/email.
 3. **QR Check-In** — verifies token `CHSC-BLR-104` and broadcasts it to the Live Queue TV (Socket.io event `checkin:new` / `queue:updated`).
 4. **Smart Analytics** — executive KPIs and the Capacity Advisor walkthrough.
@@ -77,11 +78,12 @@ Utilities: **Reset demo data** (local engine re-seeds; for MySQL re-run `databas
 
 ## 5. Feature map
 
-- **Guided 3-step booking** (camp → slot → commit) with travel-mode + on-time pledge (`implementation intentions`, Gollwitzer 1999), gated by Hick's/Miller's/Fitts's laws — visible via the Science X-Ray toggle.
+- **Guided 3-step booking** (camp → slot → 10-minute hold → confirm) with travel-mode + on-time pledge (`implementation intentions`, Gollwitzer 1999), gated by Hick's/Miller's/Fitts's laws — visible via the Science X-Ray toggle.
 - **Transactional booking** — `SELECT … FOR UPDATE` on the slot row; `booked_count ≤ capacity` enforced by a CHECK constraint; overbooking is structurally impossible.
-- **FIFO waitlist** — one cancellation atomically promotes position 1 inside the same transaction and notifies them.
+- **Bounded reservation** — a successful book returns `HELD` with `holdExpiresAt`; `POST /api/bookings/:id/confirm` commits the QR pass and reminders. Expiry is swept by cron and on manual admin trigger.
+- **FIFO waitlist with claim windows** — cancellation or hold expiry atomically promotes position 1 into a `PROMOTED` hold; an unclaimed promotion expires and flows to the next patient.
 - **Zero-guilt cancellation** — one tap, no penalty; the seat flows to a waiting neighbour.
-- **QR Health Passport** — inline SVG QR + `.ics` download; offline-cacheable; glass effect reserved for the passport and sidebar only.
+- **QR Health Passport** — inline SVG QR + `.ics` download; offline-cacheable; issued only after confirmation and check-in accepts only `CONFIRMED` bookings; glass effect reserved for the passport and sidebar only.
 - **Live Queue TV** — full-bleed dark panel, huge tabular-numeral token, NOW SCREENING / UP NEXT, average-wait stats; broadcasts over Socket.io in Mode A.
 - **Camp management** — deterministic auto-slot generator (`k = floor(ΔT/Δt)`, remainder spread earliest-first), staff matrix with clinical load warnings (≥25 warn / ≥30 critical per doctor-shift).
 - **Analytics** — honest KPIs, bookings-vs-capacity, attendance-vs-no-show, hourly utilisation, CSV export (real endpoint in Mode A; clearly-labelled in-browser export in Mode B).
@@ -94,9 +96,10 @@ Utilities: **Reset demo data** (local engine re-seeds; for MySQL re-run `databas
 ## 6. Project layout
 
 ```
-database/schema.sql        7 InnoDB tables + CHECK constraints + seed data
+database/schema.sql        9 InnoDB tables + CHECK constraints + seed data
 backend/server.js          Express API, JWT auth, row-lock transactions, Socket.io, cron
-backend/concurrency-test.js 20-way parallel booking race (real MySQL proof)
+backend/concurrency-test.js 20-way last-seat race (real MySQL proof)
+backend/tests/integration/ 102 tests incl. 50-way / 10-seat proof and hold expiry
 backend/seed.js            reseed helper
 backend/.env.example       DB + JWT + mail configuration template
 frontend/src/App.jsx       provider → auth gate → shell + pages
@@ -117,10 +120,10 @@ node ../backend/server.js        # backend serves dist/ automatically when prese
 ## 8. Viva defense — quick answers
 
 **Q: How do you guarantee zero overbooking?**
-The booking transaction does `SELECT capacity, booked_count FROM slots WHERE id=? FOR UPDATE`, aborts if `booked_count >= capacity`, otherwise increments and commits. The InnoDB row lock serialises concurrent bookings; the CHECK constraint `booked_count <= capacity` is the database-level backstop. Proof: `backend/concurrency-test.js` (20 parallel requests, 0 overbooked).
+The booking transaction does `SELECT capacity, booked_count FROM slots WHERE id=? FOR UPDATE`, aborts if `booked_count >= capacity`, otherwise increments and inserts a `HELD` reservation with a 10-minute expiry. `POST /api/bookings/:id/confirm` re-locks the row and expires stale holds before committing. The InnoDB row lock serialises concurrent bookings; the CHECK constraint `booked_count <= capacity` is the database-level backstop. Proof: 20 requests / 1 seat and 50 requests / 10 seats both end 0 overbooked.
 
 **Q: Is the waitlist actually FIFO?**
-Yes — promotion takes the lowest `position` with status `WAITING` under the same row lock that releases the seat, so two simultaneous cancellations cannot promote two people into one seat, and nobody can jump the queue.
+Yes — promotion takes the lowest `position` with status `WAITING` under the same row lock that releases the seat, so two simultaneous cancellations cannot promote two people into one seat. Promotions are bounded by `promotion_expires_at`; if unclaimed, the sweep releases the seat and promotes the next patient atomically.
 
 **Q: Where is the AI/ML?**
 There is none, deliberately. The Capacity Advisor is a transparent closed-form heuristic with an explicit safety ceiling; its inputs (empirical no-show rate) and formula are displayed on screen. The no-show *reduction* KPI is labelled "modelled" (Gollwitzer meta-analytic range), not measured causally.
@@ -135,4 +138,4 @@ Name, phone, email, age group — nothing else. No medical history, diagnosis, p
 Each one is annotated by the Viva Science X-Ray (Hick, Miller, Fitts, Jakob, Zeigarnik, Peak-End, Gollwitzer's implementation intentions, FIFO fairness, privacy by design) — toggle the flask icon in the top bar.
 
 **Q: Why a local engine at all?**
-Viva reliability: the full product must demo without MySQL installed, without network access, and without dead buttons. The engine mirrors API response shapes exactly, so the same UI code runs in both modes and the difference is always visible to the viewer.
+Viva reliability: when there is no configured backend, the full product must demo without MySQL installed, without network access, and without dead buttons. The engine mirrors API response shapes exactly, so the same UI code runs in both modes and the difference is always visible via `DEMO` badges. The deployed build pins `VITE_API_BASE` and is strictly live — a backend outage shows an error rather than simulated data.

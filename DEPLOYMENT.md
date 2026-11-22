@@ -5,11 +5,11 @@
 CHSC is a full-stack application with three deployment components:
 1. **Frontend** (React + Vite) — static build served by the backend or a CDN
 2. **Backend** (Node.js + Express) — API server with Socket.io
-3. **Database** (MySQL 8) — relational data store
+3. **Database** (MySQL 8.4) — relational data store
 
 The application supports two modes:
 - **Mode A (Live):** Backend connected to MySQL — real transactions, Socket.io
-- **Mode B (Demo):** Backend offline — local in-memory engine, clearly labeled `SIMULATED`
+- **Mode B (Demo):** No configured `VITE_API_BASE` and backend offline — local in-memory engine, clearly labeled `SIMULATED`. Production builds pin the API URL and are strictly live.
 
 ---
 
@@ -17,7 +17,7 @@ The application supports two modes:
 
 - Node.js >= 20 (Railway and CI are pinned to Node 20; Tailwind's native
   `@tailwindcss/oxide` binding requires it)
-- MySQL 8.0+ (for Mode A)
+- MySQL 8.4+ (for Mode A; CI and Railway use MySQL 8.4)
 - A domain with HTTPS (for production)
 
 ---
@@ -30,7 +30,7 @@ mysql -u root -p < database/schema.sql
 ```
 
 ### Production (hosted MySQL)
-1. Provision a MySQL 8 database (e.g., AWS RDS, Azure MySQL, DigitalOcean Managed DB)
+1. Provision a MySQL 8.4 database (e.g., AWS RDS, Azure MySQL, DigitalOcean Managed DB)
 2. Note the host, port, user, password, and database name
 3. Run the schema against the production database. Use the idempotent hosted
    schema (non-destructive bootstrap) when the host only exposes one SQL string:
@@ -211,6 +211,9 @@ The backend checks the `Origin` header against this list. Socket.io uses the sam
 | `HOST` | unset / `127.0.0.1` | Bind address; loopback enables the local-demo safety allowance |
 | `ALLOW_LOCAL_DEMO` | unset in prod | Explicit opt-in for `DEMO_MODE=true` on a non-local host |
 | `ALLOW_DESTRUCTIVE_SLOT_REBUILD` | `false` | Allows ADMIN-only destructive slot regeneration when paired with `destructive:true` |
+| `BOOKING_HOLD_MINUTES` | `10` | Booking reservation window before explicit confirm |
+| `PROMOTION_HOLD_MINUTES` | `15` | FIFO promotion claim window |
+| `HOLD_EXPIRY_CRON` | `* * * * *` | Expiry sweep schedule; `off` disables automatic sweeping |
 | `SMTP_*` | real SMTP credentials | Optional — leaves blank = sandbox |
 | `FAST2SMS_API_KEY` | real API key | Optional — leaves blank = sandbox |
 
@@ -227,7 +230,7 @@ The backend checks the `Origin` header against this list. Socket.io uses the sam
 
 ## 10. Database Migrations
 
-Schema changes are managed via `database/schema.sql` (full rebuild). For incremental changes, use `database/migrations/`. Apply them with `npm run db:migrate` from `backend/`; the runner selects `DB_NAME` for every file and the migration SQL is idempotent (safe to apply twice). The test suite recreates the test database from `schema.sql` on every run.
+Schema changes are managed via `database/schema.sql` (full rebuild). For incremental changes, use `database/migrations/`; `004_booking_holds.sql` adds the 10-minute hold and promotion-expiry columns/indexes. Apply them with `npm run db:migrate` from `backend/`; the runner selects `DB_NAME` for every file and the migration SQL is idempotent (safe to apply twice). The test suite recreates the test database from `schema.sql` on every run.
 
 The bundled `ecosystem.config.cjs` binds the local PM2 demo to `127.0.0.1` and is the explicit local-demo opt-in. Do not reuse that binding for a public deployment.
 
@@ -265,10 +268,10 @@ cd ../backend && npm start
 
 ---
 
-## 13. Current Verification Status (2026-11-21)
+## 13. Current Verification Status (2026-11-22)
 
-The full backend suite is green (**98/98 tests**, 17 files) and the live
-end-to-end harness passes **43/43 checks** (`backend/scripts/verify-live.js`).
+The full backend suite is green (**102/102 tests**, 18 files) and the live
+end-to-end harness passes **47/47 checks** (`backend/scripts/verify-live.js`).
 
 The public deployment is now **real full-stack**, not a static demo:
 
@@ -321,7 +324,7 @@ Other root commands:
 
 ```powershell
 npm run live          # build UI fresh, then serve full version at :4000
-npm run mysql:start   # start installed MySQL 8 (needed for LIVE · MySQL)
+npm run mysql:start   # start installed MySQL 8.4 (needed for LIVE · MySQL)
 npm run mysql:stop
 npm test              # backend suite
 npm run build         # rebuild frontend/dist only
@@ -336,9 +339,10 @@ mysql -u root -p < database/schema.sql
 npm run dev
 ```
 
-The sidebar chip reads `LIVE · MySQL` when `database: "connected"`; otherwise it
-reads `DEMO` and every simulated result carries a `SIMULATED` badge. Both are
-intentional — neither produces a blank page.
+The sidebar chip reads `LIVE · MySQL` when `database: "connected"`; in a local
+build with no pinned API URL it reads `DEMO` and every simulated result carries a
+`SIMULATED` badge. The deployed Pages build pins `VITE_API_BASE`, so a backend
+outage is surfaced as an error rather than silently falling back to `DEMO`.
 
 `scripts/dev.mjs` has no extra dependencies: it uses the npm CLI that ships with
 your Node install and kills the whole process tree on Ctrl+C (Windows-safe).
@@ -516,9 +520,14 @@ design (`frontend/src/lib/api.js`).
 `node scripts/db.js setup-production` reads `MYSQL_URL` (or `DATABASE_URL`),
 parses Railway's SSL requirements and applies
 `database/schema-production.sql` idempotently. It creates missing tables,
-indexes and the five seeded role accounts; it never drops existing data. The
-source schema remains `database/schema.sql` and the production copy is
-regenerated by `scripts/generate-production-schema.mjs`.
+indexes and the seeded role accounts; it never drops existing data. It then
+applies all `database/migrations/*.sql` files in order, so an older installation
+gains `HELD`/`EXPIRED` booking states, `hold_expires_at`,
+`idx_bookings_hold_expiry`, `promotion_expires_at` and `idx_wait_expires` on the
+next deploy. The migrations are idempotent and re-select the database from
+`MYSQL_URL` before each file. The source schema remains `database/schema.sql`
+and the production copy is regenerated by
+`scripts/generate-production-schema.mjs`.
 
 ### 17.4 Post-deploy verification
 
@@ -528,11 +537,12 @@ regenerated by `scripts/generate-production-schema.mjs`.
   `/api/bookings/me` return real responses and the socket handshake is `101`.
 - Real DB aggregates (at verification time): 7 camps, 45 slots, 121 bookings
   and FIFO waitlists.
-- All role workflows, booking/cancel/reschedule, FIFO promotion, check-in,
-  live-queue socket updates, admin analytics and CSV export were exercised
-  against MySQL. An interactive demo-only concurrency button is explicitly
-  disabled in strict-live mode; the real row-lock invariant remains covered by
-  `npm test` (10 confirmed / 40 waitlisted / 0 violations).
+- All role workflows, 10-minute hold → explicit confirm, cancel/reschedule,
+  FIFO promotion with claim expiry, confirmed-only QR check-in, live-queue
+  socket updates, admin analytics and CSV export were exercised against MySQL.
+  An interactive demo-only concurrency button is explicitly disabled in
+  strict-live mode; the real row-lock invariant remains covered by `npm test`
+  (50 requests / 10 seats → 10 held+confirmed / 40 waitlisted / 0 violations).
 - Detailed workflow evidence: `docs/TEST_REPORT.md`.
 
 ### 17.5 Trial and billing disclosure

@@ -7,7 +7,7 @@ import { api } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Input, Sci, Skeleton } from '../components/ui.jsx';
 import { Passport } from '../components/Passport.jsx';
 import Confetti from '../components/Confetti.jsx';
-import { cls, fmtDate, fmtTime12, dayTone, slotTone } from '../lib/format.js';
+import { cls, fmtDate, fmtTime12, dayTone, slotTone, holdSecondsLeft, fmtCountdown } from '../lib/format.js';
 import { useSound } from '../lib/audio.js';
 import { Tilt, InView, Spotlight, Magnetic } from '../components/motion';
 
@@ -32,6 +32,7 @@ export default function Discover() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [celebrating, setCelebrating] = useState(false);
+  const [now, setNow] = useState(Date.now());
   const slotRefs = React.useRef(new Map());
   const travelRefs = React.useRef(new Map());
 
@@ -41,6 +42,15 @@ export default function Discover() {
       if (first) { setSelected(first); setStep(1); }
     }
   }, [camps.data]);
+
+  // Keep the 10-minute reservation countdown live without re-rendering the
+  // rest of the discovery flow every frame.
+  React.useEffect(() => {
+    if (booking?.status !== 'HELD') return undefined;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [booking?.id, booking?.status]);
 
   const grouped = useMemo(() => {
     const g = { morning: [], midday: [], afternoon: [] };
@@ -91,10 +101,18 @@ export default function Discover() {
     setBusy(true); setError(null);
     try {
       const res = await api.book(slot.id, { travelMode: travel, pledge });
+      if (res.status === 'HELD') {
+        click();
+        setBooking(res.booking || res);
+        setNow(Date.now());
+        setStep(3);
+        toast('Seat reserved for 10 minutes.', 'ok', res.__mode === 'demo' ? 'Simulated hold (local engine).' : 'Reserved in a MySQL transaction.');
+        return;
+      }
       if (res.status === 'CONFIRMED') {
         success();
         setCelebrating(true);
-        setBooking(res.booking);
+        setBooking(res.booking || res);
         setStep(3);
         toast('Booking confirmed — your pass is ready.', 'ok', res.__mode === 'demo' ? 'Simulated booking (local engine).' : 'Locked in a MySQL transaction.');
       } else {
@@ -107,6 +125,76 @@ export default function Discover() {
       setError(err.message);
       toast(err.message, 'bad');
     } finally { setBusy(false); }
+  }
+
+  async function confirmHold() {
+    if (!booking) return;
+    setBusy(true); setError(null);
+    try {
+      const res = await api.confirmBooking(booking.id);
+      const confirmed = res.booking || booking;
+      if (res.status !== 'CONFIRMED' && confirmed.status !== 'CONFIRMED') throw new Error(res.message || 'The hold could not be confirmed.');
+      success();
+      setCelebrating(true);
+      setBooking({ ...confirmed, status: 'CONFIRMED' });
+      toast('Seat confirmed — your pass is ready.', 'ok', res.__mode === 'demo' ? 'Simulated confirmation (local engine).' : 'Committed in a MySQL transaction.');
+      await camps.reload();
+    } catch (err) {
+      soundError();
+      setError(err.message);
+      toast(err.message, 'bad', err.code === 'HOLD_EXPIRED' ? 'The seat was released FIFO to the next waiter.' : undefined);
+      if (err.code === 'HOLD_EXPIRED') {
+        setBooking(null);
+        setStep(2);
+        await camps.reload();
+      }
+    } finally { setBusy(false); }
+  }
+
+  async function releaseHold() {
+    if (!booking) return;
+    setBusy(true); setError(null);
+    try {
+      const res = await api.cancelBooking(booking.id);
+      toast(res.message || 'Hold released.', 'ok', 'The seat flows to the first waiting neighbour.');
+      setBooking(null);
+      setStep(2);
+      await camps.reload();
+    } catch (err) {
+      soundError();
+      setError(err.message);
+      toast(err.message, 'bad');
+    } finally { setBusy(false); }
+  }
+
+  if (step === 3 && booking?.status === 'HELD') {
+    const remaining = holdSecondsLeft(booking.holdExpiresAt || booking.hold_expires_at, now);
+    return (
+      <div className="hold-wrap relative">
+        <div className="hold-card entrance card-tilt">
+          <span className="hold-icon" aria-hidden="true"><Icon name="clock" size={26} /></span>
+          <h2>Your seat is on hold</h2>
+          <p className="muted">
+            We reserved one screening seat at <strong>{fmtTime12(slot?.startTime || booking.startTime)}</strong>.
+            Confirm before the timer ends to receive QR token <strong className="mono">{booking.qrToken}</strong>.
+          </p>
+          <div className="hold-timer" role="timer" aria-label={`${Math.floor(remaining / 60)} minutes and ${remaining % 60} seconds remaining`}>
+            {remaining === 0 ? 'EXPIRED' : fmtCountdown(remaining)}
+          </div>
+          <div className="hold-track" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(100, (remaining / 600) * 100))}%` }} /></div>
+          {error && <div className="error-note compact" role="alert"><Icon name="alert" size={14} /><p>{error}</p></div>}
+          <div className="hold-actions">
+            <Magnetic intensity={0.3}>
+              <Button icon="check" loading={busy} disabled={remaining === 0} onClick={confirmHold}>Confirm my pass</Button>
+            </Magnetic>
+            <Magnetic intensity={0.3}>
+              <Button variant="ghost" icon="refresh" disabled={busy} onClick={releaseHold}>Release hold</Button>
+            </Magnetic>
+          </div>
+          <small className="muted">Free · no payment. If the timer expires, the seat moves automatically to the FIFO waitlist.</small>
+        </div>
+      </div>
+    );
   }
 
   if (step === 3 && booking) {
@@ -269,7 +357,7 @@ export default function Discover() {
                       {slotTone(slot.remaining, slot.capacity) === 'full' ? (
                         <Sci k="fifo"><Magnetic intensity={0.3}><Button icon="users" loading={busy} onClick={confirm}>Join waitlist (FIFO)</Button></Magnetic></Sci>
                       ) : (
-                        <Magnetic intensity={0.3}><Button icon="check" loading={busy} onClick={confirm}>Confirm booking — {fmtTime12(slot.startTime)}</Button></Magnetic>
+                        <Magnetic intensity={0.3}><Button icon="check" loading={busy} onClick={confirm}>Hold this seat for 10 min — {fmtTime12(slot.startTime)}</Button></Magnetic>
                       )}
                       <small className="muted">Free · no payment. Cancel anytime with one tap; a waiting neighbour takes your seat.</small>
                     </div>

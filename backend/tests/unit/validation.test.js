@@ -110,10 +110,13 @@ describe('rate limiting', () => {
   it('returns the shared error envelope with 429 after the bucket is exhausted', async () => {
     const app = express();
     const limiters = createLimiters({ disabled: false });
-    app.use(limiters.auth);
+    // The auth bucket deliberately ignores successful logins so a multi-role
+    // demo behind one IP is not locked out. Use the booking bucket here to
+    // verify the shared 429 envelope.
+    app.use(limiters.booking);
     app.get('/x', (_req, res) => res.json({ ok: true }));
 
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 30; i += 1) {
       await request(app).get('/x').expect(200);
     }
     const blocked = await request(app).get('/x').expect(429);

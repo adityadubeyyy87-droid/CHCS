@@ -1,6 +1,6 @@
 /* ============================================================================
    landing.css — the cinematic front door (scoped to .landing)
-   Sunrise camp: WebGL stage + film grade + editorial typography.
+   Emerald Meridian: WebGL stage + film grade + editorial typography.
    Nothing here leaks into the dashboard shell.
    ============================================================================ */
 
@@ -18,8 +18,7 @@ body.landing-on {
   --ln-line-strong: rgba(160, 220, 200, 0.26);
   --ln-emerald: #10b981;
   --ln-mint: #6ee7b7;
-  --ln-warm: #ffcf8f;
-  --ln-warm-deep: #ff9b4a;
+  --ln-signal: #fbbf24;
   --ln-display: 'Sora', 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
   --ln-serif: 'Instrument Serif', 'Plus Jakarta Sans', Georgia, serif;
   --ln-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
@@ -29,7 +28,7 @@ body.landing-on {
   min-height: 100vh;
   color: var(--ln-ink);
   background:
-    radial-gradient(120% 80% at 74% 28%, rgba(255, 168, 92, 0.06), transparent 60%),
+    radial-gradient(120% 80% at 74% 28%, rgba(16, 185, 129, 0.07), transparent 60%),
     radial-gradient(100% 70% at 50% 100%, rgba(16, 185, 129, 0.08), transparent 62%),
     var(--ln-bg);
   font-family: var(--font-body, 'Inter', system-ui, sans-serif);
@@ -60,28 +59,41 @@ body.landing-on {
 .cine-stage canvas { display: block; width: 100% !important; height: 100% !important; }
 .cine-stage > div { width: 100% !important; height: 100% !important; }
 
-.cine-fallback-sun {
+.cine-fallback-beacon {
   position: absolute;
   left: 64%;
-  top: 34%;
-  width: 26vmin;
-  height: 26vmin;
-  border-radius: 50%;
-  background: radial-gradient(circle at 42% 38%, #fff8e6, #ffc06a 58%, #ff9b4a 100%);
-  box-shadow: 0 0 18vmin 6vmin rgba(255, 168, 92, 0.35);
-  filter: blur(0.4px);
+  top: 30%;
+  display: grid;
+  place-items: center;
+  width: 34vmin;
+  height: 34vmin;
 }
+.cine-fallback-core,
+.cine-fallback-ring {
+  position: absolute;
+  border-radius: 50%;
+}
+.cine-fallback-core {
+  width: 30%;
+  height: 30%;
+  background: #e7fff4;
+}
+.cine-fallback-ring {
+  inset: 24%;
+  border: 1px solid rgba(110, 231, 183, 0.62);
+}
+.cine-fallback-ring--mid { inset: 13%; border-color: rgba(16, 185, 129, 0.5); }
+.cine-fallback-ring--outer { inset: 2%; border-color: rgba(16, 185, 129, 0.32); }
 .cine-fallback-ridge {
   position: absolute;
   inset: auto 0 0 0;
   height: 26vh;
   background: radial-gradient(120% 160% at 50% 0%, #0a1f19 0%, #04110f 70%);
-  border-top: 1px solid rgba(255, 207, 143, 0.18);
+  border-top: 1px solid rgba(110, 231, 183, 0.18);
 }
 
 /* film grade overlays */
 .cine-grade,
-.cine-bloom,
 .cine-vignette,
 .cine-grain {
   position: fixed;
@@ -92,23 +104,6 @@ body.landing-on {
   z-index: 2;
   background:
     linear-gradient(180deg, rgba(4, 17, 15, 0.42) 0%, rgba(4, 17, 15, 0) 24%, rgba(4, 17, 15, 0) 58%, rgba(4, 17, 15, 0.72) 100%);
-}
-.cine-bloom {
-  z-index: 1;
-  inset: auto;
-  left: 66%;
-  top: 50%;
-  width: 72vmax;
-  height: 72vmax;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(circle, rgba(255, 196, 120, 0.13) 0%, rgba(255, 147, 71, 0.055) 30%, rgba(255, 147, 71, 0) 62%);
-  filter: blur(30px);
-  mix-blend-mode: screen;
-  animation: cine-breathe 11s ease-in-out infinite;
-}
-@keyframes cine-breathe {
-  0%, 100% { opacity: 0.78; transform: translate(-50%, -50%) scale(1); }
-  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
 }
 .cine-vignette {
   z-index: 3;
@@ -134,8 +129,7 @@ body.landing-on {
   height: 100%;
   transform: scaleX(0);
   transform-origin: 0 50%;
-  background: linear-gradient(90deg, var(--ln-emerald), var(--ln-mint), var(--ln-warm));
-  box-shadow: 0 0 12px rgba(110, 231, 183, 0.55);
+  background: linear-gradient(90deg, var(--ln-emerald), var(--ln-mint));
 }
 
 .ln-skip {
@@ -187,8 +181,8 @@ body.landing-on {
   color: inherit;
   text-align: left;
 }
-.ln-sunmark { display: inline-flex; filter: drop-shadow(0 0 12px rgba(255, 183, 106, 0.5)); }
-.ln-sunmark svg { animation: ln-spin 90s linear infinite; }
+.ln-beaconmark { display: inline-flex; }
+.ln-beaconmark svg { animation: ln-spin 120s linear infinite; }
 @keyframes ln-spin { to { transform: rotate(360deg); } }
 .ln-brand-text { display: flex; flex-direction: column; line-height: 1.15; }
 .ln-brand-text strong {
@@ -255,11 +249,10 @@ body.landing-on {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--ln-warm);
-  box-shadow: 0 0 8px rgba(255, 207, 143, 0.8);
+  background: var(--ln-mint);
 }
 .ln-mode--live { color: #a8f0d0; border-color: rgba(110, 231, 183, 0.35); }
-.ln-mode--live .ln-mode-dot { background: var(--ln-mint); box-shadow: 0 0 8px rgba(110, 231, 183, 0.9); }
+.ln-mode--live .ln-mode-dot { background: var(--ln-mint); }
 
 /* -------------------------------- buttons -------------------------------- */
 .ln-btn {
@@ -352,14 +345,12 @@ body.landing-on {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--ln-warm);
-  box-shadow: 0 0 0 0 rgba(255, 207, 143, 0.55);
+  background: var(--ln-mint);
   animation: ln-pulse 2.8s ease-out infinite;
 }
 @keyframes ln-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(255, 207, 143, 0.5); }
-  70% { box-shadow: 0 0 0 9px rgba(255, 207, 143, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 207, 143, 0); }
+  0%, 100% { opacity: 0.55; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 .ln-h1 {
@@ -666,9 +657,9 @@ body.landing-on {
   font-size: 9px;
   letter-spacing: 0.18em;
   padding: 3px 7px;
-  border: 1px dashed rgba(255, 207, 143, 0.45);
+  border: 1px dashed rgba(251, 191, 36, 0.5);
   border-radius: 5px;
-  color: var(--ln-warm);
+  color: var(--ln-signal);
 }
 .ln-queue-rows { display: grid; gap: 9px; }
 .ln-queue-row {
@@ -713,7 +704,7 @@ body.landing-on {
 .ln-step:last-child { padding-bottom: 0; }
 .ln-step-time {
   font-size: 13px;
-  color: var(--ln-warm);
+  color: var(--ln-mint);
   letter-spacing: 0.05em;
   padding-top: 2px;
 }
@@ -795,9 +786,9 @@ body.landing-on {
   margin-top: clamp(40px, 5vw, 60px);
   padding: 26px;
   border-radius: 20px;
-  border: 1px solid rgba(255, 207, 143, 0.2);
+  border: 1px solid var(--ln-line-strong);
   background:
-    linear-gradient(120deg, rgba(255, 207, 143, 0.075), rgba(16, 185, 129, 0.055) 55%, rgba(255, 255, 255, 0.02));
+    linear-gradient(120deg, rgba(16, 185, 129, 0.07), rgba(110, 231, 183, 0.035) 55%, rgba(255, 255, 255, 0.02));
 }
 .ln-honesty-badge {
   display: inline-flex;
@@ -807,8 +798,8 @@ body.landing-on {
   gap: 8px;
   padding: 7px 11px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 207, 143, 0.32);
-  color: var(--ln-warm);
+  border: 1px solid rgba(251, 191, 36, 0.38);
+  color: var(--ln-signal);
   font-family: var(--ln-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
@@ -1093,8 +1084,7 @@ body.landing-on {
 /* --------------------------- reduced motion ------------------------------ */
 @media (prefers-reduced-motion: reduce) {
   .ln-ticker-track,
-  .ln-sunmark svg,
-  .cine-bloom,
+  .ln-beaconmark svg,
   .ln-scrollcue-line::after,
   .ln-dot,
   .ln-live-dot { animation: none !important; }

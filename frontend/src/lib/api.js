@@ -138,6 +138,7 @@ export const api = {
   camps: () => withFallback(() => call('/api/camps'), (engine) => engine.camps()),
   camp: (id) => withFallback(() => call(`/api/camps/${id}`), (engine) => engine.camp(id)),
   book: (slotId, opts) => withFallback(() => call(`/api/slots/${slotId}/book`, { method: 'POST', body: opts }), (engine) => engine.book(slotId, opts, currentUser)),
+  confirmBooking: (id) => withFallback(() => call(`/api/bookings/${id}/confirm`, { method: 'POST' }), (engine) => engine.confirmBooking(id, currentUser)),
   myBookings: () => withFallback(() => call('/api/bookings/me'), (engine) => engine.myBookings(currentUser)),
   cancelBooking: (id) => withFallback(() => call(`/api/bookings/${id}/cancel`, { method: 'PATCH' }), (engine) => engine.cancelBooking(id, currentUser)),
   rescheduleBooking: (id, slotId) => withFallback(

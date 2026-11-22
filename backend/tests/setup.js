@@ -13,5 +13,6 @@ process.env.NODE_ENV = 'test';
 process.env.DB_NAME = process.env.DB_TEST_NAME || 'community_health_scheduler_test';
 process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.REMINDER_CRON = 'off';
+process.env.HOLD_EXPIRY_CRON = 'off';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'chsc-test-secret';
 process.env.DEMO_MODE = 'true';

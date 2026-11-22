@@ -196,6 +196,7 @@ async function main() {
         number: racer.number,
         status: result.status,
         body: result.body,
+        token: racer.token,
         elapsedMs,
       };
     }),
@@ -203,6 +204,20 @@ async function main() {
   const wallMs = Number(process.hrtime.bigint() - wallStart) / 1e6;
 
   results.sort((a, b) => a.index - b.index);
+
+  // Phase 2: the 201 response is a HELD reservation. Confirm it through the
+  // public API so the audit still ends with a real CONFIRMED booking.
+  const held = results.filter((row) => row.status === 201 && row.body?.booking?.status === 'HELD');
+  const confirmations = await Promise.all(
+    held.map((row) =>
+      api(`/api/bookings/${row.body.booking.id}/confirm`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${row.token}` },
+        body: '{}',
+      }),
+    ),
+  );
+  const confirmed = confirmations.filter((row) => row.status === 200);
 
   const http201 = results.filter((row) => row.status === 201);
   const http202 = results.filter((row) => row.status === 202);
@@ -220,7 +235,7 @@ async function main() {
     const color = row.status === 201 ? c.green : row.status === 202 ? c.amber : c.red;
     const outcome =
       row.status === 201
-        ? 'CONFIRMED'
+        ? 'HELD→CONFIRMED'
         : row.status === 202
           ? 'WAITLISTED'
           : row.status === 409
@@ -256,7 +271,7 @@ async function main() {
   console.log(`  ${zeroOverbooking ? `${c.green}✓` : `${c.red}✗`}${c.reset} booked_count    = ${finalSlot?.bookedCount ?? '?'} / capacity ${finalSlot?.capacity ?? '?'}`);
   console.log(`  ${zeroOverbooking ? `${c.green}✓` : `${c.red}✗`}${c.reset} overbookings     = ${Math.max(0, Number(finalSlot?.bookedCount || 0) - Number(finalSlot?.capacity || 0))}`);
   console.log(`  ${http202.length === 19 ? `${c.green}✓` : `${c.red}✗`}${c.reset} FIFO waitlisted  = ${http202.length}`);
-  console.log(`  ${http201.length === 1 ? `${c.green}✓` : `${c.red}✗`}${c.reset} confirmed        = ${http201.length}`);
+  console.log(`  ${http201.length === 1 ? `${c.green}✓` : `${c.red}✗`}${c.reset} held→confirmed  = ${confirmed.length}`);
   console.log(`  ${c.green}✓${c.reset} isolation        = READ COMMITTED + row-level X-lock`);
   console.log(`  ${c.green}✓${c.reset} unique guard     = UNIQUE(slot_id, patient_id)`);
   console.log(`  ${c.green}✓${c.reset} capacity guard   = CHECK(booked_count <= capacity)`);
@@ -272,6 +287,7 @@ async function main() {
   const pass =
     zeroOverbooking &&
     http201.length === 1 &&
+    confirmed.length === 1 &&
     http202.length === 19 &&
     other.length === 0;
 

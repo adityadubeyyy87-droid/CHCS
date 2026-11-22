@@ -1,11 +1,11 @@
-// CinematicScene.jsx — the "Sunrise Camp" opening scene.
+// CinematicScene.jsx — the "Emerald Meridian" opening scene.
 //
-// A physically-flavoured but hand-tuned sunrise: granulated sun surface (fbm),
-// limb darkening, layered corona + light shafts, atmospheric sky gradient,
-// silhouette camp on the ridge, drifting dust, and a scroll-linked sunrise.
+// A precise clinical beacon rises over a silhouette camp: concentric dial
+// rings, hairline ticks, an atmospheric sky gradient, drifting dust and a
+// scroll-linked camera dolly. No sun disc, rays, bloom or additive glow.
 //
-// No post-processing dependency: bloom/rays are additive shaders, the
-// filmic grade is ACES tone mapping plus CSS grain + vignette in landing.css.
+// No post-processing dependency: the filmic grade is ACES tone mapping plus
+// restrained CSS grain + vignette in landing.css.
 //
 // Perf contract:
 //   · dpr capped, particle count derived from device class
@@ -18,9 +18,9 @@ import * as THREE from 'three';
 import { sceneDrive } from '../lib/sceneDrive.js';
 import CineFallback from './CineFallback.jsx';
 
-const SUN_X = 9.5;
-const SUN_Z = -34;
-const SUN_RADIUS = 4.2;
+const BEACON_X = 9.5;
+const BEACON_Z = -34;
+const BEACON_RADIUS = 4.2;
 const GROUND_Y = -2.5;
 
 /**
@@ -33,11 +33,11 @@ const PALETTE = {
   top: '#051019',
   mid: '#06262a',
   horizon: '#0b423a',
-  sun: '#ffcf8f',
+  beacon: '#6ee7b7',
 };
 
-/** Sun elevation (world units) as a function of scroll — rises, never sets. */
-function sunElevation(scroll) {
+/** Beacon elevation (world units) as a function of scroll — rises, never sets. */
+function beaconElevation(scroll) {
   const t = Math.min(1, Math.max(0, scroll));
   const e = t * t * (3 - 2 * t); // smoothstep
   return 4.8 + e * 4.8;
@@ -76,7 +76,7 @@ const NOISE_GLSL = /* glsl */ `
 `;
 
 /* -------------------------------------------------------------------------- */
-/* sky dome — vertical atmosphere + sun halo, dithered to kill banding         */
+/* sky dome — vertical atmosphere + quiet beacon wash, dithered to kill banding */
 /* -------------------------------------------------------------------------- */
 const SKY_VERT = /* glsl */ `
   varying vec3 vWorld;
@@ -91,9 +91,9 @@ const SKY_FRAG = /* glsl */ `
   uniform vec3 uTop;
   uniform vec3 uMid;
   uniform vec3 uHorizon;
-  uniform vec3 uSunColor;
-  uniform vec3 uSunDir;
-  uniform float uSunI;
+  uniform vec3 uBeaconColor;
+  uniform vec3 uBeaconDir;
+  uniform float uBeaconI;
   varying vec3 vWorld;
 
   float sineBand(vec3 d) {
@@ -111,12 +111,11 @@ const SKY_FRAG = /* glsl */ `
     float aurora = exp(-abs(h) * 14.0) * (0.25 + 0.75 * sineBand(dir));
     col += vec3(0.0022, 0.0160, 0.0120) * aurora * 0.55;
 
-    // sun halo — wide warm bleed + tight core
-    float d = max(dot(dir, uSunDir), 0.0);
-    float wide = pow(d, 6.0);
-    float core = pow(d, 110.0);
-    col += uSunColor * (wide * 0.15 + core * 0.55) * uSunI;
-    col += uSunColor * wide * exp(-abs(h) * 6.0) * 0.20 * uSunI;
+    // restrained clinical wash around the beacon — no ray or bloom layer
+    float d = max(dot(dir, uBeaconDir), 0.0);
+    float wide = pow(d, 5.0);
+    float core = pow(d, 80.0);
+    col += uBeaconColor * (wide * 0.045 + core * 0.12) * uBeaconI;
 
     // horizon haze lifts the campsite out of the dark
     col += vec3(0.0040, 0.0125, 0.0105) * exp(-abs(h) * 6.0) * 0.9;
@@ -140,16 +139,16 @@ function Sky() {
     uTop: { value: new THREE.Color(PALETTE.top) },
     uMid: { value: new THREE.Color(PALETTE.mid) },
     uHorizon: { value: new THREE.Color(PALETTE.horizon) },
-    uSunColor: { value: new THREE.Color(PALETTE.sun) },
-    uSunDir: { value: new THREE.Vector3(0, 0.05, -1) },
-    uSunI: { value: 1 },
+    uBeaconColor: { value: new THREE.Color(PALETTE.beacon) },
+    uBeaconDir: { value: new THREE.Vector3(0, 0.05, -1) },
+    uBeaconI: { value: 1 },
   }), []);
-  const sunPos = useMemo(() => new THREE.Vector3(), []);
+  const beaconPos = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame((state) => {
+  useFrame(() => {
     if (!mat.current) return;
-    sunPos.set(SUN_X, sunElevation(sceneDrive.smooth), SUN_Z);
-    uniforms.uSunDir.value.copy(sunPos).sub(camera.position).normalize();
+    beaconPos.set(BEACON_X, beaconElevation(sceneDrive.smooth), BEACON_Z);
+    uniforms.uBeaconDir.value.copy(beaconPos).sub(camera.position).normalize();
   });
 
   return (
@@ -169,234 +168,79 @@ function Sky() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* sun — granulated photosphere with limb darkening                            */
+/* clinical beacon — concentric diagnostic dial, no rays and no bloom          */
 /* -------------------------------------------------------------------------- */
-const SUN_VERT = /* glsl */ `
-  varying vec3 vNormalW;
-  varying vec3 vWorld;
-  varying vec3 vLocal;
-  void main() {
-    vLocal = position;
-    vNormalW = normalize(mat3(modelMatrix) * normal);
-    vec4 wp = modelMatrix * vec4(position, 1.0);
-    vWorld = wp.xyz;
-    gl_Position = projectionMatrix * viewMatrix * wp;
-  }
-`;
-
-const SUN_FRAG = /* glsl */ `
-  uniform float uTime;
-  uniform vec3 uHot;
-  uniform vec3 uWarm;
-  uniform vec3 uDeep;
-  varying vec3 vNormalW;
-  varying vec3 vWorld;
-  varying vec3 vLocal;
-  ${NOISE_GLSL}
-
-  void main() {
-    vec3 n = normalize(vNormalW);
-    vec3 viewDir = normalize(cameraPosition - vWorld);
-    float ndv = clamp(dot(n, viewDir), 0.0, 1.0);
-
-    // limb darkening — the edge of a star is cooler and dimmer
-    float limb = pow(ndv, 0.42);
-
-    vec3 p = normalize(vLocal) * 2.6;
-    float grain = cineFbm(p * 2.0 + vec3(0.0, uTime * 0.010, uTime * 0.016));
-    float cells = smoothstep(0.34, 0.82, grain);
-    float flicker = cineFbm(p * 6.0 + uTime * 0.05);
-
-    vec3 col = mix(uDeep, uWarm, cells);
-    col = mix(col, uHot, clamp(pow(ndv, 3.4) * 0.55 + flicker * 0.18, 0.0, 1.0));
-    col *= mix(0.42, 0.94, limb);
-
-    // hot rim so the disc reads as a light source, not a ball
-    col += uWarm * pow(1.0 - ndv, 3.0) * 0.30;
-
-    gl_FragColor = vec4(col, 1.0);
-  }
-`;
-
-function Sun({ ...props }) {
+function Beacon() {
   const group = useRef(null);
-  const mat = useRef(null);
-  const uniforms = useMemo(() => ({
-    uTime: { value: 0 },
-    uHot: { value: new THREE.Color('#fff9e8') },
-    uWarm: { value: new THREE.Color('#ffc879') },
-    uDeep: { value: new THREE.Color('#ff8a3c') },
+  const rings = useRef([]);
+  const ticks = useMemo(() => Array.from({ length: 24 }, (_, i) => {
+    const angle = (i / 24) * Math.PI * 2;
+    return { angle, x: Math.cos(angle), y: Math.sin(angle), major: i % 6 === 0 };
   }), []);
 
   useFrame((state) => {
-    const t = state.clock.elapsedTime;
-    if (mat.current) mat.current.uniforms.uTime.value = t;
     if (group.current) {
-      group.current.position.y = sunElevation(sceneDrive.smooth);
-      const s = 1 + sceneDrive.smooth * 0.10;
-      group.current.scale.setScalar(s);
+      group.current.position.y = beaconElevation(sceneDrive.smooth);
+      group.current.scale.setScalar(1 + sceneDrive.smooth * 0.08);
+    }
+    if (!sceneDrive.reduced) {
+      rings.current.forEach((ring, i) => {
+        if (ring) ring.rotation.z = state.clock.elapsedTime * (i % 2 ? -0.035 : 0.028);
+      });
     }
   });
 
   return (
-    <group ref={group} position={[SUN_X, sunElevation(0), SUN_Z]} {...props}>
+    <group ref={group} position={[BEACON_X, beaconElevation(0), BEACON_Z]}>
       <mesh>
-        <sphereGeometry args={[SUN_RADIUS, 64, 48]} />
-        <shaderMaterial
-          ref={mat}
-          uniforms={uniforms}
-          vertexShader={SUN_VERT}
-          fragmentShader={SUN_FRAG}
-          toneMapped={false}
-        />
+        <circleGeometry args={[BEACON_RADIUS * 0.76, 64]} />
+        <meshBasicMaterial color="#e7fff4" transparent opacity={0.9} toneMapped={false} />
       </mesh>
-
-      {/* corona + rays, camera-facing additive card */}
-      <Corona radius={SUN_RADIUS * 3.6} />
+      <mesh>
+        <ringGeometry args={[BEACON_RADIUS * 0.76, BEACON_RADIUS * 0.82, 64]} />
+        <meshBasicMaterial color="#6ee7b7" transparent opacity={0.82} toneMapped={false} />
+      </mesh>
+      {[1.0, 1.22, 1.44].map((multiple, i) => (
+        <mesh key={multiple} ref={(el) => { rings.current[i] = el; }}>
+          <torusGeometry args={[BEACON_RADIUS * multiple, 0.026 - i * 0.005, 8, 96]} />
+          <meshBasicMaterial
+            color={i === 1 ? '#6ee7b7' : '#10b981'}
+            transparent
+            opacity={0.46 - i * 0.09}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
+      {ticks.map((tick, i) => (
+        <mesh
+          key={i}
+          position={[tick.x * BEACON_RADIUS * 1.58, tick.y * BEACON_RADIUS * 1.58, 0]}
+          rotation={[0, 0, tick.angle - Math.PI / 2]}
+        >
+          <boxGeometry args={[0.055, tick.major ? 0.42 : 0.2, 0.055]} />
+          <meshBasicMaterial color="#a7f3d0" transparent opacity={tick.major ? 0.72 : 0.36} toneMapped={false} />
+        </mesh>
+      ))}
     </group>
   );
 }
 
-const CORONA_FRAG = /* glsl */ `
-  uniform float uTime;
-  uniform vec3 uInner;
-  uniform vec3 uOuter;
-  varying vec2 vUv;
-  ${NOISE_GLSL}
-
-  void main() {
-    vec2 p = vUv * 2.0 - 1.0;
-    float r = length(p);
-    if (r > 1.0) discard;
-
-    float ang = atan(p.y, p.x);
-    float spokes = 0.5 + 0.5 * sin(ang * 41.0 + uTime * 0.32 + sin(ang * 9.0 + uTime * 0.55) * 1.7);
-    float slow = 0.5 + 0.5 * sin(ang * 13.0 - uTime * 0.21);
-    float rays = pow(spokes * slow, 2.6);
-
-    float core = exp(-r * 8.8) * 0.50;
-    float halo = exp(-r * 3.3) * 0.30;
-    float streak = (1.0 - smoothstep(0.10, 0.96, r)) * rays * 0.17;
-
-    float a = core + halo + streak;
-    a *= 1.0 - smoothstep(0.72, 1.0, r);
-
-    vec3 col = mix(uInner, uOuter, smoothstep(0.04, 0.62, r));
-    gl_FragColor = vec4(col * a, a);
-  }
-`;
-
-function Corona({ radius }) {
-  const mat = useRef(null);
-  const mesh = useRef(null);
-  const { camera } = useThree();
-  const uniforms = useMemo(() => ({
-    uTime: { value: 0 },
-    uInner: { value: new THREE.Color('#fff3cf') },
-    uOuter: { value: new THREE.Color('#ff9a4a') },
-  }), []);
-
-  useFrame((state) => {
-    if (mat.current) mat.current.uniforms.uTime.value = state.clock.elapsedTime;
-    if (mesh.current) mesh.current.quaternion.copy(camera.quaternion);
-  });
-
-  return (
-    <mesh ref={mesh} scale={[radius * 2, radius * 2, 1]} renderOrder={-1}>
-      <planeGeometry args={[1, 1]} />
-      <shaderMaterial
-        ref={mat}
-        uniforms={uniforms}
-        vertexShader={/* glsl */ `
-          varying vec2 vUv;
-          void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `}
-        fragmentShader={CORONA_FRAG}
-        transparent
-        depthWrite={false}
-        depthTest={false}
-        blending={THREE.AdditiveBlending}
-        toneMapped={false}
-      />
-    </mesh>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
-/* light shafts — soft volumetric beams raking through the haze                */
-/* -------------------------------------------------------------------------- */
-const SHAFT_FRAG = /* glsl */ `
-  uniform float uTime;
-  uniform float uStrength;
-  uniform vec3 uColor;
-  varying vec2 vUv;
-  ${NOISE_GLSL}
-
-  void main() {
-    float x = abs(vUv.x - 0.5) * 2.0;
-    float y = vUv.y;
-
-    float beam = exp(-x * x * 5.5);
-    float fall = smoothstep(0.0, 0.55, y) * (1.0 - smoothstep(0.72, 1.0, y));
-    float breathe = 0.65 + 0.35 * sin(uTime * 0.32 + vUv.y * 3.0);
-    float dust = 0.65 + 0.35 * cineFbm(vec3(vUv.x * 7.0, vUv.y * 3.0 - uTime * 0.03, uTime * 0.02));
-
-    float a = beam * fall * breathe * dust * uStrength;
-    gl_FragColor = vec4(uColor * a, a);
-  }
-`;
-
-function Shaft({ position, rotation, scale, strength, color = '#ffc27a' }) {
-  const mat = useRef(null);
-  const uniforms = useMemo(() => ({
-    uTime: { value: 0 },
-    uStrength: { value: strength },
-    uColor: { value: new THREE.Color(color) },
-  }), [strength, color]);
-
-  useFrame((state) => {
-    if (mat.current) mat.current.uniforms.uTime.value = state.clock.elapsedTime;
-  });
-
-  return (
-    <mesh position={position} rotation={rotation} scale={scale} renderOrder={-1}>
-      <planeGeometry args={[1, 1]} />
-      <shaderMaterial
-        ref={mat}
-        uniforms={uniforms}
-        vertexShader={/* glsl */ `
-          varying vec2 vUv;
-          void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
-        `}
-        fragmentShader={SHAFT_FRAG}
-        transparent
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-        toneMapped={false}
-      />
-    </mesh>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* ground — deep dusk plain with a warm specular smear under the sun           */
+/* ground — deep dusk plain with a restrained mint ground wash                 */
 /* -------------------------------------------------------------------------- */
 function Ground() {
   const uniforms = useMemo(() => ({
-    uSunDir: { value: new THREE.Vector3(0, 0.1, -1) },
-    uSunColor: { value: new THREE.Color('#ffb877') },
+    uBeaconDir: { value: new THREE.Vector3(0, 0.1, -1) },
+    uBeaconColor: { value: new THREE.Color(PALETTE.beacon) },
     uHorizon: { value: new THREE.Color(PALETTE.horizon) },
   }), []);
   const mat = useRef(null);
   const { camera } = useThree();
-  const sunPos = useMemo(() => new THREE.Vector3(), []);
+  const beaconPos = useMemo(() => new THREE.Vector3(), []);
 
   useFrame(() => {
-    const sun = sunPos.set(SUN_X, sunElevation(sceneDrive.smooth), SUN_Z);
-    uniforms.uSunDir.value.copy(sun).sub(camera.position).normalize();
+    const beacon = beaconPos.set(BEACON_X, beaconElevation(sceneDrive.smooth), BEACON_Z);
+    uniforms.uBeaconDir.value.copy(beacon).sub(camera.position).normalize();
   });
 
   return (
@@ -414,8 +258,8 @@ function Ground() {
           }
         `}
         fragmentShader={/* glsl */ `
-          uniform vec3 uSunDir;
-          uniform vec3 uSunColor;
+          uniform vec3 uBeaconDir;
+          uniform vec3 uBeaconColor;
           uniform vec3 uHorizon;
           varying vec3 vWorld;
           ${NOISE_GLSL}
@@ -430,18 +274,18 @@ function Ground() {
             float mottle = cineFbm(vec3(vWorld.xz * 0.055, 0.0));
             col *= 0.86 + mottle * 0.34;
 
-            // warm grazing light on the ridge line
+            // quiet grazing light on the ridge line
             float ridge = (1.0 - smoothstep(16.0, 70.0, dist)) * 0.35;
-            col += uSunColor * ridge * 0.03;
+            col += uBeaconColor * ridge * 0.018;
 
-            // long reflection of the sun on haze-moistened ground
-            vec3 flatDir = normalize(vec3(uSunDir.x, 0.0, uSunDir.z));
+            // restrained ground wash beneath the beacon
+            vec3 flatDir = normalize(vec3(uBeaconDir.x, 0.0, uBeaconDir.z));
             vec3 fromCam = normalize(vec3(vWorld.x - cameraPosition.x, 0.0, vWorld.z - cameraPosition.z));
-            float alignSun = max(dot(fromCam, flatDir), 0.0);
-            float smear = pow(alignSun, 26.0)
+            float alignBeacon = max(dot(fromCam, flatDir), 0.0);
+            float smear = pow(alignBeacon, 26.0)
               * smoothstep(6.0, 26.0, dist)
               * (1.0 - smoothstep(60.0, 170.0, dist));
-            col += uSunColor * smear * 0.42;
+            col += uBeaconColor * smear * 0.12;
 
             // distance haze — the far plain must land exactly on the sky's
             // horizon colour, otherwise the plane's edge is a visible seam.
@@ -473,7 +317,7 @@ const RIDGE_FRAG = /* glsl */ `
   varying vec2 vUv;
   uniform float uHeight;
   uniform float uSeed;
-  uniform float uSunUvX;
+  uniform float uBeaconUvX;
   uniform vec3 uShade;
   uniform vec3 uRim;
   ${NOISE_GLSL}
@@ -493,10 +337,10 @@ const RIDGE_FRAG = /* glsl */ `
     float depth = clamp((h - vUv.y) / 0.42, 0.0, 1.0);
     vec3 col = mix(uShade * 1.6, uShade * 0.7, depth);
 
-    // warm rim only where the sun is actually behind the crest
-    float sunProx = 1.0 - smoothstep(0.0, 0.26, abs(vUv.x - uSunUvX));
-    float rim = (1.0 - smoothstep(0.0, 0.0030, abs(vUv.y - h))) * sunProx;
-    col = mix(col, uRim, rim * 0.55);
+    // mint rim only where the beacon is actually behind the crest
+    float beaconProx = 1.0 - smoothstep(0.0, 0.26, abs(vUv.x - uBeaconUvX));
+    float rim = (1.0 - smoothstep(0.0, 0.0030, abs(vUv.y - h))) * beaconProx;
+    col = mix(col, uRim, rim * 0.4);
 
     gl_FragColor = vec4(col, below);
   }
@@ -506,7 +350,7 @@ function Ridge({ z, height, seed, shade, rim }) {
   const uniforms = useMemo(() => ({
     uHeight: { value: height },
     uSeed: { value: seed },
-    uSunUvX: { value: 0.5 + SUN_X / 220 },
+    uBeaconUvX: { value: 0.5 + BEACON_X / 220 },
     uShade: { value: new THREE.Color(shade) },
     uRim: { value: new THREE.Color(rim) },
   }), [height, seed, shade, rim]);
@@ -538,7 +382,7 @@ function Tent({ position, scale = 1, rotation = 0 }) {
       </mesh>
       <mesh position={[0, 0.02, 0.44]} rotation={[0.05, 0, 0]}>
         <planeGeometry args={[0.17, 0.34]} />
-        <meshBasicMaterial color="#ffb677" transparent opacity={0.42} toneMapped={false} />
+        <meshBasicMaterial color="#6ee7b7" transparent opacity={0.34} toneMapped={false} />
       </mesh>
       <mesh position={[0, 0.66, 0]}>
         <cylinderGeometry args={[0.012, 0.012, 0.2, 5]} />
@@ -585,10 +429,10 @@ function Canopy({ position, scale = 1 }) {
         <boxGeometry args={[0.9, 0.06, 0.4]} />
         <meshStandardMaterial color="#0a201a" roughness={0.8} />
       </mesh>
-      {/* warm lamp under the tarp */}
+      {/* clinical lamp under the tarp */}
       <mesh position={[0, 0.44, 0.1]}>
         <sphereGeometry args={[0.022, 8, 6]} />
-        <meshBasicMaterial color="#ffb066" toneMapped={false} transparent opacity={0.8} />
+        <meshBasicMaterial color="#a7f3d0" toneMapped={false} transparent opacity={0.72} />
       </mesh>
     </group>
   );
@@ -621,8 +465,8 @@ function Camp() {
 
   return (
     <group>
-      <Ridge z={-44} height={0.410} seed={1.7} shade="#07201b" rim="#c98a4e" />
-      <Ridge z={-26.5} height={0.377} seed={4.2} shade="#030c0b" rim="#ffb26b" />
+      <Ridge z={-44} height={0.410} seed={1.7} shade="#07201b" rim="#3f8d73" />
+      <Ridge z={-26.5} height={0.377} seed={4.2} shade="#030c0b" rim="#6ee7b7" />
       {tents.map((t, i) => <Tent key={i} position={t.p} scale={t.s} rotation={t.r} />)}
       <Canopy position={[-1.1, GROUND_Y, -15.4]} scale={1.05} />
       <Canopy position={[14.6, GROUND_Y, -15.6]} scale={1.0} />
@@ -692,11 +536,10 @@ function Dust({ count }) {
       <pointsMaterial
         size={0.09}
         map={tex || undefined}
-        color="#ffe6bd"
+        color="#a7f3d0"
         transparent
-        opacity={0.55}
+        opacity={0.34}
         depthWrite={false}
-        blending={THREE.AdditiveBlending}
         sizeAttenuation
         toneMapped={false}
       />
@@ -759,7 +602,7 @@ function Rig() {
     const py = reduced ? 0 : sceneDrive.my;
 
     /* ---- aspect-aware framing ------------------------------------------
-       The sun sits at a fixed world angle. On a portrait phone the horizontal
+       The beacon sits at a fixed world angle. On a portrait phone the horizontal
        field of view is narrow enough that it would fall outside the frame, so
        the camera yaws toward it and opens up slightly. The composition is
        tuned, not just cropped.                                              */
@@ -842,15 +685,12 @@ function Scene({ quality }) {
       <SizeSync />
       <Sky />
       <Stars count={stars} />
-      <Sun />
-      <Shaft position={[-2, -1.4, -24]} rotation={[0, 0.22, 0.34]} scale={[15, 30, 1]} strength={0.10} />
-      <Shaft position={[16, -1.0, -23]} rotation={[0, -0.26, -0.4]} scale={[11, 26, 1]} strength={0.08} color="#ffd9a3" />
-      <Shaft position={[9.5, -2.4, -25.5]} rotation={[0, 0, 0.06]} scale={[20, 34, 1]} strength={0.06} color="#ffe3b0" />
+      <Beacon />
 
-      <ambientLight intensity={0.22} color="#0d3b34" />
+      <ambientLight intensity={0.28} color="#0d3b34" />
       <hemisphereLight args={['#123c3a', '#030b09', 0.55]} />
-      <directionalLight position={[SUN_X, 9, SUN_Z + 6]} intensity={2.4} color="#ffcf9a" />
-      <pointLight position={[SUN_X, 2, -24]} intensity={38} distance={46} decay={2} color="#ff9d57" />
+      <directionalLight position={[BEACON_X, 9, BEACON_Z + 6]} intensity={1.65} color="#d1fae5" />
+      <pointLight position={[BEACON_X, 2, -24]} intensity={16} distance={46} decay={2} color="#10b981" />
 
       <Ground />
       <Camp />

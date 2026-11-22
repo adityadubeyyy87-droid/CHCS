@@ -1,9 +1,18 @@
 'use strict';
 
-const { app, request, pool, insertUser, createCampFixture, countRows } = require('../helpers/api');
+const {
+  app,
+  request,
+  pool,
+  insertUser,
+  createCampFixture,
+  countRows,
+  hold,
+  confirm,
+} = require('../helpers/api');
 
 describe('concurrency — 50 parallel bookings against 10 seats', () => {
-  it('confirms exactly 10 seats, waitlists the other 40 and never overbooks', async () => {
+  it('holds 10 seats, confirms all 10, waitlists the other 40 and never overbooks', async () => {
     const fixture = await createCampFixture({ capacity: 10, startsInHours: 120 });
 
     // 50 distinct patients, created up front so the parallel burst only
@@ -15,22 +24,35 @@ describe('concurrency — 50 parallel bookings against 10 seats', () => {
 
     const responses = await Promise.all(
       patients.map((patient) =>
-        request(app)
-          .post(`/api/slots/${fixture.slotId}/book`)
-          .set('Authorization', `Bearer ${patient.token}`)
-          .send({ travelMode: 'WALK' }),
+        hold({ token: patient.token, slotId: fixture.slotId, body: { travelMode: 'WALK' } }),
       ),
     );
 
     const statuses = responses.map((response) => response.status);
-    const confirmed = responses.filter((response) => response.status === 201);
+    const held = responses.filter((response) => response.status === 201);
     const waitlisted = responses.filter((response) => response.status === 202);
 
-    expect(confirmed).toHaveLength(10);
+    expect(held).toHaveLength(10);
     expect(waitlisted).toHaveLength(40);
     expect(statuses.filter((status) => status === 201)).toHaveLength(10);
     // Nothing may surface a 500 (lock timeout, deadlock, duplicate key leak).
     expect(statuses.filter((status) => status >= 500)).toEqual([]);
+    expect(held.every((response) => response.body.booking.status === 'HELD')).toBe(true);
+    expect(held.every((response) => Boolean(response.body.holdExpiresAt))).toBe(true);
+
+    // publicBooking deliberately omits patientId, so map through the original
+    // request order: every 201 response belongs to the patient that made it.
+    const winners = new Map();
+    responses.forEach((response, index) => {
+      if (response.status === 201) winners.set(response.body.booking.id, patients[index]);
+    });
+    const confirmations = await Promise.all(
+      [...winners.entries()].map(([bookingId, patient]) =>
+        confirm({ token: patient.token, bookingId }),
+      ),
+    );
+    expect(confirmations.every((response) => response.status === 200)).toBe(true);
+    expect(confirmations.every((response) => response.body.booking.status === 'CONFIRMED')).toBe(true);
 
     // Every waiter got a distinct FIFO position in 1..40.
     const positions = waitlisted.map((response) => response.body.waitlist.position).sort((a, b) => a - b);
@@ -57,19 +79,13 @@ describe('concurrency — 50 parallel bookings against 10 seats', () => {
     expect(Number(slot.booked_count)).toBeLessThanOrEqual(Number(slot.capacity));
   });
 
-  it('lets exactly one of two simultaneous bookings win the last seat', async () => {
+  it('lets exactly one of two simultaneous holds win the last seat', async () => {
     const fixture = await createCampFixture({ capacity: 1, startsInHours: 120 });
     const [a, b] = [await insertUser({ role: 'PATIENT' }), await insertUser({ role: 'PATIENT' })];
 
     const results = await Promise.all([
-      request(app)
-        .post(`/api/slots/${fixture.slotId}/book`)
-        .set('Authorization', `Bearer ${a.token}`)
-        .send({}),
-      request(app)
-        .post(`/api/slots/${fixture.slotId}/book`)
-        .set('Authorization', `Bearer ${b.token}`)
-        .send({}),
+      hold({ token: a.token, slotId: fixture.slotId }),
+      hold({ token: b.token, slotId: fixture.slotId }),
     ]);
 
     const codes = results.map((result) => result.status).sort();
@@ -87,18 +103,9 @@ describe('concurrency — 50 parallel bookings against 10 seats', () => {
     );
 
     const results = await Promise.all([
-      request(app)
-        .post(`/api/slots/${fixture.slotId}/book`)
-        .set('Authorization', `Bearer ${patient.token}`)
-        .send({}),
-      request(app)
-        .post(`/api/slots/${extra.insertId}/book`)
-        .set('Authorization', `Bearer ${patient.token}`)
-        .send({}),
-      request(app)
-        .post(`/api/slots/${fixture.slotId}/book`)
-        .set('Authorization', `Bearer ${patient.token}`)
-        .send({}),
+      hold({ token: patient.token, slotId: fixture.slotId }),
+      hold({ token: patient.token, slotId: extra.insertId }),
+      hold({ token: patient.token, slotId: fixture.slotId }),
     ]);
 
     const created = results.filter((result) => result.status === 201);
@@ -106,7 +113,7 @@ describe('concurrency — 50 parallel bookings against 10 seats', () => {
     expect(
       await countRows(
         `SELECT COUNT(*) FROM bookings WHERE patient_id = ? AND camp_id = ?
-           AND status IN ('CONFIRMED','CHECKED_IN','COMPLETED')`,
+           AND status IN ('HELD','CONFIRMED','CHECKED_IN','COMPLETED')`,
         [patient.id, fixture.campId],
       ),
     ).toBe(1);

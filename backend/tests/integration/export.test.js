@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, request, pool, insertUser, createCampFixture } = require('../helpers/api');
+const { app, request, pool, insertUser, createCampFixture, book } = require('../helpers/api');
 
 describe('CSV export', () => {
   it('exports camp attendance report as CSV', async () => {
@@ -10,14 +10,10 @@ describe('CSV export', () => {
     // Book and check in one patient; leave another confirmed (will be no-show on close-out)
     const attended = await insertUser({ role: 'PATIENT' });
     const absent = await insertUser({ role: 'PATIENT' });
-    const b1 = await (await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${attended.token}`)
-      .send({})).body.booking;
-    const b2 = await (await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${absent.token}`)
-      .send({})).body.booking;
+    const b1 = (await book({ token: attended.token, slotId: fixture.slotId }).expect(201)).body
+      .booking;
+    const b2 = (await book({ token: absent.token, slotId: fixture.slotId }).expect(201)).body
+      .booking;
 
     await request(app)
       .post('/api/checkin')

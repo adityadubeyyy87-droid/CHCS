@@ -78,7 +78,7 @@ npm run dev            # proxies /api + /socket.io to :4000
 ```bash
 cd frontend
 npm install
-npm run dev            # auto-falls back to local engine when backend is offline
+npm run dev            # falls back to local engine when no API URL is pinned and backend is offline
 ```
 
 ## Test suite
@@ -87,7 +87,7 @@ Full automated suite (unit + integration against a throwaway MySQL test database
 
 ```bash
 cd backend
-npm test               # 98/98 tests pass (17 files: unit + integration)
+npm test               # 102/102 tests pass (18 files: unit + integration)
 npm run test:unit
 npm run test:integration
 ```
@@ -96,22 +96,23 @@ npm run test:integration
 
 ```bash
 cd backend && node server.js          # real Express + MySQL
-node scripts/verify-live.js          # 43/43 live HTTP checks across all roles
+node scripts/verify-live.js          # 47/47 live HTTP checks across all roles
 ```
 
-Both the mandatory concurrency proof (50 → 10 confirmed / 40 waitlisted / 0 overbooked)
+Both the mandatory concurrency proof (50 → 10 held then confirmed / 40 waitlisted / 0 overbooked)
 and the full suite must stay green before any release. See `docs/TEST_REPORT.md` for the
 current evidence record.
 
 ## Project structure
 
 ```
-database/schema.sql        8 InnoDB tables + CHECK constraints + seed data
+database/schema.sql        9 InnoDB tables + CHECK constraints + seed data
 database/migrations/       Incremental migration scripts
 backend/server.js          Express API, JWT auth, row-lock transactions, Socket.io, cron
 backend/lib/               validation, pagination, rate limits, providers, reminder engine
-backend/tests/             98 unit + integration tests across 17 files (adds security, CORS, demo-guard and validation regressions)
-backend/concurrency-test.js 50-way parallel booking proof (10/40/0)
+backend/tests/             101 unit + integration tests across 18 files (includes hold expiry, security, CORS, demo-guard and validation regressions)
+backend/concurrency-test.js 20-way last-seat race (1/19/0)
+backend/tests/integration/concurrency.test.js 50-way booking proof (10/40/0)
 backend/.env.example       Production environment template
 backend/chsc-postman-collection.json  Postman collection for all API endpoints
 frontend/                  React 18 + Vite app (Mode A / Mode B)

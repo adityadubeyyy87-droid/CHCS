@@ -161,7 +161,12 @@ export default function Shell({ children }) {
               <Icon name="flask" />
             </button>
 
-            <button className="icon-btn topbar-util" onClick={() => setLang(lang === 'en' ? 'kn' : 'en')} aria-label="Switch language" title="English / ಕನ್ನಡ">
+            <button
+              className="icon-btn topbar-util"
+              onClick={() => setLang(lang === 'en' ? 'kn' : 'en')}
+              aria-label={`${lang === 'en' ? 'EN' : 'ಕನ್'} — switch language`}
+              title="English / ಕನ್ನಡ"
+            >
               <span className="lang-chip">{lang === 'en' ? 'EN' : 'ಕನ್'}</span>
             </button>
 

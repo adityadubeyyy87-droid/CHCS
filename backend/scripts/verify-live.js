@@ -51,6 +51,17 @@ async function api(method, path, { token, body, raw = false } = {}) {
   return { status: res.status, body: json, headers: res.headers };
 }
 
+/** Phase-1 booking now returns HELD; confirm it before any active-workflow check. */
+async function bookAndConfirm(slotId, token, body = {}) {
+  const held = await api('POST', `/api/slots/${slotId}/book`, { token, body });
+  if (held.status !== 201 || held.body?.booking?.status !== 'HELD') return held;
+  const confirmed = await api('POST', `/api/bookings/${held.body.booking.id}/confirm`, {
+    token,
+    body: {},
+  });
+  return { ...confirmed, held };
+}
+
 async function main() {
   console.log(`\nCHSC live verification → ${BASE}  (run ${RUN})\n`);
 
@@ -62,10 +73,12 @@ async function main() {
 
   /* ------------------------------------------------------------ auth roles */
   const tokens = {};
+  const demoUsers = {};
   for (const role of ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN']) {
     const r = await api('POST', '/api/auth/demo-login', { body: { role } });
     const ok = r.status === 200 && r.body?.token && r.body?.user?.role === role;
     tokens[role] = r.body?.token;
+    demoUsers[role] = r.body?.user;
     assert(`${role} demo login`, ok, r.body?.user?.email);
   }
 
@@ -193,11 +206,26 @@ async function main() {
   const slotA = detail.body.camp.slots[0];
   const slotB = detail.body.camp.slots[1];
 
-  const book = await api('POST', `/api/slots/${slotA.id}/book`, {
+  const held = await api('POST', `/api/slots/${slotA.id}/book`, {
     token: patientToken,
     body: { travelMode: 'WALK', pledge: true },
   });
-  assert('patient books a slot (201 CONFIRMED)', book.status === 201 && book.body?.booking?.status === 'CONFIRMED', book.body?.booking?.token_number);
+  assert(
+    'patient holds a slot (201 HELD with expiry)',
+    held.status === 201 &&
+      held.body?.booking?.status === 'HELD' &&
+      Boolean(held.body?.holdExpiresAt),
+    held.body?.booking?.tokenNumber,
+  );
+  const book = await api('POST', `/api/bookings/${held.body?.booking?.id}/confirm`, {
+    token: patientToken,
+    body: {},
+  });
+  assert(
+    'patient confirms the hold (CONFIRMED)',
+    book.status === 200 && book.body?.booking?.status === 'CONFIRMED',
+    book.body?.booking?.tokenNumber,
+  );
   const bookingId = book.body?.booking?.id;
 
   const doubleBook = await api('POST', `/api/slots/${slotA.id}/book`, {
@@ -222,14 +250,16 @@ async function main() {
   });
   assert('patient cancels booking', cancel.status === 200, `status ${cancel.status}`);
 
-  const rebook = await api('POST', `/api/slots/${slotA.id}/book`, {
-    token: patientToken,
-    body: {},
-  });
+  const rebook = await bookAndConfirm(slotA.id, patientToken, {});
+  const refreshedSlotA = (
+    await api('GET', `/api/camps/${campId}/slots`)
+  ).body?.slots?.find((slot) => Number(slot.id) === Number(slotA.id));
   assert(
     'seat is returned to inventory after cancel',
-    rebook.status === 201,
-    `status ${rebook.status} ${rebook.body?.code || ''}`,
+    rebook.status === 200 &&
+      rebook.body?.booking?.status === 'CONFIRMED' &&
+      Number(refreshedSlotA?.bookedCount) === 1,
+    `status ${rebook.status}; slot bookedCount ${refreshedSlotA?.bookedCount ?? 'unknown'}`,
   );
 
   /* ---------------------------------------------------------- reschedule */
@@ -255,11 +285,8 @@ async function main() {
     },
   });
   const tinySlot = (await api('GET', `/api/camps/${tinyCamp.body.camp.id}`)).body.camp.slots[0];
-  const first = await api('POST', `/api/slots/${tinySlot.id}/book`, {
-    token: patientToken,
-    body: {},
-  });
-  assert('first booking on capacity-1 slot confirms', first.status === 201);
+  const first = await bookAndConfirm(tinySlot.id, patientToken, {});
+  assert('first booking on capacity-1 slot confirms', first.status === 200);
 
   const secondTokens = [];
   for (let i = 0; i < 2; i += 1) {
@@ -294,11 +321,18 @@ async function main() {
     body: {},
   });
   const promoted = await api('GET', '/api/bookings/me', { token: secondTokens[0] });
+  const claim = (promoted.body?.bookings || []).find((b) => b.status === 'HELD');
   assert(
-    'cancelling confirms the #1 waiter automatically',
-    cancelFirst.status === 200 &&
-      (promoted.body?.bookings || []).some((b) => b.status === 'CONFIRMED'),
+    'cancelling promotes the #1 waiter to a claimable hold',
+    cancelFirst.status === 200 && Boolean(claim),
   );
+  if (claim) {
+    const claimed = await api('POST', `/api/bookings/${claim.id}/confirm`, {
+      token: secondTokens[0],
+      body: {},
+    });
+    assert('promoted waiter confirms the seat', claimed.status === 200);
+  }
 
   /* ------------------------------------------------------------- attendance */
   const checkinCamp = await api('POST', '/api/camps', {
@@ -307,7 +341,7 @@ async function main() {
       title: `Verification Check-in Camp ${RUN}`,
       venue: 'Verification Ground',
       address: '3 Verification Road, Bengaluru 560001',
-      campDate: new Date().toISOString().slice(0, 10),
+      campDate,
       startTime: '09:00',
       endTime: '10:00',
       slotDurationMins: 30,
@@ -316,12 +350,26 @@ async function main() {
     },
   });
   const checkinSlot = (await api('GET', `/api/camps/${checkinCamp.body.camp.id}`)).body.camp.slots[0];
-  const checkinBooking = await api('POST', `/api/slots/${checkinSlot.id}/book`, {
-    token: patientToken,
-    body: {},
-  });
+  const checkinBooking = await bookAndConfirm(checkinSlot.id, patientToken, {});
   const qr = checkinBooking.body?.booking?.qrToken || checkinBooking.body?.booking?.qr_token;
   assert('booking carries a QR token', Boolean(qr));
+
+  const volunteerAssignment = await api('POST', `/api/camps/${checkinCamp.body.camp.id}/staff`, {
+    token: tokens.ORGANIZER,
+    body: {
+      userId: demoUsers.VOLUNTEER?.id,
+      roleAtCamp: 'VOLUNTEER',
+      shiftStart: '09:00',
+      shiftEnd: '10:00',
+    },
+  });
+  assert(
+    'volunteer is assigned to the check-in camp',
+    volunteerAssignment.status === 201,
+    volunteerAssignment.status === 201
+      ? `assignment #${volunteerAssignment.body?.staff?.id}`
+      : JSON.stringify(volunteerAssignment.body),
+  );
 
   const scan = await api('POST', '/api/checkin', {
     token: tokens.VOLUNTEER,
@@ -370,6 +418,14 @@ async function main() {
     body: {},
   });
   assert('reminder sweep runs (idempotent)', reminderRun.status === 200);
+  const holdSweep = await api('POST', '/api/admin/holds/expire', {
+    token: tokens.ADMIN,
+    body: {},
+  });
+  assert(
+    'hold/promotion expiry sweep runs (idempotent)',
+    holdSweep.status === 200 && typeof holdSweep.body?.expiredHolds === 'number',
+  );
 
   /* ------------------------------------------------------- concurrency proof */
   const proof = await api('POST', '/api/demo/concurrency', {

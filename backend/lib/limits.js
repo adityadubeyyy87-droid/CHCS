@@ -5,10 +5,10 @@
  *
  * Three buckets:
  *   auth    — brute-force protection on login/register
- *   booking — stops seat-grabbing scripts
- *   api     — coarse global backstop
+ *   booking — stops one patient from seat-grabbing; keyed per (IP + user)
+ *   api     — coarse global backstop (300/min/IP)
  *
- * Design notes (why the auth bucket is not a plain per-IP counter):
+ * Design notes (why neither auth nor booking is a plain per-IP counter):
  *
  * A conference room, a college lab and a hospital campus all share one public
  * IP. A plain 10-per-IP auth limit locks out an entire room after a handful of
@@ -18,6 +18,10 @@
  *   - one account cannot be brute-forced,
  *   - five roles logging in from one laptop are never penalised,
  *   - an attacker cycling accounts still trips the coarse per-IP backstop.
+ *
+ * The booking bucket is applied after authenticate, so it can key by user id.
+ * Fifty patients behind one NAT can therefore prove the FIFO race without a
+ * false 429, while a single patient still gets only 30 tries per minute.
  *
  * Disabled with RATE_LIMIT_DISABLED=true (the test suite sets it).
  */
@@ -57,6 +61,12 @@ function authKey(req) {
   return `auth:${ipKey(req)}:${identifier || 'anonymous'}`;
 }
 
+/** Booking limiter is installed after authenticate, so req.user exists. */
+function bookingKey(req) {
+  const userId = req.user?.id || req.user?.userId;
+  return userId ? `booking:${ipKey(req)}:user:${userId}` : `booking:${ipKey(req)}:anonymous`;
+}
+
 function limiter({ windowMs, limit, message, disabled, keyGenerator, skipSuccessfulRequests }) {
   return rateLimit({
     windowMs,
@@ -93,7 +103,7 @@ function createLimiters({ disabled = false } = {}) {
       message: 'Too many authentication attempts. Try again in a few minutes.',
       disabled,
       keyGenerator: authKey,
-      skipSuccessfulRequests: false,
+      skipSuccessfulRequests: true,
     }),
     // Coarse per-IP ceiling so account cycling still gets stopped.
     authIp: limiter({
@@ -108,8 +118,9 @@ function createLimiters({ disabled = false } = {}) {
       limit: 30,
       message: 'Too many booking attempts. Wait a moment before retrying.',
       disabled,
+      keyGenerator: bookingKey,
     }),
   };
 }
 
-module.exports = { createLimiters, authKey, ipKey, normaliseIp };
+module.exports = { createLimiters, authKey, bookingKey, ipKey, normaliseIp };

@@ -7,6 +7,9 @@ const {
   insertUser,
   createCampFixture,
   countRows,
+  hold,
+  confirm,
+  book,
 } = require('../helpers/api');
 
 async function addSlot(campId, { index = 2, start = '11:00:00', end = '12:00:00', capacity = 4 } = {}) {
@@ -27,18 +30,29 @@ async function remindersFor(bookingId) {
 }
 
 describe('booking integrity', () => {
-  it('confirms a seat, increments the slot and queues 24h + 2h reminders', async () => {
+  it('holds a seat, confirms it, increments the slot and queues 24h + 2h reminders', async () => {
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 3, startsInHours: 96 });
 
-    const response = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({ travelMode: 'WALK', pledge: true })
-      .expect(201);
+    const held = await hold({
+      token: patient.token,
+      slotId: fixture.slotId,
+      body: { travelMode: 'WALK', pledge: true },
+    }).expect(201);
+
+    expect(held.body).toMatchObject({ status: 'HELD', booking: { status: 'HELD' } });
+    expect(held.body.holdExpiresAt).toBeTruthy();
+    expect(held.body.booking.holdExpiresAt).toBe(held.body.holdExpiresAt);
+    expect(await countRows('SELECT booked_count FROM slots WHERE id = ?', [fixture.slotId])).toBe(1);
+    expect(await remindersFor(held.body.booking.id)).toHaveLength(0);
+
+    const response = await confirm({ token: patient.token, bookingId: held.body.booking.id }).expect(
+      200,
+    );
 
     expect(response.body.booking.status).toBe('CONFIRMED');
     expect(response.body.booking.tokenNumber).toMatch(/^[A-F]-\d{6}$/);
+    expect(response.body.booking.holdExpiresAt).toBeUndefined();
     expect(await countRows('SELECT booked_count FROM slots WHERE id = ?', [fixture.slotId])).toBe(1);
 
     const reminders = await remindersFor(response.body.booking.id);
@@ -51,11 +65,7 @@ describe('booking integrity', () => {
     const fixture = await createCampFixture({ capacity: 2, startsInHours: 96 });
     const secondSlot = await addSlot(fixture.campId);
 
-    await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
 
     const sameSlot = await request(app)
       .post(`/api/slots/${fixture.slotId}/book`)
@@ -77,11 +87,7 @@ describe('booking integrity', () => {
     const fixture = await createCampFixture({ capacity: 2 });
     const secondSlot = await addSlot(fixture.campId);
 
-    await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
 
     await expect(
       pool.query(
@@ -100,11 +106,7 @@ describe('booking integrity', () => {
     const fixture = await createCampFixture({ capacity: 3, startsInHours: 96, startTime: '09:00:00', endTime: '14:00:00' });
     const secondSlot = await addSlot(fixture.campId, { start: '12:00:00', end: '13:00:00' });
 
-    const booked = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
     const bookingId = booked.body.booking.id;
     const before = await remindersFor(bookingId);
 
@@ -134,17 +136,9 @@ describe('booking integrity', () => {
     const fixture = await createCampFixture({ capacity: 2, startsInHours: 96 });
     const fullSlot = await addSlot(fixture.campId, { capacity: 1 });
 
-    await request(app)
-      .post(`/api/slots/${fullSlot}/book`)
-      .set('Authorization', `Bearer ${other.token}`)
-      .send({})
-      .expect(201);
+    await book({ token: other.token, slotId: fullSlot }).expect(201);
 
-    const booked = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
 
     const response = await request(app)
       .patch(`/api/bookings/${booked.body.booking.id}/reschedule`)
@@ -158,11 +152,7 @@ describe('booking integrity', () => {
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 2, startsInHours: 96 });
 
-    const booked = await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({})
-      .expect(201);
+    const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
 
     await request(app)
       .patch(`/api/bookings/${booked.body.booking.id}/cancel`)
@@ -185,11 +175,7 @@ describe('booking integrity', () => {
     const first = await insertUser({ role: 'PATIENT' });
     const second = await insertUser({ role: 'PATIENT' });
 
-    await request(app)
-      .post(`/api/slots/${fixture.slotId}/book`)
-      .set('Authorization', `Bearer ${first.token}`)
-      .send({})
-      .expect(201);
+    await book({ token: first.token, slotId: fixture.slotId }).expect(201);
 
     const waitlisted = await request(app)
       .post(`/api/slots/${fixture.slotId}/book`)

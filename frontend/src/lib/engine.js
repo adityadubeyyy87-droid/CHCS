@@ -182,7 +182,7 @@ const engine = {
     if (!slot) throw new Error('Slot not found.');
     const camp = DB.camps.find((c) => c.id === slot.campId);
     if (camp.status !== 'PUBLISHED') throw new Error('This camp is not accepting bookings.');
-    const existing = DB.bookings.find((b) => b.slotId === slot.id && b.patientId === user.id && ['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(b.status));
+    const existing = DB.bookings.find((b) => b.slotId === slot.id && b.patientId === user.id && ['HELD', 'CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(b.status));
     if (existing) throw new Error('You already hold a booking for this slot.');
 
     if (slot.bookedCount >= slot.capacity) {
@@ -197,23 +197,69 @@ const engine = {
       return { status: 'WAITLISTED', message: `Slot full. You are #${wr.position} in the FIFO waitlist.`, waitlist: { id: wr.id, slotId: slot.id, campId: camp.id, position: wr.position, status: 'WAITING' }, simulated: true };
     }
 
+    // Capacity is reserved under the same logical lock as the live engine: the
+    // seat is HELD for 10 minutes and only becomes a pass after confirmation.
     slot.bookedCount += 1;
     const qrToken = `CHSC-BLR-${Math.floor(100000 + Math.random() * 899999)}`;
     const tokenNumber = `${String.fromCharCode(65 + Math.floor(Math.random() * 6))}-${Math.floor(100000 + Math.random() * 899999)}`;
-    const cancelled = DB.bookings.find((b) => b.slotId === slot.id && b.patientId === user.id && b.status === 'CANCELLED');
+    const holdExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const reusable = DB.bookings.find((b) => b.slotId === slot.id && b.patientId === user.id && ['CANCELLED', 'EXPIRED'].includes(b.status));
     let booking;
-    if (cancelled) {
-      Object.assign(cancelled, { status: 'CONFIRMED', travelMode, pledgeOnTime: pledge, qrToken, tokenNumber, bookedAt: new Date().toISOString(), cancelledAt: null, checkedInAt: null });
-      booking = cancelled;
+    if (reusable) {
+      Object.assign(reusable, { status: 'HELD', travelMode, pledgeOnTime: pledge, qrToken, tokenNumber, holdExpiresAt, bookedAt: new Date().toISOString(), cancelledAt: null, checkedInAt: null });
+      booking = reusable;
     } else {
-      booking = { id: seq.booking++, slotId: slot.id, campId: camp.id, patientId: user.id, qrToken, tokenNumber, status: 'CONFIRMED', travelMode, pledgeOnTime: pledge, bookedAt: new Date().toISOString(), checkedInAt: null, cancelledAt: null };
+      booking = { id: seq.booking++, slotId: slot.id, campId: camp.id, patientId: user.id, qrToken, tokenNumber, status: 'HELD', travelMode, pledgeOnTime: pledge, holdExpiresAt, bookedAt: new Date().toISOString(), checkedInAt: null, cancelledAt: null };
       DB.bookings.push(booking);
     }
     const wl = DB.waitlist.find((w) => w.slotId === slot.id && w.patientId === user.id && w.status === 'WAITING');
     if (wl) wl.status = 'CANCELLED';
-    this._notify(user.id, booking.id, 'SMS', 'BOOKING_CONFIRMED', user.phone, null, `CHSC confirmed: ${user.name}, token ${tokenNumber} for ${camp.title} at ${slot.startTime.slice(0, 5)}. Pass ${qrToken}. Arrive 10 min early.`);
-    this._notify(user.id, booking.id, 'EMAIL', 'BOOKING_CONFIRMED', user.email, `Your health camp pass · ${tokenNumber}`, `Confirmed for ${camp.title}. Show the QR pass at the gate.`);
-    return { status: 'CONFIRMED', message: 'Seat locked and confirmed.', booking: publicBooking(booking), simulated: true };
+    this._notify(user.id, booking.id, 'SMS', 'BOOKING_HELD', user.phone, null, `CHSC: ${user.name}, seat on hold for 10 minutes at ${camp.title} (${slot.startTime.slice(0, 5)}). Confirm in the app to get pass ${qrToken}.`);
+    return { status: 'HELD', message: 'Seat reserved for 10 minutes. Confirm to receive your pass.', booking: publicBooking(booking), holdExpiresAt, simulated: true };
+  },
+
+  async confirmBooking(id, user) {
+    if (!user) throw new Error('Sign in first.');
+    const b = DB.bookings.find((x) => x.id === Number(id));
+    if (!b) throw new Error('Booking not found.');
+    if (user.role === 'PATIENT' && b.patientId !== user.id) throw new Error('You cannot confirm this booking.');
+    if (b.status === 'CONFIRMED') return { status: 'CONFIRMED', message: 'Booking was already confirmed.', booking: publicBooking(b), simulated: true };
+    if (b.status !== 'HELD') throw new Error('Only a held booking can be confirmed.');
+
+    const slot = DB.slots.find((s) => s.id === b.slotId);
+    const camp = DB.camps.find((c) => c.id === b.campId);
+    const patient = DB.users.find((u) => u.id === b.patientId);
+    if (!Number.isFinite(new Date(b.holdExpiresAt).getTime()) || new Date(b.holdExpiresAt).getTime() <= Date.now()) {
+      b.status = 'EXPIRED';
+      b.holdExpiresAt = null;
+      b.cancelledAt = new Date().toISOString();
+      if (slot) slot.bookedCount = Math.max(0, slot.bookedCount - 1);
+
+      const waiter = DB.waitlist.filter((w) => w.slotId === b.slotId && w.status === 'WAITING').sort((a, z) => a.createdAt.localeCompare(z.createdAt) || a.id - z.id)[0];
+      if (waiter && slot) {
+        const wUser = DB.users.find((u) => u.id === waiter.patientId);
+        const existing = DB.bookings.find((x) => x.slotId === b.slotId && x.patientId === waiter.patientId && ['CANCELLED', 'EXPIRED'].includes(x.status));
+        const promoted = existing || { id: seq.booking++, slotId: b.slotId, campId: b.campId, patientId: waiter.patientId, qrToken: `CHSC-BLR-${Math.floor(100000 + Math.random() * 899999)}`, tokenNumber: `${String.fromCharCode(65 + Math.floor(Math.random() * 6))}-${Math.floor(100000 + Math.random() * 899999)}` };
+        Object.assign(promoted, { status: 'CONFIRMED', bookedAt: new Date().toISOString(), holdExpiresAt: null, cancelledAt: null, checkedInAt: null });
+        if (!existing) DB.bookings.push(promoted);
+        slot.bookedCount += 1;
+        waiter.status = 'PROMOTED';
+        waiter.promotedAt = new Date().toISOString();
+      waiter.promotionExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        this._notify(waiter.patientId, promoted.id, 'SMS', 'WAITLIST_PROMOTED', wUser?.phone, null, `A hold expired and your FIFO turn is ready: ${camp.title} at ${slot.startTime.slice(0, 5)}. Pass ${promoted.qrToken}.`);
+      }
+      const err = new Error('Your 10-minute hold expired. The seat was released to the FIFO waitlist.');
+      err.code = 'HOLD_EXPIRED';
+      err.status = 409;
+      throw err;
+    }
+
+    b.status = 'CONFIRMED';
+    b.holdExpiresAt = null;
+    b.confirmedAt = new Date().toISOString();
+    this._notify(b.patientId, b.id, 'SMS', 'BOOKING_CONFIRMED', patient?.phone, null, `CHSC confirmed: ${patient?.name}, token ${b.tokenNumber} for ${camp?.title} at ${slot?.startTime.slice(0, 5)}. Pass ${b.qrToken}. Arrive 10 min early.`);
+    this._notify(b.patientId, b.id, 'EMAIL', 'BOOKING_CONFIRMED', patient?.email, `Your health camp pass · ${b.tokenNumber}`, `Confirmed for ${camp?.title}. Show the QR pass at the gate.`);
+    return { status: 'CONFIRMED', message: 'Seat confirmed — your pass is ready.', booking: publicBooking(b), simulated: true };
   },
 
   async myBookings(user) {
@@ -224,8 +270,9 @@ const engine = {
     const b = DB.bookings.find((x) => x.id === Number(id));
     if (!b) throw new Error('Booking not found.');
     if (user.role === 'PATIENT' && b.patientId !== user.id) throw new Error('You cannot cancel this booking.');
-    if (!['CONFIRMED', 'CHECKED_IN'].includes(b.status)) throw new Error('Only an active confirmed booking can be released.');
+    if (!['HELD', 'CONFIRMED', 'CHECKED_IN'].includes(b.status)) throw new Error('Only an active held or confirmed booking can be released.');
     b.status = 'CANCELLED';
+    b.holdExpiresAt = null;
     b.cancelledAt = new Date().toISOString();
     const slot = DB.slots.find((s) => s.id === b.slotId);
     slot.bookedCount = Math.max(0, slot.bookedCount - 1);
@@ -247,6 +294,7 @@ const engine = {
       slot.bookedCount += 1;
       waiter.status = 'PROMOTED';
       waiter.promotedAt = new Date().toISOString();
+      waiter.promotionExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       this._notify(waiter.patientId, promoted.id, 'SMS', 'WAITLIST_PROMOTED', wUser.phone, null, `Great news ${wUser.name}! A neighbour released a seat. You are now CONFIRMED for ${DB.camps.find((c) => c.id === b.campId).title} at ${slot.startTime.slice(0, 5)}. Pass ${qrToken}.`);
       this._notify(waiter.patientId, promoted.id, 'EMAIL', 'WAITLIST_PROMOTED', wUser.email, `You're in! Health camp pass ${tokenNumber}`, `Your FIFO waitlist entry was promoted to a confirmed booking.`);
     }

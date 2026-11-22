@@ -1,6 +1,6 @@
 // Landing.jsx — the cinematic front door for CHSC.
 //
-// Composes CinematicScene (fixed WebGL sunrise) with a scroll-driven story:
+// Composes CinematicScene (fixed WebGL clinical beacon) with a scroll-driven story:
 // hero → why camps stall → a camp day → design targets → honesty note →
 // working camp-alert signup. Everything is real content from this project:
 // no invented "AI" claims, no fake results, simulated state clearly labelled.
@@ -183,14 +183,14 @@ export default function Landing() {
   useEffect(() => {
     const previousTitle = document.title;
     document.body.classList.add('landing-on');
-    document.title = 'CHSC — A camp day that begins with the sun';
+    document.title = 'CHSC — A camp day that begins with a clear signal';
     return () => {
       document.body.classList.remove('landing-on');
       document.title = previousTitle;
     };
   }, []);
 
-  /* scroll → scene drive, progress rail, sun clock, nav condense */
+  /* scroll → scene drive, progress rail, camp clock, nav condense */
   useEffect(() => {
     let frame = 0;
     let condensed = false;
@@ -214,7 +214,7 @@ export default function Landing() {
         clockRef.current.textContent = `${hh}:${mm}`;
         if (phaseRef.current) {
           phaseRef.current.textContent =
-            t < 0.18 ? 'first light' : t < 0.4 ? 'gates open' : t < 0.62 ? 'screening' : t < 0.82 ? 'afternoon' : 'close-out';
+            t < 0.18 ? 'signal acquired' : t < 0.4 ? 'gates open' : t < 0.62 ? 'screening' : t < 0.82 ? 'afternoon' : 'close-out';
         }
       }
       const next = y > 24;
@@ -269,7 +269,6 @@ export default function Landing() {
         </Suspense>
       </SceneBoundary>
       <div className="cine-grade" aria-hidden="true" />
-      <div className="cine-bloom" aria-hidden="true" />
       <div className="cine-vignette" aria-hidden="true" />
       <div className="cine-grain" aria-hidden="true" />
 
@@ -280,20 +279,12 @@ export default function Landing() {
       <header className="ln-nav" ref={navRef}>
         <div className="ln-nav-inner">
           <button className="ln-brand" type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-            <span className="ln-sunmark" aria-hidden="true">
+            <span className="ln-beaconmark" aria-hidden="true">
               <svg viewBox="0 0 32 32" width="30" height="30" role="presentation">
-                <circle cx="16" cy="16" r="6.2" fill="url(#lnSunGrad)" />
-                <g stroke="#ffd7a0" strokeWidth="1.5" strokeLinecap="round" opacity="0.9">
-                  <path d="M16 3.6v3.1M16 25.3v3.1M3.6 16h3.1M25.3 16h3.1" />
-                  <path d="M7.2 7.2l2.2 2.2M22.6 22.6l2.2 2.2M24.8 7.2l-2.2 2.2M9.4 22.6l-2.2 2.2" opacity="0.55" />
-                </g>
-                <defs>
-                  <radialGradient id="lnSunGrad" cx="42%" cy="38%">
-                    <stop offset="0%" stopColor="#fff6df" />
-                    <stop offset="70%" stopColor="#ffc36f" />
-                    <stop offset="100%" stopColor="#ff9b4a" />
-                  </radialGradient>
-                </defs>
+                <circle cx="16" cy="16" r="3.2" fill="#e7fff4" />
+                <circle cx="16" cy="16" r="8.2" fill="none" stroke="#6ee7b7" strokeWidth="1.4" opacity="0.9" />
+                <circle cx="16" cy="16" r="12.4" fill="none" stroke="#10b981" strokeWidth="1" opacity="0.55" />
+                <path d="M16 1.5v5M16 25.5v5M1.5 16h5M25.5 16h5" stroke="#a7f3d0" strokeWidth="1.2" strokeLinecap="round" opacity="0.8" />
               </svg>
             </span>
             <span className="ln-brand-text">
@@ -338,7 +329,7 @@ export default function Landing() {
             <h1 id="ln-hero-title" className="ln-h1">
               A camp day that
               <br />
-              begins with the <em>sun.</em>
+              begins with a <em>clear signal.</em>
             </h1>
 
             <p className="ln-hero-copy">
@@ -373,9 +364,9 @@ export default function Landing() {
               </div>
             </dl>
 
-            <button type="button" className="ln-scrollcue" onClick={() => jump('why')} aria-label="Scroll — the sun keeps rising">
+            <button type="button" className="ln-scrollcue" onClick={() => jump('why')} aria-label="Scroll — the beacon keeps rising">
               <span className="ln-scrollcue-line" aria-hidden="true" />
-              <span>Scroll — the sun keeps rising</span>
+              <span>Scroll — the beacon keeps rising</span>
             </button>
           </div>
         </section>
@@ -429,7 +420,7 @@ export default function Landing() {
             <div className="ln-day-intro">
               <SectionHead
                 eyebrow="One camp, hour by hour"
-                title={<span id="ln-day-title">Sunrise to close-out, in five movements.</span>}
+                title={<span id="ln-day-title">First signal to close-out, in five movements.</span>}
                 lead="The camp day is the product. Every screen in CHSC exists to protect one of these moments."
               />
               <Reveal className="ln-queue-card" delay={120}>
@@ -565,12 +556,12 @@ export default function Landing() {
               <p className="ln-footer-head">Platform</p>
               <button type="button" className="ln-footer-link" onClick={enter}>Sign in</button>
               <button type="button" className="ln-footer-link" onClick={enter}>Dashboard</button>
-              <button type="button" className="ln-footer-link" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>Back to sunrise</button>
+              <button type="button" className="ln-footer-link" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>Back to the top</button>
             </div>
           </div>
         </div>
         <div className="ln-wrap ln-footer-base">
-          <p className="ln-fine">Cinematic build · React Three Fiber · custom GLSL sun · no stock video</p>
+          <p className="ln-fine">Cinematic build · React Three Fiber · custom GLSL beacon · no stock video</p>
           <p className="ln-fine">
             {mode === 'live'
               ? 'Connected to the live backend.'

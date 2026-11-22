@@ -1,12 +1,12 @@
 // MyBookings.jsx — Biophilic Future booking management with motion primitives:
 // Magnetic buttons, InView booking rows, Spotlight on passport.
 // Supports confirm → view pass → cancel → reschedule → calendar export.
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Modal, Skeleton } from '../components/ui.jsx';
 import { Passport, downloadIcs } from '../components/Passport.jsx';
-import { fmtDate, fmtTime12, cls, slotTone } from '../lib/format.js';
+import { fmtDate, fmtTime12, cls, slotTone, holdSecondsLeft, fmtCountdown } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 export default function MyBookings() {
@@ -19,7 +19,32 @@ export default function MyBookings() {
   const [slotLoading, setSlotLoading] = useState(false);
   const [newSlotId, setNewSlotId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(Date.now());
   const slotRefs = useRef(new Map());
+
+  const hasHold = (bookings.data?.bookings || []).some((b) => b.status === 'HELD');
+  useEffect(() => {
+    if (!hasHold) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasHold]);
+
+  async function confirmHold(b) {
+    setBusy(true);
+    try {
+      const res = await api.confirmBooking(b.id);
+      toast(res.message || 'Seat confirmed — your pass is ready.', 'ok');
+      pushGateway({
+        channel: 'SYSTEM', type: 'BOOKING_CONFIRMED', recipient: 'you',
+        message: res.message || 'Hold confirmed.',
+        status: res.simulated ? 'SIMULATED' : 'SENT',
+        provider: res.simulated ? 'Local Engine' : 'MySQL + Socket.io',
+        bookingId: b.id,
+      });
+      await bookings.reload();
+    } catch (err) { toast(err.message, 'bad'); }
+    finally { setBusy(false); }
+  }
 
   async function release(b) {
     setCancelTarget(b);
@@ -96,14 +121,26 @@ export default function MyBookings() {
                     <div className="booking-when">{fmtDate(b.campDate)} · {fmtTime12(b.startTime)}–{fmtTime12(b.endTime)}</div>
                     <div className="booking-meta">
                       <Badge status={b.status}>{b.status.replace('_', ' ')}</Badge>
+                      {b.status === 'HELD' && (
+                        <span className="qr-hint hold-hint">
+                          Confirm in {fmtCountdown(holdSecondsLeft(b.holdExpiresAt || b.hold_expires_at, now))}
+                        </span>
+                      )}
                       {b.status === 'WAITLISTED' && b.waitlistPosition && <span className="qr-hint">Position {b.waitlistPosition}</span>}
                       {b.status === 'CONFIRMED' && <span className="qr-hint">QR: {b.qrToken}</span>}
                     </div>
                   </div>
                   <div className="booking-actions">
-                    <Magnetic intensity={0.3}>
-                      <Button size="sm" variant="ghost" icon="qr" onClick={() => setPass(b)}>Pass</Button>
-                    </Magnetic>
+                    {b.status === 'HELD' && (
+                      <Magnetic intensity={0.3}>
+                        <Button size="sm" icon="check" disabled={busy} onClick={() => confirmHold(b)}>Confirm</Button>
+                      </Magnetic>
+                    )}
+                    {b.status !== 'HELD' && (
+                      <Magnetic intensity={0.3}>
+                        <Button size="sm" variant="ghost" icon="qr" onClick={() => setPass(b)}>Pass</Button>
+                      </Magnetic>
+                    )}
                     <Magnetic intensity={0.3}>
                       <Button size="sm" variant="ghost" icon="download" onClick={() => downloadIcs(b)}>Calendar</Button>
                     </Magnetic>
@@ -112,7 +149,7 @@ export default function MyBookings() {
                         <Button size="sm" variant="ghost" icon="refresh" onClick={() => openReschedule(b)}>Reschedule</Button>
                       </Magnetic>
                     )}
-                    {b.status === 'CONFIRMED' && (
+                    {(b.status === 'CONFIRMED' || b.status === 'HELD') && (
                       <Magnetic intensity={0.3}>
                         <Button size="sm" variant="danger" icon="refresh" onClick={() => release(b)}>Release</Button>
                       </Magnetic>

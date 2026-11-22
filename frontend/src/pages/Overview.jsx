@@ -126,7 +126,7 @@ export default function Overview() {
               const remaining = c.slotCapacity - c.bookedTotal;
               const fill = c.slotCapacity ? Math.round((c.bookedTotal / c.slotCapacity) * 100) : 0;
               return (
-                <button key={c.id} className="camp-row entrance card-tilt" onClick={() => setPage(user.role === 'PATIENT' ? 'discover' : 'manage')}>
+                <button key={c.id} type="button" className="camp-row entrance card-tilt" onClick={() => setPage(user.role === 'PATIENT' ? 'discover' : 'manage')}>
                   <div className="camp-date"><strong>{fmtDate(c.campDate).split(',')[1] || c.campDate}</strong><small>{fmtDate(c.campDate).split(',')[0]}</small></div>
                   <div className="camp-row-main">
                     <strong>{c.title}</strong>

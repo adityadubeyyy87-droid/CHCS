@@ -7,6 +7,7 @@ const {
   insertUser,
   createCampFixture,
   countRows,
+  book,
 } = require('../helpers/api');
 const { remindersEngine } = require('../../server');
 
@@ -28,11 +29,7 @@ function recorder({ fail = false, delayMs = 0 } = {}) {
 async function bookedCamp({ capacity = 3, startsInHours = 96 } = {}) {
   const patient = await insertUser({ role: 'PATIENT', name: 'Reminder Patient' });
   const fixture = await createCampFixture({ capacity, startsInHours });
-  const response = await request(app)
-    .post(`/api/slots/${fixture.slotId}/book`)
-    .set('Authorization', `Bearer ${patient.token}`)
-    .send({})
-    .expect(201);
+  const response = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
   return { patient, fixture, bookingId: response.body.booking.id };
 }
 

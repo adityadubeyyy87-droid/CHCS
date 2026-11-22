@@ -7,14 +7,14 @@ const {
   insertUser,
   createCampFixture,
   countRows,
+  book,
+  hold,
+  confirm,
+  assignStaff,
 } = require('../helpers/api');
 
 async function bookSeat(patient, slotId) {
-  const response = await request(app)
-    .post(`/api/slots/${slotId}/book`)
-    .set('Authorization', `Bearer ${patient.token}`)
-    .send({})
-    .expect(201);
+  const response = await book({ token: patient.token, slotId }).expect(201);
   return response.body.booking;
 }
 
@@ -24,6 +24,7 @@ describe('attendance — check-in, no-show and close-out', () => {
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 3 });
     const booking = await bookSeat(patient, fixture.slotId);
+    await assignStaff(doctor, fixture.campId, 'DOCTOR');
 
     const first = await request(app)
       .post('/api/checkin')
@@ -56,6 +57,7 @@ describe('attendance — check-in, no-show and close-out', () => {
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 2 });
     const booking = await bookSeat(patient, fixture.slotId);
+    await assignStaff(volunteer, fixture.campId, 'VOLUNTEER');
 
     const response = await request(app)
       .post('/api/checkin')
@@ -145,6 +147,7 @@ describe('attendance — check-in, no-show and close-out', () => {
     const patient = await insertUser({ role: 'PATIENT' });
     const fixture = await createCampFixture({ capacity: 2 });
     const booking = await bookSeat(patient, fixture.slotId);
+    await assignStaff(doctor, fixture.campId, 'DOCTOR');
 
     expect(
       await countRows('SELECT COUNT(*) FROM reminders WHERE booking_id = ? AND status = "PENDING"', [
@@ -174,6 +177,7 @@ describe('attendance — check-in, no-show and close-out', () => {
 
     const attendedBooking = await bookSeat(attended, fixture.slotId);
     const absentBooking = await bookSeat(absent, fixture.slotId);
+    await assignStaff(doctor, fixture.campId, 'DOCTOR');
 
     await request(app)
       .post('/api/checkin')
