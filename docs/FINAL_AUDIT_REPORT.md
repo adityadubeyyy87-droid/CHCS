@@ -1,8 +1,11 @@
 # CHSC — Final A–N Audit Report
 
-**Report date:** 2026-11-22  
-**Pre-audit baseline:** `f73fc55917f9965a1793eb4210c58b3b3a612fcb`  
-**Application commit delivered:** `eb60b350531dcacbe0404f23a3f5874e158cdd5d`  
+**Report date:** 2026-11-22
+
+**Pre-audit baseline:** `f73fc55917f9965a1793eb4210c58b3b3a612fcb`
+
+**Application commit delivered:** `eb60b350531dcacbe0404f23a3f5874e158cdd5d`
+
 **Runtime policy:** **STRICT LIVE / REAL DATA ONLY**. No demo engine, no offline database substitute, no seeded production records, no fabricated KPI, no fake delivery claim, no invented URL.
 
 > **Overall result:** A–M are **PASS**. N is **BLOCKED only on the Railway dashboard redeploy/configuration**; the code and frontend deployment are verified, but this environment has no `RAILWAY_TOKEN`, `RAILWAY_API_TOKEN`, `gh`, `railway` CLI, `GITHUB_TOKEN` or `GH_TOKEN`. The currently hosted Railway backend is therefore still the previous deployment and must be redeployed with the variables and start command in section N.
