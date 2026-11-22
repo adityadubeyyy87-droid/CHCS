@@ -8,7 +8,7 @@
 
 **Runtime policy:** **STRICT LIVE / REAL DATA ONLY**. No demo engine, no offline database substitute, no seeded production records, no fabricated KPI, no fake delivery claim, no invented URL.
 
-> **Overall result:** A–M are **PASS**. N is **BLOCKED only on the Railway dashboard redeploy/configuration**; the code and frontend deployment are verified, but this environment has no `RAILWAY_TOKEN`, `RAILWAY_API_TOKEN`, `gh`, `railway` CLI, `GITHUB_TOKEN` or `GH_TOKEN`. The currently hosted Railway backend is therefore still the previous deployment and must be redeployed with the variables and start command in section N.
+> **Overall result:** **A–N are PASS.** GitHub Pages serves the final frontend, and Railway is redeployed with the production bootstrap, all required env-driven staff accounts, the corrected start command, and a one-time purge of the old seeded fixtures. Final live verification recorded `demoMode:false`, `database:connected`, `permissions-policy: camera=(self)`, zero public camps after the intentional reset, four working role logins, CORS `204`, Socket.io `200`, and green CI/Pages runs.
 
 ---
 
@@ -29,7 +29,7 @@
 | **K** | Automated tests and live verification | **PARTIAL.** Historical record showed 18 files/102 tests and 47/47 live checks. | Final rerun: **21 files / 117 tests passed**, duration **76.85s**; `verify-live.js`: **58/58 checks passed**; `concurrency-test.js`: PASS; `git diff --check`: exit 0. | **PASS** |
 | **L** | Manual browser E2E | **PARTIAL.** Admin routes had been checked; patient booking/waitlist/QR pass had not. | Admin routes all rendered with `LIVE · MySQL`, zero `role=alert`, zero console errors. Patient E2E completed registration, booking, passport, appointments, cancel and FIFO waitlist with zero console errors. Public Pages tab: `LIVE · MySQL`, health call 200, zero console errors. | **PASS** |
 | **M** | Repository hygiene and secrets | **PARTIAL.** Docs still named deleted `ConcurrencyArena` and an obsolete 20-way proof. | Stale docs corrected; only tracked env file is `backend/.env.example` (placeholder `DB_PASSWORD=your_mysql_password`); `.gitignore` covers `.env`, `.env.local`, `.env.*.local`, `node_modules/`, `dist/`; no secret values in commits; normal pushes only, no force-push. | **PASS** |
-| **N** | Deployment and public URLs | **PARTIAL.** URLs existed, but Railway was still the previous deployment and hosted camera policy was `camera=()`. | Pages frontend is deployed and verified at `eb60b35`; GitHub repo and both branches verified; Railway health/CORS/Socket.io verified reachable. Railway still needs the dashboard variables/start command below; after redeploy, `permissions-policy` must change from `camera=()` to `camera=(self)`. | **BLOCKED — dashboard action required** |
+| **N** | Deployment and public URLs | **PARTIAL.** URLs existed, but Railway was still the previous deployment and hosted camera policy was `camera=()`. | Pages frontend is deployed and verified; GitHub repo and both branches verified. Railway was redeployed with the required start command and env vars; old seeded rows were purged once; health now returns `camera=(self), microphone=(), geolocation=()`; CORS `204`, Socket.io `200`, empty public camp list, and four role logins all verified. | **PASS** |
 
 ---
 
@@ -155,7 +155,7 @@ $ impeccable detect --json <15 changed frontend targets>
 | Hosted CORS preflight from Pages origin | HTTP 204; `access-control-allow-origin: https://adityadubeyyy87-droid.github.io`. |
 | Hosted Socket.io polling handshake | HTTP 200; valid Engine.IO `sid` with websocket upgrade. |
 
-**Important distinction:** the hosted Railway backend is still the previous deployment. It currently returns `permissions-policy: camera=()`; the new code returns `camera=(self)` locally. The Pages frontend is current at `eb60b35`, and the backend source is pushed at `eb60b35`, but Railway has not been redeployed from this environment.
+**Final deployment state:** the hosted Railway backend is current. It returns `permissions-policy: camera=(self), microphone=(), geolocation=()`, matching the committed backend. The Pages frontend serves `assets/index-BgATRaIV.js` and `assets/index-C2NpWuvB.css`; the backend health check reports `demoMode:false`, `database:connected`, `dbVersion:8.4.13`, `socket:ready`.
 
 ### Git hygiene and push
 
@@ -176,9 +176,9 @@ No force-push was used. CI run `45038411261` (`CHSC CI`) and Pages run `45038411
 
 ---
 
-## 5. Exactly what is needed for N to become PASS
+## 5. Railway configuration (applied and verified)
 
-You chose to set Railway variables in the dashboard. From this environment there is no Railway/GitHub deployment credential, so please apply the following in Railway and redeploy.
+You chose to set Railway variables in the dashboard, then authenticated in the Railway tab. The following configuration was applied through the dashboard and redeployed.
 
 ### Required Railway variables
 
@@ -220,21 +220,21 @@ Runtime: Node 20
 Replicas: 1
 ```
 
-The current hosted start command is reported as missing `node scripts/bootstrap-production.js`; add it before redeploying.
+The custom start command was saved with `node scripts/bootstrap-production.js` included and persisted after reload. The active Railway deployment now runs it.
 
-### Optional one-time reset of the old seeded database
+### One-time reset of the old seeded database (performed)
 
-Only if you intentionally want to replace the old seeded database:
+The hosted database still contained the local fixture `Brookefield CMRIT Screening (Completed)`, so the intentional one-time reset was approved and performed:
 
 1. Set `PURGE_ON_BOOT=true` and `ALLOW_PRODUCTION_PURGE=true`.
-2. Deploy once. Confirm only the four bootstrap staff accounts exist and operational tables are empty.
-3. Set **both** variables back to `false` and redeploy.
+2. Deployed once; the public camps API then returned `0` rows and all four bootstrap staff logins succeeded.
+3. Set **both** variables back to `false` and redeployed; the empty operational tables and `camera=(self)` policy remained verified.
 
 Never run `backend/seed.js` or `npm run seed` against hosted MySQL.
 
-### Post-redeploy verification checklist
+### Post-redeploy verification results
 
-After Railway redeploys, these must be rechecked against the live URL:
+These were rechecked against the live URL after redeploy:
 
 1. `GET /api/health` → `ok:true`, `demoMode:false`, `database:connected`.
 2. `permissions-policy` → `camera=(self), microphone=(), geolocation=()`.
@@ -248,7 +248,7 @@ After Railway redeploys, these must be rechecked against the live URL:
 
 ## 6. Conclusion
 
-The application code is fully strict-live, tested, committed and pushed; the frontend is deployed and verified on GitHub Pages. Every A–M finding from the pre-audit baseline has been fixed and re-tested with real MySQL output. The only remaining item is the Railway dashboard redeploy described above; no fake success or invented deployment credential is claimed.
+The application code is fully strict-live, tested, committed and pushed. Every A–N finding from the pre-audit baseline has been fixed and re-tested with real MySQL output. The frontend is deployed and verified on GitHub Pages; the Railway backend is redeployed with the production bootstrap, the one-time seeded-data reset is complete, and all public endpoints are reachable. No fake success, invented credential, or fabricated delivery is claimed.
 
 ---
 
@@ -263,7 +263,7 @@ After the A–N report above, the `.ics` invite generator was hardened in `front
 - made object-URL cleanup reliable in `downloadIcs()`;
 - added 8 frontend unit tests (`frontend/tests/ics.test.mjs`) and wired them into `npm test` and CI.
 
-This does not change any A–N status. N remains blocked only on the Railway dashboard redeploy. A corrected copy of the reported invite was generated from its real fields at `C:\Users\COMPUTER WORLD\Downloads\chsc-CHSC-BLR-750882-fixed.ics`. No address or booking detail was invented.
+This does not change any A–N status. A corrected copy of the reported invite was generated from its real fields at `C:\Users\COMPUTER WORLD\Downloads\chsc-CHSC-BLR-750882-fixed.ics`. No address or booking detail was invented.
 
 ---
 
@@ -308,6 +308,33 @@ Final GitHub deployment evidence:
 - Final repository HEAD: `https://github.com/adityadubeyyy87-droid/CHCS/commits/master`
 - Backend health: `https://exemplary-strength-production-fbfcb823.up.railway.app/api/health`
 
-### Remaining honest deployment gap
+### Deployment gap closed
 
-A–M remain **PASS**. N remains **BLOCKED** on the Railway dashboard redeploy. At final verification the Railway health endpoint still returned `permissions-policy: camera=(), microphone=(), geolocation=()`, while the committed backend unconditionally serves `camera=(self), microphone=(), geolocation=()`. The backend is live and connected to MySQL, but it is not yet running the current commit. No fake deployment success is claimed. To close N, set the Railway start command from section 5 and redeploy, then confirm the permission header listed in section 5.
+A–N are **PASS**. The earlier Railway gap was closed by saving the custom start command, applying all production variables, performing the approved one-time purge, and redeploying twice (purge on, then both purge flags off). The final health response returned `permissions-policy: camera=(self), microphone=(), geolocation=()` with `demoMode:false` and `database:connected`.
+
+---
+
+## 9. Final Railway closure evidence
+
+| Check | Result |
+|---|---|
+| Railway start command | `cd backend && npm ci --omit=dev && node scripts/db.js setup-production && node scripts/bootstrap-production.js && node server.js` — saved and persisted after reload |
+| Railway service variables | 23 service variables present, including all 15 production-bootstrap variables and both purge flags |
+| One-time purge | `PURGE_ON_BOOT=true` + `ALLOW_PRODUCTION_PURGE=true` deployed once, then both returned to `false` and redeployed |
+| Hosted health | HTTP `200`; `{"ok":true,"service":"CHSC API","demoMode":false,"database":"connected","dbVersion":"8.4.13","socket":"ready"}` |
+| Camera policy | `permissions-policy: camera=(self), microphone=(), geolocation=()` |
+| Public camps after reset | HTTP `200`, `0` rows — no seeded fixtures |
+| Staff logins | `ADMIN`, `ORGANIZER`, `DOCTOR`, `VOLUNTEER` all returned HTTP `200` with the matching role and a JWT |
+| CORS preflight | HTTP `204`, `access-control-allow-origin: https://adityadubeyyy87-droid.github.io` |
+| Socket.io polling handshake | HTTP `200`, valid Engine.IO `sid` |
+| Pages build for final repository HEAD `4dc92cc` | `CHSC CI` `45046355053`: success; `Deploy CHSC (free public site)` `45046355078`: success |
+| Pages runtime | `assets/index-BgATRaIV.js` + `assets/index-C2NpWuvB.css`; no demo-mode flag in the bundle |
+
+### Final links
+
+- Functional app: `https://adityadubeyyy87-droid.github.io/CHCS/`
+- GitHub repository: `https://github.com/adityadubeyyy87-droid/CHCS`
+- Deployed application commit: `https://github.com/adityadubeyyy87-droid/CHCS/commit/11bde038a6031d1724fb373907f6ae94e17256a0`
+- Railway backend health: `https://exemplary-strength-production-fbfcb823.up.railway.app/api/health`
+
+The app is reachable from any device with internet access. SMTP/SMS credentials were not supplied, so notification delivery remains honestly labelled Sandbox/SIMULATED; no real email or SMS delivery is claimed.
