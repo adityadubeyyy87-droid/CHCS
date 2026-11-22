@@ -281,7 +281,7 @@ Final Git state:
 
 ```text
 11bde03 fix(frontend): make camp and slot blocks symmetrical
-<final docs-only commit>  docs: finalize audit addendum for 11bde03
+Final docs-only commit — see the repository HEAD link below.
 ```
 
 `master` and `main` resolve to the same final docs-only commit; the deployed application code remains `11bde03`. No force-push was used.
