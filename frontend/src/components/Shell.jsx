@@ -3,12 +3,11 @@
 // theme toggle, science X-ray toggle, profile menu, toasts, mode indicator.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
-import { api, isStrictLive } from '../lib/api.js';
+import { api } from '../lib/api.js';
 import { cls, relTime } from '../lib/format.js';
 import { Badge, Button, Icon } from './ui.jsx';
-import DemoController from './DemoController.jsx';
 
-const NAV = [
+export const NAV = [
   { id: 'overview', icon: 'home', labelKey: 'nav.overview', label: 'Overview', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
   { id: 'discover', icon: 'compass', labelKey: 'nav.discover', label: 'Find Camps', roles: ['PATIENT'] },
   { id: 'myBookings', icon: 'ticket', labelKey: 'nav.myBookings', label: 'My Appointments', roles: ['PATIENT'] },
@@ -18,23 +17,29 @@ const NAV = [
   { id: 'analytics', icon: 'chart', labelKey: 'nav.analytics', label: 'Analytics', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'concurrencyProof', icon: 'zap', labelKey: 'nav.concurrencyProof', label: 'Concurrency Proof', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'controlRoom', icon: 'radio', labelKey: 'nav.controlRoom', label: 'Control Room', roles: ['ORGANIZER', 'ADMIN'] },
+  { id: 'auditLog', icon: 'clipboard', labelKey: 'nav.auditLog', label: 'Audit Log', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'notifications', icon: 'bell', labelKey: 'nav.notifications', label: 'Notifications', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
   { id: 'settings', icon: 'gear', labelKey: 'nav.settings', label: 'Settings', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
 ];
 
+export const PAGE_ACCESS = Object.fromEntries(NAV.map((item) => [item.id, item.roles]));
+
 const PAGE_TITLES = {
   overview: 'Overview', discover: 'Find Health Camps', myBookings: 'My Appointments',
   staffDay: 'Camp Day', liveQueue: 'Live Queue TV', manage: 'Camp Management',
-  analytics: 'Executive Analytics', concurrencyProof: 'Concurrency Proof', controlRoom: 'Control Room', notifications: 'Notification Center', settings: 'Settings',
+  analytics: 'Executive Analytics', concurrencyProof: 'Concurrency Proof',
+  controlRoom: 'Control Room', auditLog: 'Audit Log', notifications: 'Notification Center',
+  settings: 'Settings',
 };
 
 export default function Shell({ children }) {
   const app = useApp();
-  const { user, page, setPage: navigate, t, lang, setLang, theme, setTheme, science, setScience, mode, unread, setUnread, gateway, drawerOpen, setDrawerOpen, screenshotMode, setScreenshotMode } = app;
+  const { user, page, setPage: navigate, t, lang, setLang, theme, setTheme, science, setScience, mode, connectionError, refreshConnection, unread, setUnread, gateway, drawerOpen, setDrawerOpen, screenshotMode, setScreenshotMode } = app;
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
+  const [searchError, setSearchError] = useState(null);
   const searchRef = useRef(null);
   const navRef = useRef(null);
   const profileRef = useRef(null);
@@ -54,7 +59,9 @@ export default function Shell({ children }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(() => { if (!query) setResults(null); }, [query]);
+  useEffect(() => {
+    if (!query) { setResults(null); setSearchError(null); }
+  }, [query]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -72,7 +79,11 @@ export default function Shell({ children }) {
       const { camps } = await api.camps();
       const q = query.toLowerCase();
       setResults(camps.filter((c) => `${c.title} ${c.venue} ${c.area || ''} ${c.address}`.toLowerCase().includes(q)).slice(0, 5));
-    } catch { setResults([]); }
+      setSearchError(null);
+    } catch (error) {
+      setResults([]);
+      setSearchError(error.message);
+    }
   }
 
   return (
@@ -113,10 +124,18 @@ export default function Shell({ children }) {
 
         {!collapsed && (
           <div className="side-foot">
-            <div className={cls('mode-chip', mode === 'live' ? 'mode-live' : mode === 'demo' ? 'mode-demo' : '')}>
+            <button
+              type="button"
+              className={cls('mode-chip', mode === 'live' && 'mode-live', mode === 'error' && 'mode-error')}
+              onClick={mode === 'error' ? refreshConnection : undefined}
+              disabled={mode !== 'error'}
+              title={mode === 'error' ? `${connectionError || 'Connection error'} — click to retry` : mode === 'live' ? 'Connected to the MySQL backend' : 'Checking the live backend…'}
+              aria-label={mode === 'error' ? 'Connection error — retry' : 'Live backend status'}
+            >
               <span className="mode-dot" />
-              {mode === 'live' ? 'LIVE · MySQL' : mode === 'demo' ? 'DEMO' : 'Connecting…'}
-            </div>
+              {mode === 'live' ? 'LIVE · MySQL' : mode === 'connecting' ? 'Connecting…' : 'Connection error'}
+            </button>
+            {mode === 'error' && connectionError && <p className="mode-error-text">{connectionError}</p>}
             <button className={cls('side-mini', screenshotMode && 'active')} onClick={() => setScreenshotMode(!screenshotMode)} title="Clean PPT screenshot mode hides chrome for captures">
               <Icon name="eye" size={14} /> {screenshotMode ? 'Screenshot mode ON' : 'Clean PPT screenshot mode'}
             </button>
@@ -140,8 +159,9 @@ export default function Shell({ children }) {
             <kbd>/</kbd>
             {results && (
               <div className="search-results">
-                {results.length === 0 && <p className="muted">No camps match “{query}”.</p>}
-                {results.map((c) => (
+                {searchError && <p className="muted">{searchError}</p>}
+                {!searchError && results.length === 0 && <p className="muted">No camps match “{query}”.</p>}
+                {!searchError && results.map((c) => (
                   <button type="button" key={c.id} onClick={() => { navigate(user.role === 'PATIENT' ? 'discover' : 'manage'); setResults(null); setQuery(''); }}>
                     <strong>{c.title}</strong>
                     <span className="muted">{c.venue} · {c.campDate}</span>
@@ -152,9 +172,8 @@ export default function Shell({ children }) {
           </form>
 
           <div className="topbar-actions">
-            {!isStrictLive() && <DemoController />}
-            <Badge tone={mode === 'live' ? 'ok' : 'sim'} className="mode-badge">
-              {mode === 'live' ? 'LIVE · MySQL' : 'DEMO'}
+            <Badge tone={mode === 'live' ? 'ok' : mode === 'error' ? 'bad' : 'muted'} className="mode-badge">
+              {mode === 'live' ? 'LIVE · MySQL' : mode === 'error' ? 'Connection error' : 'Connecting…'}
             </Badge>
 
             <button className={cls('icon-btn', 'topbar-util', science && 'active')} onClick={() => setScience(!science)} aria-pressed={science} aria-label="Toggle science annotations" title="Biophilic Science X-Ray — annotate the science behind the interface">
@@ -224,17 +243,24 @@ export default function Shell({ children }) {
 }
 
 function GatewayDrawer() {
-  const { gateway, setDrawerOpen, mode } = useApp();
+  const { gateway, setDrawerOpen, isOrganizer } = useApp();
   const [log, setLog] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const closeRef = useRef(null);
   const headingId = 'gateway-drawer-title';
 
   useEffect(() => {
-    if (mode === 'live') {
-      api.notifications(40).then((d) => setLog(d.notifications)).catch(() => setLog([])).finally(() => setLoading(false));
-    } else { setLog(null); setLoading(false); }
-  }, [mode]);
+    if (!isOrganizer) {
+      setLog([]);
+      setLoading(false);
+      return;
+    }
+    api.notifications(40)
+      .then((data) => setLog(data.notifications || []))
+      .catch((err) => { setLog([]); setError(err.message); })
+      .finally(() => setLoading(false));
+  }, [isOrganizer]);
 
   useEffect(() => {
     const previous = document.activeElement;
@@ -255,26 +281,33 @@ function GatewayDrawer() {
         <div>
           <h2 id={headingId}><Icon name="send" size={16} /> Gateway Interceptor</h2>
           <p className="muted">
-            Live feed of every notification the platform emits.
-            {mode !== 'live' && ' Local demo engine — delivery is SIMULATED, never a real external gateway.'}
+            Live feed of notification records emitted by the platform.
+            {!isOrganizer && ' Your session activity is shown; the platform-wide log is limited to organizers and admins.'}
           </p>
         </div>
         <button ref={closeRef} className="icon-btn" onClick={() => setDrawerOpen(false)} aria-label="Close gateway interceptor"><Icon name="x" /></button>
       </header>
       <div className="drawer-body">
         {loading && <p className="muted">Loading delivery log…</p>}
-        {!loading && merged.length === 0 && <p className="muted">No notifications yet. Book a slot or run the demo controller.</p>}
-        {merged.map((n, i) => (
-          <article key={n._id || `${n.id}-${i}`} className="gw-row">
-            <div className="gw-top">
-              <Badge status={n.channel} tone={n.channel === 'SMS' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
-              <Badge status={n.status} tone={n.status === 'SENT' ? 'ok' : 'sim'}>{n.status === 'SENT' ? 'SENT' : String(n.status || 'SIMULATED') === 'SIMULATED' ? 'SIMULATED' : n.status}</Badge>
-              <time className="muted">{relTime(n.sentAt || n.at)}</time>
-            </div>
-            <p className="gw-msg">{n.subject ? <strong>{n.subject} — </strong> : null}{n.message}</p>
-            <p className="gw-meta muted">→ {n.recipient} · {n.provider || 'Local Engine'}{n.bookingId ? ` · booking reference ${n.bookingId}` : ''}</p>
-          </article>
-        ))}
+        {error && <p className="muted">{error}</p>}
+        {!loading && !error && merged.length === 0 && (
+          <p className="muted">No notifications yet. Book a slot, check in a patient, or run a reminder sweep.</p>
+        )}
+        {merged.map((n, i) => {
+          const status = String(n.status || 'PENDING').toUpperCase();
+          const tone = status === 'SENT' ? 'ok' : status === 'SIMULATED' ? 'sim' : status === 'FAILED' ? 'bad' : 'info';
+          return (
+            <article key={n._id || `${n.id}-${i}`} className="gw-row">
+              <div className="gw-top">
+                <Badge status={n.channel} tone={n.channel === 'SMS' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
+                <Badge status={status} tone={tone}>{status}</Badge>
+                <time className="muted">{relTime(n.sentAt || n.at)}</time>
+              </div>
+              <p className="gw-msg">{n.subject ? <strong>{n.subject} — </strong> : null}{n.message}</p>
+              <p className="gw-meta muted">→ {n.recipient} · {n.provider || 'Gateway Interceptor'}{n.bookingId ? ` · booking reference ${n.bookingId}` : ''}</p>
+            </article>
+          );
+        })}
       </div>
     </aside>
   );

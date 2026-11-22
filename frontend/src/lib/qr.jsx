@@ -1,5 +1,5 @@
 // qr.jsx — inline SVG QR generation (qrcode lib renders a self-contained
-// <svg> string we inline directly; no image URLs, works fully offline).
+// <svg> string we inline directly; no external image service is involved).
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { cls } from './format.js';

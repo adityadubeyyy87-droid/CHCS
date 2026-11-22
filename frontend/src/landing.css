@@ -652,38 +652,6 @@ body.landing-on {
   box-shadow: 0 0 9px rgba(110, 231, 183, 0.9);
   animation: ln-pulse 2.2s ease-out infinite;
 }
-.ln-sim {
-  font-family: var(--ln-mono);
-  font-size: 9px;
-  letter-spacing: 0.18em;
-  padding: 3px 7px;
-  border: 1px dashed rgba(251, 191, 36, 0.5);
-  border-radius: 5px;
-  color: var(--ln-signal);
-}
-.ln-queue-rows { display: grid; gap: 9px; }
-.ln-queue-row {
-  display: grid;
-  grid-template-columns: 52px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  font-size: 11.5px;
-  color: var(--ln-dim);
-}
-.ln-queue-bar {
-  position: relative;
-  height: 4px;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-.ln-queue-bar i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 99px;
-  background: linear-gradient(90deg, #059669, var(--ln-mint));
-}
-.ln-queue-state { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ln-mute); }
 .ln-fine {
   margin: 13px 0 0;
   font-size: 10.5px;

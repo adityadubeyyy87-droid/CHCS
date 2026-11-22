@@ -133,8 +133,7 @@ export default function Settings() {
 
       <Modal open={confirmPurge} onClose={() => setConfirmPurge(false)} title="Delete my personal data">
         <p>
-          This deletes your account and bookings immediately
-          {app.mode !== 'live' && ' (local demo engine — simulated purge, clearly not a real server action)'}. It cannot be undone.
+          This deletes your account and bookings immediately through the live backend. It cannot be undone.
         </p>
         <p className="muted">Active bookings are released to the waitlist first — neighbours get the seats.</p>
         <div className="modal-foot">
@@ -149,21 +148,20 @@ export default function Settings() {
 }
 
 function AdminUsers() {
-  const { toast, pushGateway, user, mode } = useApp();
+  const { toast, pushGateway, user } = useApp();
   const users = useFetch(() => api.users(), []);
   const [busyId, setBusyId] = useState(null);
 
   async function changeRole(id, role) {
     setBusyId(id);
     try {
-      const res = await api.setRole(id, role);
-      const simulated = mode !== 'live' || res?.__mode === 'demo' || res?.simulated;
-      toast(`Role updated to ${role}.`, 'ok', simulated ? 'Local demo engine' : 'MySQL');
+      await api.setRole(id, role);
+      toast(`Role updated to ${role}.`, 'ok', 'MySQL');
       pushGateway({
         channel: 'SYSTEM', type: 'ADMIN', recipient: 'user table',
         message: `Account ${users.data?.users?.find((u) => u.id === id)?.name || `ID ${id}`} role set to ${role}.`,
-        status: simulated ? 'SIMULATED' : 'SENT',
-        provider: simulated ? 'Local Engine' : 'Admin console',
+        status: 'SENT',
+        provider: 'Admin console',
       });
       await users.reload();
     } catch (err) { toast(err.message, 'bad'); await users.reload(); }
@@ -183,7 +181,7 @@ function AdminUsers() {
   return (
     <Card>
       <CardHead icon="users" title="User & role management" sub={`${users.data?.users?.length || 0} accounts · ADMIN only`}
-        actions={<Badge tone={mode === 'live' ? 'ok' : 'sim'}>{mode === 'live' ? 'Live MySQL table' : 'Simulated table'}</Badge>} />
+        actions={<Badge tone="ok">Live MySQL table</Badge>} />
       {users.loading && <Skeleton h={180} />}
       {users.error && <ErrorNote onRetry={users.reload}>{users.error}</ErrorNote>}
       {users.data && users.data.users.length === 0 && <EmptyState icon="users" title="No users found" />}

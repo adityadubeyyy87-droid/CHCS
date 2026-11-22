@@ -1,9 +1,10 @@
 // CommandPalette.jsx — Cmd+K / Ctrl+K quick navigation overlay.
-// Power-user feature: jump to any page or run a demo scenario from the keyboard.
+// Power-user feature: jump to any workspace from the keyboard.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { startAudio, useSound } from '../lib/audio.js';
 import { Icon } from './ui.jsx';
+import { PAGE_ACCESS } from './Shell.jsx';
 
 const COMMANDS = [
   { key: 'overview', label: 'Overview', icon: 'home', desc: 'Camp dashboard & pulse', action: 'overview' },
@@ -13,9 +14,11 @@ const COMMANDS = [
   { key: 'liveQueue', label: 'Live Queue TV', icon: 'radio', desc: 'Waiting room display', action: 'liveQueue' },
   { key: 'manage', label: 'Camp Management', icon: 'clipboard', desc: 'Create & staff camps', action: 'manage' },
   { key: 'analytics', label: 'Executive Analytics', icon: 'chart', desc: 'KPIs & capacity advisor', action: 'analytics' },
+  { key: 'controlRoom', label: 'Control Room', icon: 'radio', desc: 'Real-time camp operations', action: 'controlRoom' },
+  { key: 'concurrencyProof', label: 'Concurrency Proof', icon: 'zap', desc: 'Live MySQL row-lock verification', action: 'concurrencyProof' },
+  { key: 'auditLog', label: 'Audit Log', icon: 'clipboard', desc: 'Who changed what, and when', action: 'auditLog' },
   { key: 'notifications', label: 'Notification Center', icon: 'bell', desc: 'Gateway interceptor log', action: 'notifications' },
   { key: 'settings', label: 'Settings & Privacy', icon: 'gear', desc: 'Theme, language, data purge', action: 'settings' },
-  { key: 'demo', label: 'Demo Story Controller', icon: 'zap', desc: 'Run presentation scenarios', action: 'demo' },
 ];
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -35,13 +38,9 @@ export default function CommandPalette() {
   ), [query]);
 
   const isAllowed = useCallback((cmd) => {
-    if (!cmd) return false;
-    if (cmd.action === 'demo' || cmd.action === 'settings' || cmd.action === 'notifications') return true;
-    if (cmd.action === 'analytics') return user?.role === 'ORGANIZER' || user?.role === 'ADMIN';
-    if (['staffDay', 'liveQueue', 'manage'].includes(cmd.action)) {
-      return ['DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'].includes(user?.role);
-    }
-    return true;
+    if (!cmd || !user) return false;
+    const allowed = PAGE_ACCESS[cmd.action];
+    return Boolean(allowed && allowed.includes(user.role));
   }, [user]);
 
   const close = useCallback(() => {
@@ -54,11 +53,7 @@ export default function CommandPalette() {
     if (!cmd) return;
     if (!isAllowed(cmd)) { error(); return; }
     close();
-    if (cmd.action === 'demo') {
-      window.dispatchEvent(new CustomEvent('chsc:toggle-demo'));
-    } else {
-      setPage(cmd.action);
-    }
+    setPage(cmd.action);
     success();
   }, [close, error, isAllowed, setPage, success]);
 

@@ -32,6 +32,7 @@ export default function Discover() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [celebrating, setCelebrating] = useState(false);
+  const [waitlisted, setWaitlisted] = useState(null);
   const [now, setNow] = useState(Date.now());
   const slotRefs = React.useRef(new Map());
   const travelRefs = React.useRef(new Map());
@@ -98,7 +99,7 @@ export default function Discover() {
   }
 
   async function confirm() {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setWaitlisted(null);
     try {
       const res = await api.book(slot.id, { travelMode: travel, pledge });
       if (res.status === 'HELD') {
@@ -106,7 +107,7 @@ export default function Discover() {
         setBooking(res.booking || res);
         setNow(Date.now());
         setStep(3);
-        toast('Seat reserved for 10 minutes.', 'ok', res.__mode === 'demo' ? 'Simulated hold (local engine).' : 'Reserved in a MySQL transaction.');
+        toast('Seat reserved for 10 minutes.', 'ok', 'Reserved in a MySQL transaction.');
         return;
       }
       if (res.status === 'CONFIRMED') {
@@ -114,12 +115,24 @@ export default function Discover() {
         setCelebrating(true);
         setBooking(res.booking || res);
         setStep(3);
-        toast('Booking confirmed — your pass is ready.', 'ok', res.__mode === 'demo' ? 'Simulated booking (local engine).' : 'Locked in a MySQL transaction.');
-      } else {
-        soundError();
-        toast(res.message, 'warn', 'You can pick another slot or wait for a promotion.');
-        await camps.reload();
+        toast('Booking confirmed — your pass is ready.', 'ok', 'Locked in a MySQL transaction.');
+        return;
       }
+      if (res.status === 'WAITLISTED') {
+        const position = res.waitlist?.position;
+        setWaitlisted({ slotId: slot.id, position });
+        soundError();
+        toast(
+          position ? `You are #${position} in the FIFO waitlist.` : 'Added to the FIFO waitlist.',
+          'warn',
+          res.message || 'We will notify you when a seat opens.',
+        );
+        await camps.reload();
+        return;
+      }
+      soundError();
+      toast(res.message || 'The booking could not be completed.', 'warn', 'You can pick another slot or wait for a promotion.');
+      await camps.reload();
     } catch (err) {
       soundError();
       setError(err.message);
@@ -137,7 +150,7 @@ export default function Discover() {
       success();
       setCelebrating(true);
       setBooking({ ...confirmed, status: 'CONFIRMED' });
-      toast('Seat confirmed — your pass is ready.', 'ok', res.__mode === 'demo' ? 'Simulated confirmation (local engine).' : 'Committed in a MySQL transaction.');
+      toast('Seat confirmed — your pass is ready.', 'ok', 'Committed in a MySQL transaction.');
       await camps.reload();
     } catch (err) {
       soundError();
@@ -216,7 +229,7 @@ export default function Discover() {
             <Button icon="ticket" onClick={() => { setPage('myBookings'); }}>My appointments</Button>
           </Magnetic>
           <Magnetic intensity={0.4}>
-            <Button variant="ghost" icon="compass" onClick={() => { setBooking(null); setStep(1); setSlot(null); }}>Book another camp</Button>
+            <Button variant="ghost" icon="compass" onClick={() => { setBooking(null); setStep(1); setSlot(null); setWaitlisted(null); }}>Book another camp</Button>
           </Magnetic>
         </div>
       </div>
@@ -247,7 +260,7 @@ export default function Discover() {
                 const remaining = c.slotCapacity - c.bookedTotal;
                 return (
                   <Tilt key={c.id} rotationFactor={8}>
-                    <button className={cls('camp-card', selected?.id === c.id && 'sel')} onClick={() => { setSelected(c); setStep(1); setSlot(null); setBooking(null); }}>
+                    <button className={cls('camp-card', selected?.id === c.id && 'sel')} onClick={() => { setSelected(c); setStep(1); setSlot(null); setBooking(null); setWaitlisted(null); }}>
                       <div className="camp-card-date">
                         <strong>{fmtDate(c.campDate).split(',')[1] || c.campDate}</strong>
                         <small>{fmtDate(c.campDate).split(',')[0]}</small>
@@ -302,14 +315,14 @@ export default function Discover() {
                     {grouped[band].map((s) => {
                       const tone = slotTone(s.remaining, s.capacity);
                       const firstAvailable = grouped[band].find((x) => slotTone(x.remaining, x.capacity) !== 'full')?.id;
+                      const firstFocusable = firstAvailable ?? grouped[band][0]?.id;
                       return (
                         <button
                           key={s.id}
                           ref={(el) => { if (el) slotRefs.current.set(s.id, el); else slotRefs.current.delete(s.id); }}
                           role="option"
                           aria-selected={slot?.id === s.id}
-                          tabIndex={s.id === (slot?.id ?? firstAvailable) ? 0 : -1}
-                          disabled={tone === 'full'}
+                          tabIndex={s.id === (slot?.id ?? firstFocusable) ? 0 : -1}
                           className={cls('slot', `slot-${tone}`, slot?.id === s.id && 'slot-sel')}
                           onClick={() => setSlot(s)}
                           onKeyDown={(e) => onSlotKeyDown(e, grouped[band])}
@@ -323,11 +336,21 @@ export default function Discover() {
                 </div>
               ))}
 
+              {waitlisted && (
+                <div className="waitlist-banner" role="status">
+                  <Icon name="users" size={16} />
+                  <div>
+                    <strong>{waitlisted.position ? `FIFO position #${waitlisted.position}` : 'FIFO waitlist joined'}</strong>
+                    <p className="muted">Your position was assigned by the backend. Pick another slot above or wait for a promotion notice.</p>
+                  </div>
+                </div>
+              )}
+
               {slot && (
                 <Spotlight color="rgba(16, 185, 129, 0.1)" size={400}>
                   <div className="commit-panel">
                     <Sci k="intent" as="div" className="sci-block">
-                      <h4>Plan your visit <Badge tone="sim">commitment improves follow-through</Badge></h4>
+                      <h4>Plan your visit <Badge tone="info">commitment improves follow-through</Badge></h4>
                     </Sci>
                     <div className="travel-row" role="radiogroup" aria-label="How will you get there?">
                       {TRAVEL.map((t) => (

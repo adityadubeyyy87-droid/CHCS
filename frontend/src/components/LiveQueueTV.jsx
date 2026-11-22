@@ -1,21 +1,20 @@
 // LiveQueueTV.jsx — the dark command-center waiting-room display.
-// Full-screen capable; updates over Socket.io in Mode A, engine polling in
-// Mode B. Designed to be readable from across a room (TV layout).
+// Full-screen capable; queue data comes from the API and updates over Socket.io.
+// Designed to be readable from across a room (TV layout).
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useApp, useFetch } from '../store.jsx';
-import { cls, fmtTime12, relTime } from '../lib/format.js';
-import { Badge, Button, Counter, Icon, Skeleton } from './ui.jsx';
+import { cls, relTime } from '../lib/format.js';
+import { Badge, Button, Counter, ErrorNote, Icon, Skeleton } from './ui.jsx';
 
 export default function LiveQueueTV({ campId, compact = false }) {
-  const { socket, socketOnline, mode, pushGateway } = useApp();
+  const { socket, socketOnline, pushGateway } = useApp();
   const [flash, setFlash] = useState(null);
   const { data, loading, error, reload, setData } = useFetch(
     () => api.queue(campId), [campId], { skip: !campId }
   );
 
-  // Mode B does not create a realtime socket; keep the display honest.
-  const live = mode === 'live' && Boolean(socket) && socketOnline;
+  const live = Boolean(socket) && socketOnline;
   const queue = data?.queue || {};
   const next = Array.isArray(queue.next) ? queue.next : [];
   const current = queue.current;
@@ -35,12 +34,11 @@ export default function LiveQueueTV({ campId, compact = false }) {
           clearTimeout(flashTimer);
           flashTimer = setTimeout(() => setFlash(null), 2400);
         }
-        const resultMode = e?.simulated || mode !== 'live' ? 'demo' : 'live';
         pushGateway({
           channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'Waiting room display',
           message: `Token ${token || 'unknown'} checked in at the desk.`,
-          status: resultMode === 'live' ? 'SENT' : 'SIMULATED',
-          provider: resultMode === 'live' ? 'Socket.io' : 'Local Engine',
+          status: 'SENT',
+          provider: 'Socket.io',
         });
         onUpdate(e?.queue);
       };
@@ -57,14 +55,11 @@ export default function LiveQueueTV({ campId, compact = false }) {
         socket.off('waitlist:promoted', onPing);
       };
     }
-    // Mode B: gentle poll of the local engine
-    const id = setInterval(reload, 4000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return undefined;
     // setData is recreated by useFetch each render; keeping it out of deps
     // prevents needless socket re-subscriptions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, socketOnline, live, campId, mode, pushGateway]);
+  }, [socket, socketOnline, live, campId, pushGateway]);
 
   if (!campId) return <div className="tv tv-empty"><p>Select a camp to display.</p></div>;
   if (loading) {
@@ -81,10 +76,10 @@ export default function LiveQueueTV({ campId, compact = false }) {
   return (
     <div className={cls('tv', compact && 'tv-compact', flash && 'tv-flash')} aria-label="Waiting room display">
       <header className="tv-head">
-        <div className="tv-live"><span className="live-dot" aria-hidden="true" /> {live ? 'LIVE' : 'DEMO'}</div>
+        <div className="tv-live"><span className="live-dot" aria-hidden="true" /> {live ? 'LIVE' : 'OFFLINE'}</div>
         <div className="tv-title">
           <h2>Waiting Room</h2>
-          <p className="muted">{live ? 'Real-time · Socket.io' : 'Real-time simulation · local engine'}</p>
+          <p className="muted">{live ? 'Real-time · Socket.io' : 'Socket offline · showing the last API read'}</p>
         </div>
         <Badge status="CHECKED_IN">{checkedIn} checked in</Badge>
       </header>
@@ -128,16 +123,20 @@ export default function LiveQueueTV({ campId, compact = false }) {
 export function LiveQueuePage() {
   const { user } = useApp();
   const [camps, setCamps] = useState(null);
+  const [campError, setCampError] = useState(null);
   const [campId, setCampId] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
 
-  useEffect(() => {
+  const loadCamps = () => {
+    setCampError(null);
     api.camps().then(({ camps }) => {
       setCamps(camps);
       const ongoing = camps.find((c) => new Date(c.campDate + 'T' + c.endTime) >= new Date() && new Date(c.campDate + 'T' + c.startTime) <= new Date());
       setCampId((prev) => prev || (ongoing || camps.find((c) => c.status === 'PUBLISHED'))?.id);
-    }).catch(() => setCamps([]));
-  }, []);
+    }).catch((err) => setCampError(err.message));
+  };
+
+  useEffect(() => { loadCamps(); }, []);
 
   useEffect(() => {
     const sync = () => setFullscreen(Boolean(document.fullscreenElement));
@@ -159,6 +158,7 @@ export function LiveQueuePage() {
         </select>
         <Button size="sm" variant="ghost" icon="radio" onClick={goFullscreen}>Full-screen TV mode</Button>
       </div>
+      {campError && <ErrorNote onRetry={loadCamps}>{campError}</ErrorNote>}
       {campId && <LiveQueueTV campId={campId} />}
       {user && ['DOCTOR', 'VOLUNTEER'].includes(user.role) && (
         <p className="muted tv-hint"><Icon name="stetho" size={14} /> Check patients in from your Camp Day page — this display updates instantly.</p>

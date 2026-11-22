@@ -1,4 +1,6 @@
-// StaffDay.jsx — camp-day check-in with an offline queue that really syncs.
+// StaffDay.jsx — camp-day check-in against the live API, with optional QR
+// camera capture. Every check-in is written to MySQL; nothing is queued or
+// accepted locally when the backend cannot be reached.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
@@ -6,85 +8,125 @@ import { Badge, Button, Card, CardHead, Counter, EmptyState, ErrorNote, Icon, In
 import { fmtDate, fmtTime12 } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
+const NativeBarcodeDetector = typeof window !== 'undefined' ? window.BarcodeDetector : null;
+
 export default function StaffDay() {
-  const { toast, pushGateway, mode } = useApp();
+  const { toast, pushGateway } = useApp();
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
-  const [offlineQueue, setOfflineQueue] = useState([]);
+  const [queue, setQueue] = useState(null);
+  const [queueError, setQueueError] = useState(null);
+  const [queueBusy, setQueueBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [cameraError, setCameraError] = useState(null);
   const assignments = useFetch(() => api.staffMe(), []);
   const [campId, setCampId] = useState(null);
-  const [queue, setQueue] = useState(null);
-  const [queueBusy, setQueueBusy] = useState(false);
-  const isOnlineRef = useRef(isOnline);
-  const offlineQueueRef = useRef([]);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const detectorRef = useRef(null);
+  const scanFrameRef = useRef(null);
+  const scanningRef = useRef(false);
 
-  useEffect(() => { isOnlineRef.current = isOnline; }, [isOnline]);
-  useEffect(() => { offlineQueueRef.current = offlineQueue; }, [offlineQueue]);
+  const stopScanner = useCallback(() => {
+    scanningRef.current = false;
+    if (scanFrameRef.current) cancelAnimationFrame(scanFrameRef.current);
+    scanFrameRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    detectorRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setScanning(false);
+  }, []);
+
+  const scanFrame = useCallback(async () => {
+    if (!scanningRef.current) return;
+    const video = videoRef.current;
+    if (video && video.readyState >= 2 && detectorRef.current) {
+      try {
+        const codes = await detectorRef.current.detect(video);
+        const code = codes.find((item) => item.rawValue?.trim());
+        if (code) {
+          const raw = code.rawValue.trim();
+          setToken(raw);
+          stopScanner();
+          toast('QR captured — review the token and verify check-in.', 'ok', raw);
+          return;
+        }
+      } catch {
+        // A dropped frame is not a failed scan; keep the camera running.
+      }
+    }
+    scanFrameRef.current = requestAnimationFrame(scanFrame);
+  }, [stopScanner, toast]);
+
+  async function startScanner() {
+    setCameraError(null);
+    if (!NativeBarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera QR scanning is not available in this browser. Enter the token manually.');
+      return;
+    }
+    try {
+      detectorRef.current = new NativeBarcodeDetector({ formats: ['qr_code'] });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } }, audio: false,
+      });
+      streamRef.current = stream;
+      scanningRef.current = true;
+      setScanning(true);
+      const video = videoRef.current;
+      if (!video) throw new Error('The camera preview is not ready.');
+      video.srcObject = stream;
+      await video.play();
+      scanFrameRef.current = requestAnimationFrame(scanFrame);
+    } catch (err) {
+      stopScanner();
+      setCameraError(err.message || 'The camera could not be started.');
+    }
+  }
+
+  useEffect(() => () => {
+    scanningRef.current = false;
+    if (scanFrameRef.current) cancelAnimationFrame(scanFrameRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   const loadQueue = useCallback(async () => {
     if (!campId) return;
     setQueueBusy(true);
+    setQueueError(null);
     try {
       const res = await api.queue(campId);
       setQueue(res.queue || null);
-    } catch { setQueue(null); }
-    finally { setQueueBusy(false); }
+    } catch (err) {
+      setQueue(null);
+      setQueueError(err.message);
+    } finally {
+      setQueueBusy(false);
+    }
   }, [campId]);
-
-  const syncOffline = useCallback(async (force = false) => {
-    const pending = offlineQueueRef.current;
-    if (pending.length === 0) return;
-    if (!isOnlineRef.current && !force) {
-      toast('Still offline — scans will sync when the connection returns.', 'warn');
-      return;
-    }
-    setOfflineQueue([]);
-    for (const item of pending) {
-      try {
-        const res = await api.checkin(item.token);
-        toast(`Synced: ${res.booking?.tokenNumber || item.token}`, 'ok');
-      } catch (err) {
-        setOfflineQueue((cur) => [...cur, { ...item, status: 'SYNC_FAILED' }]);
-        toast(`Sync failed for ${item.token}: ${err.message}`, 'bad');
-      }
-    }
-    await loadQueue();
-  }, [loadQueue, toast]);
-
-  useEffect(() => {
-    const onOnline = () => { isOnlineRef.current = true; setIsOnline(true); syncOffline(true); };
-    const onOffline = () => { isOnlineRef.current = false; setIsOnline(false); };
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
-  }, [syncOffline]);
 
   async function doCheckin() {
     if (!token.trim()) return;
     setBusy(true);
-    const t = token.toUpperCase();
+    const entered = token.trim().toUpperCase();
     try {
-      if (!isOnlineRef.current) {
-        const pending = { id: Date.now(), token: t, scannedAt: new Date().toISOString(), status: 'PENDING_SYNC' };
-        setOfflineQueue((q) => [...q, pending]);
-        setResult({ offline: true, tokenNumber: t, message: 'Offline — scanned locally, will sync when back online.' });
-        toast('Offline: queued for sync', 'warn', `Token ${t}`);
-        setToken('');
-        return;
-      }
-      const res = await api.checkin(t);
+      const res = await api.checkin(entered);
       setResult(res);
-      pushGateway({ channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'camp staff', message: `Token ${res.booking?.tokenNumber || t} checked in.`, status: res.simulated ? 'SIMULATED' : 'SENT', provider: res.simulated ? 'Local Engine' : 'Socket.io', bookingId: res.booking?.id });
+      pushGateway({
+        channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'camp staff',
+        message: `Token ${res.booking?.tokenNumber || entered} checked in.`,
+        status: 'SENT', provider: 'Socket.io', bookingId: res.booking?.id,
+      });
       await loadQueue();
-      toast(res.message, 'ok', `Token ${res.booking?.tokenNumber || t} checked in.`);
+      toast(res.message || 'Check-in recorded.', 'ok', `Token ${res.booking?.tokenNumber || entered} checked in.`);
       setToken('');
-    } catch (err) { setResult({ error: err.message }); toast(err.message, 'bad'); }
-    finally { setBusy(false); }
+    } catch (err) {
+      setResult({ error: err.message });
+      toast(err.message, 'bad');
+    } finally {
+      setBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -96,7 +138,11 @@ export default function StaffDay() {
 
   const duty = assignments.data?.assignments || [];
   const currentCamp = duty.find((a) => Number(a.campId) === Number(campId));
-  const demoTokens = [queue?.current?.tokenNumber, ...(queue?.next || []).map((n) => n.tokenNumber)].filter(Boolean).slice(0, 4);
+  const resultTitle = result?.error
+    ? 'Check-in failed'
+    : result?.status === 'ALREADY_CHECKED_IN'
+      ? 'Already checked in'
+      : 'Check-in successful';
 
   return (
     <div className="split gap-6">
@@ -130,34 +176,51 @@ export default function StaffDay() {
           <Card>
             <CardHead icon="qr" title="QR Check-In Scanner" sub="Token verifier · live queue broadcaster" />
             <div className="checkin-status">
-              <span className={isOnline ? 'online-dot' : 'offline-dot'} />
-              {isOnline ? 'Online' : 'Offline — scans queued locally'}
-              {offlineQueue.length > 0 && <span className="muted small">· {offlineQueue.length} pending sync</span>}
-              {offlineQueue.length > 0 && (
-                <Button size="sm" icon="refresh" loading={!isOnline} onClick={() => syncOffline(false)}>Sync now</Button>
-              )}
+              <span className="online-dot" />
+              Direct API write · successful check-ins broadcast to the waiting room over Socket.io
             </div>
+
+            <div className="scanner-panel">
+              <video
+                ref={videoRef}
+                className="qr-video"
+                playsInline
+                muted
+                hidden={!scanning}
+                aria-label="QR camera preview"
+              />
+              {!scanning && (
+                <Button size="sm" icon="camera" onClick={startScanner}>
+                  Scan QR with camera
+                </Button>
+              )}
+              {scanning && (
+                <Button size="sm" variant="ghost" icon="x" onClick={stopScanner}>
+                  Stop camera
+                </Button>
+              )}
+              <p className="muted small">
+                Camera scanning uses the browser's native QR detector. If it is unavailable or permission is denied,
+                enter the reference from the patient's pass below.
+              </p>
+              {cameraError && <ErrorNote>{cameraError}</ErrorNote>}
+            </div>
+
             <form className="checkin-form" onSubmit={(e) => { e.preventDefault(); doCheckin(); }}>
               <div className="checkin-input">
                 <Icon name="qr" size={14} />
                 <Input aria-label="Booking QR token" value={token} onChange={(e) => setToken(e.target.value.toUpperCase())} placeholder="CHSC-BLR-104999" autoComplete="off" />
                 <Magnetic intensity={0.5}>
-                  <Button type="submit" icon="check" loading={busy}>Verify & check in</Button>
+                  <Button type="submit" icon="check" loading={busy} disabled={!token.trim()}>Verify & check in</Button>
                 </Magnetic>
               </div>
             </form>
-            {mode !== 'live' && demoTokens.length > 0 && (
-              <div className="quick-tokens">
-                <span className="muted small">Local demo tokens:</span>
-                {demoTokens.map((t) => <button key={t} type="button" className="chip" onClick={() => setToken(t)}>{t}</button>)}
-              </div>
-            )}
             {result && (
               <div className={`checkin-result ${result.error ? 'bad' : ''}`} role={result.error ? 'alert' : 'status'}>
                 <Icon name={result.error ? 'alert' : 'check'} />
                 <div>
-                  <strong>{result.error ? 'Check-in failed' : result.offline ? 'Queued while offline' : 'Check-in successful'}</strong>
-                  <p className="muted checkin-note">{result.error || `Token ${result.tokenNumber || token} — ${result.booking?.patientName || 'patient'}.`}</p>
+                  <strong>{resultTitle}</strong>
+                  <p className="muted checkin-note">{result.error || `Token ${result.booking?.tokenNumber || token} — ${result.booking?.patientName || 'patient'}.`}</p>
                 </div>
               </div>
             )}
@@ -170,7 +233,8 @@ export default function StaffDay() {
         <Card>
           <CardHead icon="radio" title="Live Waiting Room" sub={currentCamp ? `${currentCamp.campTitle} · ${fmtTime12(currentCamp.shiftStart)}` : 'Select a duty camp'} />
           {queueBusy && <div className="stack-md"><Skeleton h={48} /><Skeleton h={48} /></div>}
-          {queue && (
+          {queueError && <ErrorNote onRetry={loadQueue}>{queueError}</ErrorNote>}
+          {!queueError && queue && (
             <div className="tv-main">
               <div className="tv-now">
                 <small>Now serving</small>
@@ -178,13 +242,13 @@ export default function StaffDay() {
                 <span className="muted">{queue.current ? `${queue.current.patientName} · waited ${queue.current.waitedMinutes} min` : 'Awaiting first check-in'}</span>
               </div>
               <div className="tv-stats">
-                <div><small>Avg wait</small><strong><Counter value={queue.averageWaitMinutes} suffix=" min" /></strong></div>
-                <div><small>Checked in</small><strong>{queue.totalCheckedIn}</strong></div>
+                <div><small>Avg wait</small><strong><Counter value={Number(queue.averageWaitMinutes) || 0} suffix=" min" /></strong></div>
+                <div><small>Checked in</small><strong>{Number(queue.totalCheckedIn) || 0}</strong></div>
                 <div><small>Next up</small><strong>{queue.next?.length || 0}</strong></div>
               </div>
             </div>
           )}
-          {!queue && !queueBusy && <EmptyState icon="radio" title="No queue data" />}
+          {!queue && !queueBusy && !queueError && <EmptyState icon="radio" title="No queue data" />}
         </Card>
 
         <Card className="tips-card">
@@ -192,7 +256,7 @@ export default function StaffDay() {
           <ul className="math-steps">
             <li>When a seat is released, the first waiting neighbour is atomically promoted inside the same transaction.</li>
             <li>Nobody can jump the queue — position is determined by arrival time.</li>
-            <li>Promoted patients receive an instant SMS/email notification through the Gateway Interceptor.</li>
+            <li>Promoted patients receive an instant notification through the Gateway Interceptor.</li>
           </ul>
         </Card>
       </div>

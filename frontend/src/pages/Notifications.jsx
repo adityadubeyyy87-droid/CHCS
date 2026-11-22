@@ -8,7 +8,7 @@ import { relTime } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 export default function Notifications() {
-  const { user, gateway, toast, pushGateway, isOrganizer, mode } = useApp();
+  const { user, gateway, toast, pushGateway, isOrganizer } = useApp();
   const [running, setRunning] = useState(false);
   const canSeeLog = isOrganizer;
 
@@ -26,10 +26,13 @@ export default function Notifications() {
     setRunning(true);
     try {
       const res = await api.runReminders();
-      const simulated = mode !== 'live' || res?.__mode === 'demo' || res?.simulated;
       const count = res.sent ?? res.remindersSent ?? res.count ?? 0;
       toast(`Reminder sweep finished — ${count} new reminder(s).`, 'ok', res.note || 'De-duplicated per booking and type.');
-      pushGateway({ channel: 'SYSTEM', type: 'REMINDER_SWEEP', recipient: 'all booked patients', message: `Manual reminder sweep sent ${count} message(s).`, status: simulated ? 'SIMULATED' : 'SENT', provider: simulated ? 'Local Engine' : 'Gateway Interceptor' });
+      pushGateway({
+        channel: 'SYSTEM', type: 'REMINDER_SWEEP', recipient: 'all booked patients',
+        message: `Manual reminder sweep sent ${count} message(s).`,
+        status: 'SENT', provider: 'Gateway Interceptor',
+      });
       if (canSeeLog) await log.reload();
     } catch (err) { toast(err.message, 'bad'); }
     finally { setRunning(false); }
@@ -69,8 +72,11 @@ export default function Notifications() {
                 <article className={`gw-row ${n.local ? 'gw-local' : ''}`}>
                   <div className="gw-top">
                     <Badge status={n.channel} tone={n.channel === 'SMS' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
-                    <Badge status={n.status} tone={String(n.status || '').toUpperCase() === 'SENT' ? 'ok' : 'sim'}>
-                      {String(n.status || 'SIMULATED').toUpperCase()}
+                    <Badge
+                      status={n.status || 'PENDING'}
+                      tone={String(n.status || '').toUpperCase() === 'SENT' ? 'ok' : String(n.status || '').toUpperCase() === 'FAILED' ? 'bad' : String(n.status || '').toUpperCase() === 'SIMULATED' ? 'sim' : 'info'}
+                    >
+                      {String(n.status || 'PENDING').toUpperCase()}
                     </Badge>
                     {n.type && <Badge tone="muted">{String(n.type).replaceAll('_', ' ')}</Badge>}
                     <time className="muted">{relTime(n.sentAt || n.at)}</time>
@@ -79,7 +85,7 @@ export default function Notifications() {
                     {n.subject && <strong>{n.subject} — </strong>}{n.message}
                   </p>
                   <p className="gw-meta muted">
-                    → {n.recipient} · {n.provider || 'Local Engine'}
+                    → {n.recipient} · {n.provider || 'Gateway Interceptor'}
                     {n.bookingId ? ` · booking reference ${n.bookingId}` : ''}
                     {n.local && ' · captured live in this session'}
                   </p>
@@ -104,9 +110,9 @@ export default function Notifications() {
         <Card className="tips-card">
           <CardHead icon="shield" title="Honest delivery" sub="What SIMULATED means in this project" />
           <p className="muted">
-            The backend logs delivery metadata through the interceptor; provider calls are sandboxed
-            (Fast2SMS / Nodemailer test transport). Rows marked <Badge status="SIMULATED" tone="sim">SIMULATED</Badge> were
-            produced by the local demo engine — they are never presented as real provider deliveries.
+            The backend logs delivery metadata through the interceptor. Where SMTP/SMS credentials are not configured,
+            the provider runs in sandbox mode (Fast2SMS / Nodemailer test transport) and the real log row is marked{' '}
+            <Badge status="SIMULATED" tone="sim">SIMULATED</Badge>. It is never presented as a completed provider delivery.
           </p>
           {!canSeeLog && (
             <p className="muted small">

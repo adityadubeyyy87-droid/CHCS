@@ -13,19 +13,24 @@ const EMPTY_FORM = {
 };
 
 export default function Manage() {
-  const { toast, pushGateway, mode } = useApp();
-  const camps = useFetch(() => api.camps(), []);
-  const users = useFetch(() => api.users().catch(() => ({ users: [] })), []);
+  const { toast, pushGateway } = useApp();
+  const camps = useFetch(() => api.camps({ scope: 'manage' }), []);
+  const users = useFetch(() => api.users(), []);
   const [selected, setSelected] = useState(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [staffForm, setStaffForm] = useState({ userId: '', roleAtCamp: 'DOCTOR', shiftStart: '09:00', shiftEnd: '13:00', expectedLoadPerHour: 16, maxPatientsPerHour: 20, duties: '' });
   const [showSlotPlan, setShowSlotPlan] = useState(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [closeOutBusy, setCloseOutBusy] = useState(false);
+  const [closeOutResult, setCloseOutResult] = useState(null);
 
   useEffect(() => {
     if (camps.data && !selected) setSelected(camps.data.camps[0] || null);
   }, [camps.data]);
+
+  useEffect(() => { setCloseOutResult(null); }, [selected?.id]);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -34,12 +39,14 @@ export default function Manage() {
     setBusy(true);
     try {
       const res = await api.createCamp(form);
-      toast(`Camp created — ${res.slotPlan.length} slots generated automatically.`, 'ok', res.__mode === 'demo' ? 'Local engine' : 'MySQL');
+      toast(`Camp created — ${res.slotPlan.length} slots generated automatically.`, 'ok', 'MySQL');
       setShowSlotPlan(res.slotPlan);
       setCreating(false);
       setForm(EMPTY_FORM);
       const fresh = await camps.reload();
-      if (fresh?.data?.camps) setSelected(fresh.data.camps.find((c) => c.title === form.title) || fresh.data.camps[0]);
+      if (fresh?.camps) {
+        setSelected(fresh.camps.find((c) => c.id === res.camp?.id) || fresh.camps[0]);
+      }
     } catch (err) { toast(err.message, 'bad'); }
     finally { setBusy(false); }
   }
@@ -67,16 +74,38 @@ export default function Manage() {
     } catch (err) { toast(err.message, 'bad'); }
   }
 
+  async function closeOutCamp() {
+    if (!camp) return;
+    setCloseOutBusy(true);
+    try {
+      const res = await api.closeOut(camp.id);
+      setCloseOutResult(res);
+      setConfirmClose(false);
+      toast(
+        `Camp closed — ${res.noShowMarked} marked no-show, ${res.checkedIn} checked in.`,
+        'ok',
+        'Status moved to COMPLETED in MySQL.',
+      );
+      // Keep the closed camp selected so the result is not attributed to a different camp.
+      setSelected((current) => (current ? { ...current, status: 'COMPLETED' } : null));
+      await camps.reload();
+    } catch (err) { toast(err.message, 'bad'); }
+    finally { setCloseOutBusy(false); }
+  }
+
   async function addStaff(e) {
     e.preventDefault();
     if (!staffForm.userId) { toast('Pick a person to assign.', 'warn'); return; }
     setBusy(true);
     try {
       const res = await api.assignStaff(selected.id, staffForm);
-      const simulated = mode !== 'live' || res.__mode === 'demo' || res.simulated;
       if (res.warning) toast(res.warning.message, 'warn', 'Load Balancer');
-      else toast(`${res.staff.name} assigned to ${selected.title}.`, 'ok', simulated ? 'Local demo engine' : 'MySQL');
-      pushGateway({ channel: 'SYSTEM', type: 'STAFF', recipient: 'organizer desk', message: `${res.staff.name} → ${selected.title} (${res.staff.roleAtCamp})`, status: simulated ? 'SIMULATED' : 'SENT', provider: simulated ? 'Local Engine' : 'Load Balancer' });
+      else toast(`${res.staff.name} assigned to ${selected.title}.`, 'ok', 'MySQL');
+      pushGateway({
+        channel: 'SYSTEM', type: 'STAFF', recipient: 'organizer desk',
+        message: `${res.staff.name} → ${selected.title} (${res.staff.roleAtCamp})`,
+        status: 'SENT', provider: 'Load Balancer',
+      });
       setStaffForm({ ...staffForm, userId: '' });
       await camps.reload();
     } catch (err) { toast(err.message, 'bad'); }
@@ -130,9 +159,22 @@ export default function Manage() {
               </div>
               <div className="row-actions">
                 <Button size="sm" variant="ghost" icon="refresh" loading={busy} onClick={regenerate}>Regenerate slots</Button>
-                {camp.status === 'PUBLISHED' && <Button size="sm" variant="ghost" onClick={() => setStatus('COMPLETED')}>Mark completed</Button>}
+                {camp.status === 'PUBLISHED' && (
+                  <Button size="sm" variant="danger" icon="check" onClick={() => { setCloseOutResult(null); setConfirmClose(true); }}>
+                    Close out camp day
+                  </Button>
+                )}
                 {camp.status === 'DRAFT' && <Button size="sm" onClick={() => setStatus('PUBLISHED')}>Publish</Button>}
               </div>
+              {closeOutResult && (
+                <div className="close-out-result" role="status">
+                  <Icon name="check" size={15} />
+                  <span>
+                    Last close-out: {closeOutResult.checkedIn} checked in · {closeOutResult.completed} completed ·{' '}
+                    {closeOutResult.noShowMarked} newly marked no-show.
+                  </span>
+                </div>
+              )}
               <Sci k="miller" as="div" className="sci-block">
                 <p className="muted config-note">
                   <Icon name="flask" size={13} />
@@ -175,6 +217,7 @@ export default function Manage() {
                 ))}
                 {camp.staff.length === 0 && <EmptyState icon="users" title="No staff assigned yet" />}
               </div>
+              {users.error && <ErrorNote onRetry={users.reload}>{users.error}</ErrorNote>}
               <form className="assign-form" onSubmit={addStaff}>
                 <Select value={staffForm.userId} onChange={(e) => setStaffForm((f) => ({ ...f, userId: e.target.value }))} aria-label="Person">
                   <option value="">Assign a person…</option>
@@ -246,6 +289,25 @@ export default function Manage() {
             </Magnetic>
           </div>
         </form>
+      </Modal>
+
+      <Modal open={confirmClose} onClose={() => setConfirmClose(false)} title="Close out camp day">
+        {camp && (
+          <>
+            <p>
+              Close <strong>{camp.title}</strong>? Every confirmed booking that has not checked in will be marked{' '}
+              <strong>NO_SHOW</strong> and the camp will move to <strong>COMPLETED</strong>. This is a real backend transaction.
+            </p>
+            <div className="modal-foot">
+              <Button variant="ghost" onClick={() => setConfirmClose(false)}>Keep camp open</Button>
+              <Magnetic intensity={0.4}>
+                <Button variant="danger" icon="check" loading={closeOutBusy} onClick={closeOutCamp}>
+                  Close out and mark no-shows
+                </Button>
+              </Magnetic>
+            </div>
+          </>
+        )}
       </Modal>
     </div>
   );

@@ -37,8 +37,8 @@ export default function MyBookings() {
       pushGateway({
         channel: 'SYSTEM', type: 'BOOKING_CONFIRMED', recipient: 'you',
         message: res.message || 'Hold confirmed.',
-        status: res.simulated ? 'SIMULATED' : 'SENT',
-        provider: res.simulated ? 'Local Engine' : 'MySQL + Socket.io',
+        status: 'SENT',
+        provider: 'MySQL + Socket.io',
         bookingId: b.id,
       });
       await bookings.reload();
@@ -56,7 +56,7 @@ export default function MyBookings() {
     try {
       const res = await api.cancelBooking(cancelTarget.id);
       toast(res.message, 'ok', res.autoPromoted ? `Promoted: ${res.promotedPatient?.name || 'first waiting patient'}` : 'No waiting patients on that slot.');
-      pushGateway({ channel: 'SYSTEM', type: 'CANCELLATION', recipient: 'you', message: res.message, status: res.simulated ? 'SIMULATED' : 'SENT', provider: res.simulated ? 'Local Engine' : 'MySQL + Socket.io', bookingId: cancelTarget.id });
+      pushGateway({ channel: 'SYSTEM', type: 'CANCELLATION', recipient: 'you', message: res.message, status: 'SENT', provider: 'MySQL + Socket.io', bookingId: cancelTarget.id });
       setCancelTarget(null);
       await bookings.reload();
     } catch (err) { toast(err.message, 'bad'); }
@@ -89,8 +89,8 @@ export default function MyBookings() {
       pushGateway({
         channel: 'SYSTEM', type: 'RESCHEDULE', recipient: 'you',
         message: res.message || 'Booking moved to the new slot.',
-        status: res.simulated ? 'SIMULATED' : 'SENT',
-        provider: res.simulated ? 'Local Engine' : 'MySQL + Socket.io',
+        status: 'SENT',
+        provider: 'MySQL + Socket.io',
         bookingId: rescheduleTarget.id,
       });
       setRescheduleTarget(null);
@@ -104,7 +104,7 @@ export default function MyBookings() {
   return (
     <div className="stack-lg">
       <Card>
-        <CardHead icon="ticket" title="My Appointments" sub={bookings.data?.bookings.length || 0 ? 'Your offline pass, QR token, reschedule and zero-guilt release buttons.' : 'Your first step is above.'}
+        <CardHead icon="ticket" title="My Appointments" sub={bookings.data?.bookings.length || 0 ? 'Your live pass, QR token, reschedule and zero-guilt release buttons.' : 'Your first step is above.'}
           actions={<Button size="sm" icon="compass" onClick={() => setPage('discover')}>Find a camp</Button>} />
         {bookings.loading ? <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={92} />)}</div> : bookings.error ? <ErrorNote onRetry={bookings.reload}>{bookings.error}</ErrorNote> : bookings.data.bookings.length === 0 ? (
           <EmptyState icon="ticket" title="No active bookings yet"

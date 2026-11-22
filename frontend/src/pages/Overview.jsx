@@ -17,27 +17,27 @@ import { fmtDate, fmtTime12, dayTone, slotTone } from '../lib/format.js';
 const HealthViz3D = lazy(() => import('../components/HealthViz3D.jsx'));
 
 export default function Overview() {
-  const { user, setPage, isOrganizer, isStaff, mode } = useApp();
+  const { user, setPage, isOrganizer, isStaff } = useApp();
+  const isPatient = user.role === 'PATIENT';
   const camps = useFetch(() => api.camps(), []);
-  const mine = useFetch(() => (user.role === 'PATIENT' ? api.myBookings() : Promise.resolve({ bookings: [] })), [user.id]);
-  const analytics = useFetch(() => api.analytics(), [], { skip: !isOrganizer && user.role !== 'ADMIN' });
+  const mine = useFetch(() => api.myBookings(), [], { skip: !isPatient });
+  const analytics = useFetch(() => api.analytics(), [], { skip: !isOrganizer });
   const duty = useFetch(() => api.staffMe(), [], { skip: !isStaff });
   const [pass, setPass] = useState(null);
-  const simulated = mode !== 'live';
   const kpis = analytics.data?.kpis || {};
   const hasAnalytics = isOrganizer || user.role === 'ADMIN';
   const publicBookings = (camps.data?.camps || []).reduce((sum, c) => sum + (c.bookedTotal || 0), 0);
   const publicWaiting = (camps.data?.camps || []).reduce((sum, c) => sum + (c.waitingTotal || 0), 0);
 
   const stats = [
-    { label: 'Camps', value: camps.data?.pagination?.total || camps.data?.camps?.length || 0, icon: 'compass', tone: 'ok', desc: 'published across Bengaluru' },
-    { label: 'Slots', value: (camps.data?.camps || []).reduce((sum, c) => sum + (c.slots?.length || 0), 0), icon: 'clock', tone: 'info', desc: 'screening windows open' },
+    { label: 'Camps', value: camps.data?.pagination?.total || camps.data?.camps?.length || 0, loading: camps.loading, error: !!camps.error, icon: 'compass', tone: 'ok', desc: 'in the live database' },
+    { label: 'Slots', value: (camps.data?.camps || []).reduce((sum, c) => sum + (c.slots?.length || 0), 0), loading: camps.loading, error: !!camps.error, icon: 'clock', tone: 'info', desc: 'screening windows on file' },
     hasAnalytics
-      ? { label: 'Patients', value: kpis.totalRegistered || 0, icon: 'users', tone: 'ok', desc: 'registered on the platform' }
-      : { label: 'Bookings', value: publicBookings, icon: 'users', tone: 'ok', desc: 'reserved across camps' },
+      ? { label: 'Patients', value: kpis.totalRegistered || 0, loading: analytics.loading, error: !!analytics.error, icon: 'users', tone: 'ok', desc: 'registered on the platform' }
+      : { label: 'Bookings', value: publicBookings, loading: camps.loading, error: !!camps.error, icon: 'users', tone: 'ok', desc: 'reserved across camps' },
     hasAnalytics
-      ? { label: 'Promoted', value: kpis.waitlistPromotions || 0, icon: 'radio', tone: 'warn', desc: 'waitlist auto-promotions' }
-      : { label: 'Waiting', value: publicWaiting, icon: 'radio', tone: 'warn', desc: 'on FIFO waitlists' },
+      ? { label: 'Promoted', value: kpis.waitlistPromotions || 0, loading: analytics.loading, error: !!analytics.error, icon: 'radio', tone: 'warn', desc: 'waitlist auto-promotions' }
+      : { label: 'Waiting', value: publicWaiting, loading: camps.loading, error: !!camps.error, icon: 'radio', tone: 'warn', desc: 'on FIFO waitlists' },
   ];
   const vizMetrics = [
     { label: 'Registered', value: kpis.totalRegistered || 0, display: kpis.totalRegistered || 0, color: 0x059669 },
@@ -82,7 +82,9 @@ export default function Overview() {
                     <Icon name={s.icon} size={20} className="icon" />
                   </div>
                   <div className="min-w-0">
-                    <AnimatedNumber key={`${s.label}-${s.value}`} value={s.value} className="text-2xl font-bold text-text-hi" />
+                    {s.loading ? <Skeleton h={30} w={72} /> : s.error ? <span className="muted" aria-label="Unavailable">—</span> : (
+                      <AnimatedNumber key={`${s.label}-${s.value}`} value={s.value} className="text-2xl font-bold text-text-hi" />
+                    )}
                     <small>{s.desc}</small>
                   </div>
                   <Badge tone={s.tone}>{s.label}</Badge>
@@ -96,7 +98,7 @@ export default function Overview() {
       {user.role === 'PATIENT' && (
         <Card className="next-appointment entrance card-tilt">
           <CardHead icon="ticket" title="Next appointment" sub={myNext ? 'Show this pass at the venue' : 'Nothing booked yet'} />
-          {mine.loading ? <Skeleton h={140} /> : myNext ? (
+          {mine.loading ? <Skeleton h={140} /> : mine.error ? <ErrorNote onRetry={mine.reload}>{mine.error}</ErrorNote> : myNext ? (
             <button className="mini-pass" onClick={() => setPass(myNext)}>
               <div className="mini-pass-main">
                 <strong className="mono">{myNext.tokenNumber}</strong>
@@ -115,7 +117,7 @@ export default function Overview() {
       )}
 
       <Card className="camps-teaser entrance card-tilt">
-        <CardHead icon="compass" title="Upcoming camps" sub={`${upcoming.length} scheduled`} actions={<Button size="sm" variant="ghost" onClick={() => setPage(user.role === 'PATIENT' ? 'discover' : 'manage')}>All camps</Button>} />
+        <CardHead icon="compass" title="Upcoming camps" sub={camps.loading ? 'Loading live camps…' : `${upcoming.length} scheduled`} actions={<Button size="sm" variant="ghost" onClick={() => setPage(user.role === 'PATIENT' ? 'discover' : 'manage')}>All camps</Button>} />
         {camps.loading ? (
           <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={64} />)}</div>
         ) : camps.error ? <ErrorNote onRetry={camps.reload}>{camps.error}</ErrorNote> : upcoming.length === 0 ? (
@@ -151,14 +153,14 @@ export default function Overview() {
           <CardHead
             icon="chart"
             title="System pulse"
-            sub={simulated ? 'Simulated aggregates from the local demo engine' : 'Live MySQL aggregates from bookings & camps'}
+            sub="Live MySQL aggregates from bookings & camps"
             actions={<Button size="sm" variant="ghost" icon="refresh" onClick={() => { camps.reload(); analytics.reload(); }}>Refresh</Button>}
           />
           {analytics.loading && <div className="stack"><Skeleton h={48} /><Skeleton h={260} /></div>}
           {analytics.error && <ErrorNote onRetry={analytics.reload}>{analytics.error}</ErrorNote>}
           {!analytics.loading && !analytics.error && (
             <Suspense fallback={<Skeleton h={260} />}>
-              <HealthViz3D className="my-4" height={260} metrics={vizMetrics} simulated={simulated} />
+              <HealthViz3D className="my-4" height={260} metrics={vizMetrics} />
             </Suspense>
           )}
           {!analytics.loading && !analytics.error && (
@@ -170,7 +172,7 @@ export default function Overview() {
                 <div className="kpi"><strong><AnimatedNumber key={`noshow-${kpis.noShowRate || 0}`} value={kpis.noShowRate || 0} format={(v) => v.toFixed(1)} className="text-2xl font-bold" />%</strong><span>No-show rate</span></div>
               </div>
               <p className="muted pulse-note text-sm">
-                <Icon name="flask" size={13} /> {simulated ? 'Figures from seeded local demo data — simulated, never a database result.' : 'Figures from live MySQL aggregates.'}
+                <Icon name="flask" size={13} /> {'Figures from live MySQL aggregates.'}
               </p>
             </>
           )}

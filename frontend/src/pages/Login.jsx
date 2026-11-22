@@ -1,59 +1,43 @@
-// Login.jsx — Biophilic Clinical Precision authentication with motion primitives:
-// InView staggered form entries, Magnetic buttons.
+// Login.jsx — Biophilic Clinical Precision authentication with motion primitives.
+// Sign-in and registration go straight to the Express/MySQL API.
 import React, { Suspense, lazy, useState } from 'react';
 import { useApp } from '../store.jsx';
-import { api, isStrictLive } from '../lib/api.js';
+import { api } from '../lib/api.js';
 import { Badge, Button, Field, Icon, Input, Select, Sci, Skeleton } from '../components/ui.jsx';
 
 const Hero3D = lazy(() => import('../components/Hero3D.jsx'));
-import {
-  TextShimmer,
-  Magnetic,
-  InView,
-  AnimatedNumber,
-} from '../components/motion';
-
-const DEMO_ROLES = [
-  { role: 'PATIENT', name: 'Meera Sharma', desc: 'Book & manage appointments' },
-  { role: 'ORGANIZER', name: 'Nandini Rao', desc: 'Run camps & staff' },
-  { role: 'DOCTOR', name: 'Dr. Ananya Rao', desc: 'Camp day & check-in' },
-  { role: 'VOLUNTEER', name: 'Arjun Kumar', desc: 'QR desk duty' },
-  { role: 'ADMIN', name: 'Kavya Rao', desc: 'Analytics & governance' },
-];
+import { TextShimmer, Magnetic, InView } from '../components/motion';
 
 export default function Login() {
-  const { signIn, toast, mode, setTheme, setPage } = useApp();
+  const { signIn, toast, mode, connectionError, refreshConnection, setTheme, setPage } = useApp();
   const [tab, setTab] = useState('signin');
   const [busy, setBusy] = useState(null);
+  const [checking, setChecking] = useState(false);
   const [form, setForm] = useState({ identifier: '', password: '', name: '', email: '', phone: '', ageGroup: '30-45' });
   const [error, setError] = useState(null);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+  const validPhone = (value) => /^\d{10}$/.test(String(value || '').trim());
+
+  async function retryConnection() {
+    setChecking(true);
+    try { await refreshConnection(); }
+    finally { setChecking(false); }
+  }
 
   async function doSignIn(e) {
     e?.preventDefault();
     setError(null);
-    if (!form.identifier || !form.password) { setError('Enter your email/phone and password.'); return; }
+    const identifier = form.identifier.trim();
+    const password = form.password;
+    const identifierOk = validEmail(identifier) || validPhone(identifier);
+    if (!identifierOk) { setError('Enter a valid email address or 10-digit phone number.'); return; }
+    if (!password) { setError('Enter your password.'); return; }
     setBusy('in');
     try {
-      const user = await signIn(() => api.login(form.identifier, form.password));
+      const user = await signIn(() => api.login(identifier, password));
       toast(`Welcome back, ${user.name.split(' ')[0]}.`, 'ok');
-    } catch (err) { setError(err.message); }
-    finally { setBusy(null); }
-  }
-
-  async function doDemo(role) {
-    setError(null);
-    setBusy(role);
-    try {
-      const user = await signIn(() => api.demoLogin(role));
-      toast(
-        `Demo session as ${user.name} (${user.role})`,
-        'ok',
-        mode === 'live'
-          ? 'Seeded MySQL demo account — session is real, data is demonstration seed data.'
-          : 'Simulated local session — clearly labeled in the mode indicator.',
-      );
     } catch (err) { setError(err.message); }
     finally { setBusy(null); }
   }
@@ -61,10 +45,17 @@ export default function Login() {
   async function doRegister(e) {
     e.preventDefault();
     setError(null);
+    const name = form.name.trim();
+    const email = form.email.trim().toLowerCase();
+    const phone = form.phone.trim();
+    if (name.length < 2) { setError('Enter your full name.'); return; }
+    if (!validEmail(email)) { setError('Enter a valid email address.'); return; }
+    if (!validPhone(phone)) { setError('Enter a 10-digit phone number.'); return; }
+    if (form.password.length < 8) { setError('Use a password of at least 8 characters.'); return; }
     setBusy('reg');
     try {
       const user = await signIn(() => api.register({
-        name: form.name, email: form.email, phone: form.phone,
+        name, email, phone,
         password: form.password, ageGroup: form.ageGroup, preferredLanguage: 'en',
       }));
       toast(`Account created. Welcome, ${user.name.split(' ')[0]}.`, 'ok');
@@ -72,9 +63,13 @@ export default function Login() {
     finally { setBusy(null); }
   }
 
+  const connectionLabel = mode === 'live'
+    ? 'LIVE · MySQL'
+    : mode === 'connecting' ? 'Connecting…' : 'Connection error';
+  const connectionTone = mode === 'live' ? 'ok' : mode === 'connecting' ? 'muted' : 'bad';
+
   return (
     <div className="auth h-screen flex items-center justify-center" data-theme="dark">
-      {/* Left: 3D Hero + Brand */}
       <aside className="auth-brand h-full w-full lg:w-1/2 flex flex-col">
         <div className="relative w-full h-full flex-1 flex items-center justify-center px-8 py-12 lg:px-12">
           <div className="z-10 w-full max-w-lg flex flex-col items-center text-center space-y-6">
@@ -103,12 +98,27 @@ export default function Login() {
         </div>
       </aside>
 
-      {/* Right: Sign-in card */}
       <main className="auth-panel h-full w-full lg:w-1/2 flex items-center justify-center px-8 py-12 lg:px-0 bg-surface/30 backdrop-blur-sm border-r border-line/50">
         <div className="auth-card w-full max-w-md">
           <button type="button" className="linkish auth-back" onClick={() => setPage('welcome')}>
             ← Back to the cinematic site
           </button>
+
+          <div className="auth-connection" role="status">
+            <Badge tone={connectionTone}>{connectionLabel}</Badge>
+            {mode === 'error' && (
+              <button type="button" className="linkish" onClick={retryConnection} disabled={checking}>
+                {checking ? 'Retrying…' : 'Retry connection'}
+              </button>
+            )}
+          </div>
+          {mode === 'error' && connectionError && <p className="muted small auth-connection-error">{connectionError}</p>}
+          {mode === 'error' && (
+            <p className="muted small auth-connection-error">
+              Sign-in needs a reachable backend. No local account or substitute session is available.
+            </p>
+          )}
+
           <div className="auth-tabs" role="group" aria-label="Account access">
             <button type="button" aria-pressed={tab === 'signin'} className={tab === 'signin' ? 'on' : undefined} onClick={() => setTab('signin')}>Sign in</button>
             <button type="button" aria-pressed={tab === 'register'} className={tab === 'register' ? 'on' : undefined} onClick={() => setTab('register')}>Register</button>
@@ -122,7 +132,7 @@ export default function Login() {
             <InView once>
               <form onSubmit={doSignIn}>
                 <Field label="Email or phone">
-                  <Input value={form.identifier} onChange={set('identifier')} placeholder="patient@cmrit.edu" autoComplete="username" />
+                  <Input value={form.identifier} onChange={set('identifier')} placeholder="you@example.com" autoComplete="username" />
                 </Field>
                 <Field label="Password">
                   <Input type="password" value={form.password} onChange={set('password')} placeholder="••••••••" autoComplete="current-password" />
@@ -156,26 +166,16 @@ export default function Login() {
             </InView>
           )}
 
-          {!isStrictLive() && <div className="auth-demo mt-8">
-            <p className="field-label mb-4">
-              {mode === 'live' ? 'One-click demo sessions (seeded MySQL accounts)' : 'One-click demo sessions (local engine)'}
-            </p>
-            <div className="demo-grid">
-              {DEMO_ROLES.map((r) => (
-                <Magnetic key={r.role} intensity={0.3} range={60}>
-                  <button onClick={() => doDemo(r.role)} disabled={busy === r.role} className="demo-role">
-                    <Badge tone="muted">{r.role}</Badge>
-                    <strong>{r.name}</strong>
-                    <small className="muted">{r.desc}</small>
-                    {busy === r.role && <span className="btn-spinner" aria-hidden="true" />}
-                  </button>
-                </Magnetic>
-              ))}
-            </div>
-            <small className="muted">Mode {mode === 'live' ? 'A' : 'B'} · {mode === 'live' ? 'real MySQL backend connected' : 'backend offline — the local demo engine is active'}.
-              <button className="linkish" onClick={() => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light')}>Theme</button>
-            </small>
-          </div>}
+          <div className="auth-footnote">
+            <small className="muted">Accounts are created and verified by the live backend.</small>
+            <button
+              type="button"
+              className="linkish"
+              onClick={() => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light')}
+            >
+              Switch theme
+            </button>
+          </div>
         </div>
       </main>
     </div>

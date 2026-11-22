@@ -8,7 +8,7 @@ import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Field, Select, Sk
 import { fmtTime12 } from '../lib/format.js';
 
 export default function ControlRoom() {
-  const { socket, pushGateway, toast } = useApp();
+  const { socket, socketOnline, pushGateway, toast } = useApp();
   const camps = useFetch(() => api.camps(), []);
   const [campId, setCampId] = useState(null);
   const board = useFetch(() => api.controlRoom(campId), [campId], { skip: !campId });
@@ -49,8 +49,8 @@ export default function ControlRoom() {
       pushGateway({
         channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'control room',
         message: payload.queue.current?.patientName || 'Patient checked in',
-        status: payload.simulated === true ? 'SIMULATED' : 'SENT',
-        provider: payload.simulated === true ? 'Local Engine' : 'Socket.io',
+        status: 'SENT',
+        provider: 'Socket.io',
       });
       toast(`Patient checked in: ${payload.queue.current?.patientName || 'unknown'}`, 'ok');
       refresh();
@@ -116,7 +116,11 @@ export default function ControlRoom() {
             </Field>
           }
         />
-        {!socket && <p className="muted small">Simulation feed — local engine. Live Socket.io updates require the backend.</p>}
+        {!socketOnline && (
+          <p className="muted small">
+            Waiting for the real-time connection. The board shows the last successful API read; check-ins will refresh it when the socket reconnects.
+          </p>
+        )}
         {board.loading && <div className="stack-md"><Skeleton h={48} /><Skeleton h={48} /></div>}
         {board.error && <ErrorNote onRetry={board.reload}>{board.error}</ErrorNote>}
         {d && (

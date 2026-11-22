@@ -1,6 +1,6 @@
 // Analytics.jsx — Biophilic Future executive analytics with motion primitives:
 // AnimatedNumber KPI counters, InView for chart cards, Spotlight on advisor.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ReferenceLine,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -20,8 +20,7 @@ const tooltipStyle = {
 };
 
 export default function Analytics() {
-  const { toast, mode } = useApp();
-  const simulated = mode !== 'live';
+  const { toast } = useApp();
   const data = useFetch(() => api.analytics(), []);
   const [physical, setPhysical] = useState(100);
   const [advisor, setAdvisor] = useState(null);
@@ -43,29 +42,9 @@ export default function Analytics() {
   const kpis = data.data?.kpis;
   const charts = data.data || {};
 
-  const csvHref = useMemo(() => {
-    const rows = (charts.bookingsVsCapacity || []);
-    const lines = [
-      'Camp,Date,Status,Capacity,Booked,Fill rate %',
-      ...rows.map((r) => `"${r.camp}",${String(r.date).slice(0, 10)},${r.status},${r.capacity},${r.bookings},${r.capacity ? ((r.bookings / r.capacity) * 100).toFixed(1) : '0.0'}`),
-    ];
-    const label = simulated ? '# CHSC local demo export (simulated data — Mode B)' : '# CHSC camp report (Mode A · MySQL)';
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(`${label}\n${lines.join('\n')}`)}`;
-  }, [charts.bookingsVsCapacity, simulated]);
-
   const [exportBusy, setExportBusy] = useState(false);
 
   async function downloadCsv() {
-    if (simulated) {
-      const a = document.createElement('a');
-      a.href = csvHref;
-      a.download = 'chsc-camp-report.csv';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      toast('Demo CSV downloaded — labelled as simulated (Mode B).', 'info');
-      return;
-    }
     setExportBusy(true);
     try {
       const blob = await api.exportCsv();
@@ -138,19 +117,10 @@ export default function Analytics() {
             </InView>
           </div>
 
-          <Sci k="ethical" as="div" className="sci-block">
-            <Card>
-              <CardHead icon="zap" title="Modelled no-show reduction"
-                sub="Transparent label: modelled, not a measured causal inference"
-                actions={<Badge tone="info">{kpis.noShowReductionPct}% modelled · not measured</Badge>} />
-              <p className="muted">{kpis.noShowReductionBasis}</p>
-            </Card>
-          </Sci>
-
           <div className="bento chart-bento">
             <InView once className="bento-2 chart-slot">
               <Card className="bento-2">
-                <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated data' : 'Live MySQL'}</Badge>} />
+                <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone="ok">Live MySQL</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.bookingsVsCapacity || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -168,7 +138,7 @@ export default function Analytics() {
             </InView>
             <InView once delay={100} className="bento-2 chart-slot">
               <Card className="bento-2">
-                <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated data' : 'Live MySQL'}</Badge>} />
+                <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone="ok">Live MySQL</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.attendanceVsNoShow || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -186,7 +156,7 @@ export default function Analytics() {
             </InView>
             <InView once delay={200} className="chart-slot">
               <Card>
-                <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated data' : 'Live MySQL'}</Badge>} />
+                <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone="ok">Live MySQL</Badge>} />
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={260}>
                     <AreaChart data={charts.hourlyUtilisation || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
@@ -210,14 +180,12 @@ export default function Analytics() {
           </div>
 
           <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}>
-            <CapacityAdvisor advisor={advisor} busy={advisorBusy} physical={physical} setPhysical={setPhysical} simulated={simulated} />
+            <CapacityAdvisor advisor={advisor} busy={advisorBusy} physical={physical} setPhysical={setPhysical} />
           </Spotlight>
 
           <Card>
             <CardHead icon="download" title="Reports"
-              sub={!simulated
-                ? 'CSV served by the Express + MySQL backend.'
-                : 'Local engine active — the export below is generated in-browser from simulated data.'}
+              sub="CSV served by the Express + MySQL backend."
               actions={(
                 <div className="row-actions">
                   <button
@@ -232,11 +200,7 @@ export default function Analytics() {
                   <Button size="sm" variant="ghost" icon="camera" onClick={printReport}>Print report</Button>
                 </div>
               )} />
-            <p className="muted">
-              {charts.meta?.engine
-                ? <>Source: <strong>{charts.meta.engine}</strong> · {charts.meta.isolation} · generated {new Date(charts.meta.generatedAt).toLocaleTimeString()}</>
-                : simulated ? 'Source: local demo engine (simulated aggregates).' : 'Source: MySQL aggregate queries.'}
-            </p>
+            <p className="muted">Source: MySQL aggregate queries.</p>
           </Card>
         </>
       )}
@@ -244,12 +208,12 @@ export default function Analytics() {
   );
 }
 
-function CapacityAdvisor({ advisor, busy, physical, setPhysical, simulated }) {
+function CapacityAdvisor({ advisor, busy, physical, setPhysical }) {
   return (
     <Card className="advisor-card entrance card-tilt">
       <CardHead icon="flask" title="Smart Capacity Advisor"
         sub="Rule-Based Statistical Heuristic — NOT Black-Box AI/ML"
-        actions={advisor && <Badge tone={simulated ? 'sim' : 'ok'}>{simulated ? 'Simulated sample' : 'Sample'}: {advisor.sampleSize} bookings</Badge>} />
+        actions={advisor && <Badge tone="ok">Sample: {advisor.sampleSize} bookings</Badge>} />
       <div className="advisor-grid">
         <div className="stack-md">
           <Slider label="Physical screening seats (C_phys)" min={20} max={400} step={5} value={physical}

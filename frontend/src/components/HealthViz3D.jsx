@@ -1,6 +1,6 @@
 // HealthViz3D.jsx — compact 3D healthcare data visualization.
-// Metrics are supplied by the caller so the chart always reflects the active
-// data source (live MySQL or the local demo engine). Built with React Three Fiber.
+// Metrics are supplied by the caller so the chart always reflects the live
+// MySQL data loaded by that page. Built with React Three Fiber.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -40,7 +40,6 @@ export default function HealthViz3D({
   metrics = [],
   width = '100%',
   height = 300,
-  simulated = false,
   className = '',
 }) {
   const [reduce, setReduce] = useState(false);
@@ -57,7 +56,7 @@ export default function HealthViz3D({
   const data = useMemo(() => metrics.slice(0, 5), [metrics]);
   const maxVal = Math.max(1, ...data.map((m) => Number(m.value) || 0));
   const description = data.length
-    ? `${simulated ? 'Simulated' : 'Live'} health metrics: ${data.map((m) => `${m.label} ${m.display ?? m.value}`).join(', ')}.`
+    ? `Live health metrics: ${data.map((m) => `${m.label} ${m.display ?? m.value}`).join(', ')}.`
     : 'Health metrics visualization. No data available.';
 
   if (!data.length) {

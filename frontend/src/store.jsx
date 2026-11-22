@@ -1,24 +1,24 @@
-// store.jsx — global app state: auth, mode, theme, language, science overlay,
-// toasts, gateway interceptor feed, socket connection, routing.
+// store.jsx — global app state: auth, live connection status, theme, language,
+// science overlay, toasts, real gateway feed, Socket.io and routing.
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { api, detectMode, setModeListener, setToken, setUser } from './lib/api.js';
+import { api, probeHealth, setToken, setUser } from './lib/api.js';
 import { translate } from './lib/i18n.js';
 
 // Same-origin by default (backend-served build or Vite proxy). When the UI is
 // on a static host, VITE_API_BASE points at the API and the socket follows it.
-const SOCKET_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/api\/?$/, '');
+const SOCKET_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/api\/?$/, '').replace(/\/+$/, '');
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
-// These are realtime events emitted by the Express server in Mode A — not
-// demo-engine events. They only bump the unread badge; notification content
+// Real Express events. They only bump the unread badge; notification content
 // arrives through `notification:new` / `gateway:message`.
 const LIVE_SOCKET_EVENTS = ['booking:confirmed', 'waitlist:joined', 'waitlist:promoted', 'checkin:new', 'queue:updated'];
 
 export function AppProvider({ children }) {
-  const [mode, setMode] = useState('connecting');
+  const [mode, setMode] = useState('connecting'); // 'connecting' | 'live' | 'error'
+  const [connectionError, setConnectionError] = useState(null);
   const [user, setLocalUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem('chsc_user') || 'null'); } catch { return null; }
   });
@@ -28,110 +28,130 @@ export function AppProvider({ children }) {
   const [page, setPage] = useState(() => {
     const hash = location.hash.replace('#/', '');
     if (hash) return hash;
-    // First visit (no session): the cinematic front door. Returning signed-in
-    // users still land on their dashboard.
     try { return localStorage.getItem('chsc_user') ? 'overview' : 'welcome'; } catch { return 'welcome'; }
   });
   const [toasts, setToasts] = useState([]);
-  const [gateway, setGateway] = useState([]);       // Gateway Interceptor feed
+  const [gateway, setGateway] = useState([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [screenshotMode, setScreenshotMode] = useState(false);
   const socketRef = useRef(null);
   const [socketOnline, setSocketOnline] = useState(false);
   const localNotifId = useRef(1);
+  const bootedRef = useRef(false);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('chsc_theme', theme); }, [theme]);
   useEffect(() => { localStorage.setItem('chsc_lang', lang); }, [lang]);
   useEffect(() => { document.body.classList.toggle('screenshot', screenshotMode); }, [screenshotMode]);
-
-  useEffect(() => {
-    setModeListener(setMode);
-    detectMode().then((m) => {
-      // A child page can trigger the memoised probe before this listener is
-      // registered. Adopt the resolved value directly so the chip and every
-      // `simulated` badge always reflect the mode the API actually used.
-      setMode(m);
-      if (m === 'live') {
-        try {
-          const socket = io(SOCKET_BASE || undefined, {
-            transports: ['websocket', 'polling'],
-            auth: { token: localStorage.getItem('chsc_token') || null },
-          });
-          socketRef.current = socket;
-          socket.on('connect', () => { setSocketOnline(true); });
-          socket.on('disconnect', () => setSocketOnline(false));
-          socket.on('connect_error', (error) => {
-            setSocketOnline(false);
-            // An anonymous visitor may still browse the app; private realtime
-            // rooms simply stay disconnected until they sign in.
-            if (error?.message && error.message !== 'Authentication error') {
-              console.warn('[CHSC] realtime connection:', error.message);
-            }
-          });
-          socket.on('gateway:message', (n) => pushGateway({ ...n, simulated: false }));
-          socket.on('notification:new', (n) => pushGateway({ ...n, simulated: false }));
-          LIVE_SOCKET_EVENTS.forEach((ev) => {
-            const onUnread = () => setUnread((u) => u + 1);
-            socket.on(ev, onUnread);
-          });
-        } catch { /* socket optional */ }
-      }
-    });
-    return () => socketRef.current?.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { if (user) setUser(user); }, [user]);
 
   const toast = useCallback((message, tone = 'ok', detail = null) => {
     const id = Math.random().toString(36).slice(2);
-    setToasts((t) => [...t, { id, message, tone, detail }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4600);
+    setToasts((current) => [...current, { id, message, tone, detail }]);
+    setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 4600);
   }, []);
 
-  // Rehydrate the api module's current-user (module state is lost on reload).
-  useEffect(() => { if (user) setUser(user); }, [user]);
-
-  /** Engine-side simulated gateway events (Mode B). */
-  const pushGateway = useCallback((n) => {
-    const row = { ...n, _id: localNotifId.current++, at: new Date().toISOString() };
-    setGateway((g) => [row, ...g].slice(0, 80));
-    setUnread((u) => u + 1);
+  /** Live activity feed: only real API results and real Socket.io events. */
+  const pushGateway = useCallback((event) => {
+    const row = {
+      ...event,
+      _id: localNotifId.current++,
+      at: new Date().toISOString(),
+      status: event.status || 'SENT',
+    };
+    setGateway((current) => [row, ...current].slice(0, 80));
+    setUnread((count) => count + 1);
   }, []);
+
+  const connectSocket = useCallback(() => {
+    if (socketRef.current) return;
+    const authToken = localStorage.getItem('chsc_token');
+    if (!authToken) return;
+    try {
+      const socket = io(SOCKET_BASE || undefined, {
+        transports: ['websocket', 'polling'],
+        auth: { token: authToken },
+      });
+      socketRef.current = socket;
+      socket.on('connect', () => setSocketOnline(true));
+      socket.on('disconnect', () => setSocketOnline(false));
+      socket.on('connect_error', (error) => {
+        setSocketOnline(false);
+        if (error?.message && error.message !== 'Authentication error') {
+          console.warn('[CHSC] realtime connection:', error.message);
+        }
+      });
+      socket.on('gateway:message', (event) => pushGateway(event));
+      socket.on('notification:new', (event) => pushGateway(event));
+      LIVE_SOCKET_EVENTS.forEach((eventName) => {
+        socket.on(eventName, () => setUnread((count) => count + 1));
+      });
+    } catch (error) {
+      console.warn('[CHSC] realtime connection:', error.message);
+    }
+  }, [pushGateway]);
+
+  const refreshConnection = useCallback(async () => {
+    setMode('connecting');
+    setConnectionError(null);
+    try {
+      await probeHealth();
+      setMode('live');
+      connectSocket();
+      return true;
+    } catch (error) {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setSocketOnline(false);
+      }
+      setMode('error');
+      setConnectionError(error.message);
+      return false;
+    }
+  }, [connectSocket]);
+
+  useEffect(() => {
+    if (bootedRef.current) return undefined;
+    bootedRef.current = true;
+    refreshConnection();
+    return () => socketRef.current?.disconnect();
+  }, [refreshConnection]);
 
   const t = useCallback((key) => translate(lang, key), [lang]);
 
-  const navigate = useCallback((p) => {
-    setPage(p);
-    location.hash = `#/${p}`;
+  const navigate = useCallback((nextPage) => {
+    setPage(nextPage);
+    location.hash = `#/${nextPage}`;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  const signIn = useCallback(async (fn) => {
-    const result = await fn(); // calls api.login/demoLogin; returns {user, token, simulated}
+  const signIn = useCallback(async (requestSession) => {
+    const result = await requestSession();
+    if (!result?.token || !result?.user) {
+      throw new Error('The sign-in response did not include a session.');
+    }
     setToken(result.token);
     setUser(result.user);
     setLocalUser(result.user);
     localStorage.setItem('chsc_user', JSON.stringify(result.user));
-    if (socketRef.current) {
-      socketRef.current.auth = { ...(socketRef.current.auth || {}), token: result.token };
-      socketRef.current.connect();
-    }
-    if (result.simulated) pushGateway({ channel: 'SYSTEM', type: 'DEMO_SESSION', recipient: result.user.email, message: `Local demo session started for ${result.user.name} (${result.user.role}). Simulated — not a real server session.`, status: 'SIMULATED', provider: 'Local Engine' });
-    // A successful sign-in is a navigation, not just a state change. Without
-    // this, the shell falls back to Overview while the URL still says #/login.
+    // A successful auth call is not a substitute for the health probe.
+    const connected = await refreshConnection();
+    // A successful sign-in is a navigation, not just a state change.
     navigate('overview');
+    if (!connected) toast('Signed in, but the backend health check did not pass.', 'warn');
     return result.user;
-  }, [pushGateway, navigate]);
+  }, [navigate, refreshConnection, toast]);
 
   const signOut = useCallback(() => {
-    setToken(null); setUser(null);
+    setToken(null);
+    setUser(null);
     setLocalUser(null);
     localStorage.removeItem('chsc_user');
     if (socketRef.current) {
-      socketRef.current.auth = { ...(socketRef.current.auth || {}), token: null };
-      // Force a fresh handshake on the next sign-in; changing auth alone does
-      // not re-handshake a socket that is still connected.
       socketRef.current.disconnect();
+      socketRef.current = null;
+      setSocketOnline(false);
     }
     navigate('welcome');
   }, [navigate]);
@@ -147,15 +167,17 @@ export function AppProvider({ children }) {
   }, []);
 
   const value = useMemo(() => ({
-    mode, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread, screenshotMode,
+    mode, connectionError, user, theme, lang, science, page, toasts, gateway,
+    drawerOpen, unread, screenshotMode,
     setTheme, setLang, setScience, setPage: navigate, setDrawerOpen, setUnread, setScreenshotMode,
-    toast, pushGateway, t, signIn, signOut,
+    toast, pushGateway, t, signIn, signOut, refreshConnection,
     socketOnline,
-    isStaff: user && ['DOCTOR', 'VOLUNTEER'].includes(user.role),
-    isOrganizer: user && ['ORGANIZER', 'ADMIN'].includes(user.role),
-    isAdmin: user && user.role === 'ADMIN',
+    isStaff: Boolean(user && ['DOCTOR', 'VOLUNTEER'].includes(user.role)),
+    isOrganizer: Boolean(user && ['ORGANIZER', 'ADMIN'].includes(user.role)),
+    isAdmin: Boolean(user && user.role === 'ADMIN'),
     socket: socketRef.current,
-  }), [mode, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread, screenshotMode, toast, pushGateway, t, signIn, signOut, navigate, socketOnline]);
+  }), [mode, connectionError, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread,
+    screenshotMode, toast, pushGateway, t, signIn, signOut, refreshConnection, navigate, socketOnline]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -164,17 +186,24 @@ export function AppProvider({ children }) {
 export function useFetch(fn, deps = [], { skip = false } = {}) {
   const [state, setState] = useState({ loading: !skip, data: null, error: null });
   const reload = useCallback(async () => {
-    setState((s) => ({ ...s, loading: true, error: null }));
+    setState((current) => ({ ...current, loading: true, error: null }));
     try {
       const data = await fn();
       setState({ loading: false, data, error: null });
       return data;
-    } catch (err) {
-      setState({ loading: false, data: null, error: err.message });
+    } catch (error) {
+      setState({ loading: false, data: null, error: error.message });
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   useEffect(() => { if (!skip) reload(); }, [reload, skip]);
-  return { ...state, reload, setData: (d) => setState((s) => ({ ...s, data: typeof d === 'function' ? d(s.data) : d })) };
+  return {
+    ...state,
+    reload,
+    setData: (next) => setState((current) => ({
+      ...current,
+      data: typeof next === 'function' ? next(current.data) : next,
+    })),
+  };
 }

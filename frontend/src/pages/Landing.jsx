@@ -2,8 +2,8 @@
 //
 // Composes CinematicScene (fixed WebGL clinical beacon) with a scroll-driven story:
 // hero → why camps stall → a camp day → design targets → honesty note →
-// working camp-alert signup. Everything is real content from this project:
-// no invented "AI" claims, no fake results, simulated state clearly labelled.
+// sign-in path. Everything is real content from this project: no invented
+// "AI" claims and no fabricated results.
 //
 // Routing: #/welcome renders this page before the auth gate. "Enter" sends
 // the visitor to #/login; a signed-in visitor goes straight to #/overview.
@@ -36,7 +36,6 @@ const NAV_LINKS = [
   { id: 'why', label: 'Why camps stall' },
   { id: 'day', label: 'A camp day' },
   { id: 'targets', label: 'By the numbers' },
-  { id: 'alerts', label: 'Camp alerts' },
 ];
 
 const TICKER = [
@@ -111,7 +110,6 @@ const TARGETS = [
   { value: '0', unit: '', label: 'Double-booked slots', note: 'Row locks, not hope.' },
   { value: '3', unit: ' min', label: 'Check-in target', note: 'Scan, verify, seat.' },
   { value: '5', unit: '', label: 'Roles, one board', note: 'Patient to admin.' },
-  { value: '100', unit: '%', label: 'Simulated results labelled', note: 'Never dressed as real.' },
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -302,9 +300,9 @@ export default function Landing() {
           </nav>
 
           <div className="ln-nav-actions">
-            <span className={`ln-mode ln-mode--${mode || 'demo'}`} title={mode === 'live' ? 'Connected to the MySQL backend' : 'Local demo engine — no database attached'}>
+            <span className={`ln-mode ln-mode--${mode}`} title={mode === 'live' ? 'Connected to the MySQL backend' : mode === 'connecting' ? 'Checking the live backend' : 'Backend connection failed'}>
               <span className="ln-mode-dot" aria-hidden="true" />
-              {mode === 'live' ? 'LIVE · MySQL' : mode === 'connecting' ? 'PROBING…' : 'DEMO · LOCAL'}
+              {mode === 'live' ? 'LIVE · MySQL' : mode === 'connecting' ? 'PROBING…' : 'CONNECTION ERROR'}
             </span>
             <button type="button" className="ln-btn ln-btn--ghost ln-btn--sm" onClick={enter}>
               {user ? 'Open dashboard' : 'Sign in'}
@@ -425,23 +423,13 @@ export default function Landing() {
               />
               <Reveal className="ln-queue-card" delay={120}>
                 <div className="ln-queue-card-head">
-                  <span className="ln-live"><span className="ln-live-dot" aria-hidden="true" />Queue preview</span>
-                  <span className="ln-sim">SIMULATED</span>
+                  <span className="ln-live"><span className="ln-live-dot" aria-hidden="true" />Live queue</span>
+                  <span className="ln-fine">Inside the platform</span>
                 </div>
-                <div className="ln-queue-rows">
-                  {[
-                    { n: 'A-014', s: 'In screening', w: '72%' },
-                    { n: 'A-015', s: 'Next', w: '54%' },
-                    { n: 'A-016', s: 'Waiting', w: '38%' },
-                  ].map((r) => (
-                    <div className="ln-queue-row" key={r.n}>
-                      <span className="ln-mono">{r.n}</span>
-                      <span className="ln-queue-bar" aria-hidden="true"><i style={{ width: r.w }} /></span>
-                      <span className="ln-queue-state">{r.s}</span>
-                    </div>
-                  ))}
-                </div>
-                <p className="ln-fine">Illustrative only — a live board appears inside the app.</p>
+                <p className="ln-queue-note">
+                  The waiting-room board is fed by QR check-ins over Socket.io. Tokens, names and wait times come from
+                  the selected camp's real queue — no illustrative rows are shown here.
+                </p>
               </Reveal>
             </div>
 
@@ -497,39 +485,21 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* ------------------------------ alerts ------------------------------ */}
-        <section id="alerts" className="ln-section" aria-labelledby="ln-alerts-title">
-          <div className="ln-wrap ln-alerts">
-            <div>
-              <SectionHead
-                eyebrow="Camp alerts"
-                title={<span id="ln-alerts-title">Know when the next camp opens near you.</span>}
-                lead="Leave an email and this device will remember it. On the demo engine nothing leaves the browser — no account, no mailing list, no hidden backend."
-              />
-              <p className="ln-alerts-meta">
-                <Icon name="shield" size={14} />
-                Stored in <code>localStorage</code> under <code>chsc_alert_signups</code>. Clear it any time from Settings.
-              </p>
-            </div>
-            <AlertForm />
-          </div>
-        </section>
-
         {/* -------------------------------- cta ------------------------------- */}
         <section className="ln-cta" aria-labelledby="ln-cta-title">
           <Reveal className="ln-cta-inner">
             <p className="ln-eyebrow"><span className="ln-dot" aria-hidden="true" />The doors are open</p>
             <h2 id="ln-cta-title" className="ln-h2">Bring a camp to your ward.</h2>
             <p className="ln-lead">
-              Sign in with a demo role and run a full camp morning — publish, book, waitlist,
+              Sign in with your account and run a camp morning — publish, book, waitlist,
               check in, watch the queue move, then read the day back in analytics.
             </p>
             <div className="ln-hero-cta">
               <button type="button" className="ln-btn ln-btn--primary ln-btn--lg" onClick={enter}>
                 {user ? 'Open the dashboard' : 'Enter the platform'} <Icon name="chevronR" size={16} />
               </button>
-              <button type="button" className="ln-btn ln-btn--ghost ln-btn--lg" onClick={() => jump('alerts')}>
-                Just send me camp alerts
+              <button type="button" className="ln-btn ln-btn--ghost ln-btn--lg" onClick={() => jump('targets')}>
+                See the design targets
               </button>
             </div>
           </Reveal>
@@ -567,122 +537,10 @@ export default function Landing() {
               ? 'Connected to the live backend.'
               : mode === 'connecting'
                 ? 'Checking for the live backend…'
-                : 'Running in demo mode — simulated data is always labelled.'}
+                : 'The backend is unavailable. The platform reports the connection error instead of showing substitute data.'}
           </p>
         </div>
       </footer>
     </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* camp alert form — actually persists, actually validates                     */
-/* -------------------------------------------------------------------------- */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i;
-const STORE_KEY = 'chsc_alert_signups';
-
-function readSignups() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
-
-function AlertForm() {
-  const [email, setEmail] = useState('');
-  const [ward, setWard] = useState('Jayanagar');
-  const [status, setStatus] = useState('idle'); // idle | error | saving | done
-  const [message, setMessage] = useState('');
-  const [count, setCount] = useState(0);
-  const inputRef = useRef(null);
-
-  useEffect(() => {
-    setCount(readSignups().length);
-  }, []);
-
-  const submit = (e) => {
-    e.preventDefault();
-    const value = email.trim().toLowerCase();
-
-    if (!EMAIL_RE.test(value)) {
-      setStatus('error');
-      setMessage('That email does not look right. Try name@example.com.');
-      inputRef.current?.focus();
-      return;
-    }
-
-    setStatus('saving');
-    setMessage('Saving on this device…');
-
-    window.setTimeout(() => {
-      const list = readSignups();
-      const next = list.some((row) => row.email === value)
-        ? list
-        : [...list, { email: value, ward, savedAt: new Date().toISOString() }];
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(next));
-        setCount(next.length);
-        setStatus('done');
-        setMessage(`Saved. ${ward} is on your list — this browser will remember it.`);
-        setEmail('');
-      } catch {
-        setStatus('error');
-        setMessage('This browser blocked local storage, so nothing was saved.');
-      }
-    }, 420);
-  };
-
-  return (
-    <form className="ln-form" onSubmit={submit} noValidate>
-      <div className="ln-form-row">
-        <label className="ln-field">
-          <span>Email address</span>
-          <input
-            ref={inputRef}
-            id="alert-email"
-            type="email"
-            inputMode="email"
-            autoComplete="email"
-            placeholder="name@example.com"
-            value={email}
-            onChange={(e) => { setEmail(e.target.value); if (status === 'error') setStatus('idle'); }}
-            aria-invalid={status === 'error'}
-            aria-describedby="alert-status"
-            disabled={status === 'saving'}
-            required
-          />
-        </label>
-        <label className="ln-field ln-field--ward">
-          <span>Nearest ward</span>
-          <select value={ward} onChange={(e) => setWard(e.target.value)} disabled={status === 'saving'}>
-            {['Jayanagar', 'Basavanagudi', 'Koramangala', 'Whitefield', 'Hebbal', 'Yeshwanthpur'].map((w) => (
-              <option key={w} value={w}>{w}</option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="ln-form-actions">
-        <button type="submit" className="ln-btn ln-btn--primary" disabled={status === 'saving'}>
-          {status === 'saving' ? <span className="ln-spinner" aria-hidden="true" /> : <Icon name="send" size={15} />}
-          {status === 'saving' ? 'Saving…' : 'Notify me'}
-        </button>
-        <p className="ln-form-count">
-          {count === 1 ? '1 email on this device' : `${count} emails on this device`}
-        </p>
-      </div>
-
-      <p
-        id="alert-status"
-        className={`ln-form-status ${status === 'error' ? 'is-error' : ''} ${status === 'done' ? 'is-done' : ''}`}
-        role={status === 'error' ? 'alert' : 'status'}
-        aria-live="polite"
-      >
-        {message || 'No spam, no account. This is a local demo signup.'}
-      </p>
-    </form>
   );
 }
