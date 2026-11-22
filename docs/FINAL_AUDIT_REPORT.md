@@ -281,13 +281,10 @@ Final Git state:
 
 ```text
 11bde03 fix(frontend): make camp and slot blocks symmetrical
-424ae18 docs: finalize audit addendum for 11bde03
-
-refs/heads/main   424ae18717bf0e52e7c74ca72d3491dbd4fa3a55
-refs/heads/master 424ae18717bf0e52e7c74ca72d3491dbd4fa3a55
+<final docs-only commit>  docs: finalize audit addendum for 11bde03
 ```
 
-The final documentation commit is docs-only; the deployed application code remains `11bde03`. No force-push was used.
+`master` and `main` resolve to the same final docs-only commit; the deployed application code remains `11bde03`. No force-push was used.
 
 Final GitHub deployment evidence:
 
@@ -308,7 +305,7 @@ Final GitHub deployment evidence:
 - App: `https://adityadubeyyy87-droid.github.io/CHCS/`
 - Repository: `https://github.com/adityadubeyyy87-droid/CHCS`
 - Deployed app commit: `https://github.com/adityadubeyyy87-droid/CHCS/commit/11bde038a6031d1724fb373907f6ae94e17256a0`
-- Final repository HEAD: `https://github.com/adityadubeyyy87-droid/CHCS/commit/424ae18717bf0e52e7c74ca72d3491dbd4fa3a55`
+- Final repository HEAD: `https://github.com/adityadubeyyy87-droid/CHCS/commits/master`
 - Backend health: `https://exemplary-strength-production-fbfcb823.up.railway.app/api/health`
 
 ### Remaining honest deployment gap
