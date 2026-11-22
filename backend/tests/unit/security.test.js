@@ -2,7 +2,6 @@
 
 const {
   parseTrustProxy,
-  computeDemoAvailability,
   buildCsp,
   redactRecipient,
   redactNotificationForSocket,
@@ -16,40 +15,6 @@ describe('security helpers', () => {
     expect(parseTrustProxy('loopback')).toBe('loopback');
     expect(parseTrustProxy('2')).toBe(2);
     expect(parseTrustProxy('10.0.0.1, 10.0.0.2')).toEqual(['10.0.0.1', '10.0.0.2']);
-  });
-
-  it('production demo guardrail needs an explicit opt-in — loopback origins are not enough', () => {
-    const shippedDefaults = {
-      nodeEnv: 'production',
-      demoMode: true,
-      allowLocalDemo: undefined,
-      host: undefined,
-      allowedOrigins: ['http://localhost:5173', 'http://localhost:4000'],
-    };
-    expect(computeDemoAvailability(shippedDefaults).endpointsEnabled).toBe(false);
-
-    expect(
-      computeDemoAvailability({ ...shippedDefaults, allowLocalDemo: 'true' }).endpointsEnabled,
-    ).toBe(true);
-    expect(computeDemoAvailability({ ...shippedDefaults, host: '127.0.0.1' }).endpointsEnabled).toBe(true);
-    expect(
-      computeDemoAvailability({
-        ...shippedDefaults,
-        host: '0.0.0.0',
-        allowedOrigins: ['https://chsc.example.org'],
-      }).endpointsEnabled,
-    ).toBe(false);
-  });
-
-  it('demo endpoints stay enabled outside production', () => {
-    expect(
-      computeDemoAvailability({
-        nodeEnv: 'test',
-        demoMode: true,
-        host: '0.0.0.0',
-        allowedOrigins: ['https://chsc.example.org'],
-      }).endpointsEnabled,
-    ).toBe(true);
   });
 
   it('CSP blocks frames/eval in production and allows Vite dev websockets locally', () => {

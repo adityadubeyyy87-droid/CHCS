@@ -133,8 +133,8 @@ async function health(timeoutMs = 30000) {
 
   const status = await health();
   if (status) {
-    const mode = status.database === 'connected' ? `${C.ok}LIVE · MySQL${R}` : `${C.info}DEMO (no database)${R}`;
-    console.log(`${tag('api')} ${C.ok}ready${R} — mode: ${mode}`);
+    const dbState = status.database === 'connected' ? `${C.ok}LIVE · MySQL${R}` : `${C.info}DATABASE DISCONNECTED${R}`;
+    console.log(`${tag('api')} ${C.ok}ready${R} — database: ${dbState}`);
   } else {
     console.log(`${tag('api')} ${C.err}health check timed out — see [api] log above.${R}`);
   }

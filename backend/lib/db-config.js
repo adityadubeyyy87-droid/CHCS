@@ -5,7 +5,7 @@
  *
  * Local development uses DB_HOST/DB_PORT/DB_USER/... . Hosted providers such as
  * Railway inject a single MYSQL_URL or DATABASE_URL, so parse that when present
- * and let the explicit DB_* variables win. This keeps the local demo workflow
+ * and let the explicit DB_* variables win. This keeps the local development workflow
  * unchanged while making the same backend deployable without credentials in
  * the repository.
  */

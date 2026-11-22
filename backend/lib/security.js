@@ -6,7 +6,6 @@
  * without booting a server or a database.
  */
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const DEFAULT_MAX_SOCKET_PAYLOAD_BYTES = 64 * 1024;
 
 /**
@@ -25,43 +24,6 @@ function parseTrustProxy(raw) {
     .map((item) => item.trim())
     .filter(Boolean);
   return entries.length ? entries : false;
-}
-
-function isLoopbackHost(host) {
-  return LOOPBACK_HOSTS.has(String(host || '').trim().toLowerCase());
-}
-
-/**
- * Production demo guardrail.
- *
- * A production deployment with DEMO_MODE=true must explicitly opt in with
- * ALLOW_LOCAL_DEMO=true or a loopback HOST. The shipped all-loopback
- * FRONTEND_ORIGIN default is NOT an opt-in: relying on it let any deployment
- * that only sets NODE_ENV=production keep unauthenticated demo admin login.
- */
-function computeDemoAvailability({
-  nodeEnv = process.env.NODE_ENV,
-  demoMode = true,
-  allowLocalDemo = process.env.ALLOW_LOCAL_DEMO,
-  host = process.env.HOST,
-} = {}) {
-  const explicitOptIn = String(allowLocalDemo || '').toLowerCase() === 'true';
-  const hostText = String(host || '').trim().toLowerCase();
-  const localBinding = isLoopbackHost(hostText);
-  const isProduction = String(nodeEnv || '') === 'production';
-  const guardActive = isProduction && Boolean(demoMode) && !explicitOptIn && !localBinding;
-  return {
-    guardActive,
-    // Health/auth with real credentials always works; only demo surfaces close.
-    endpointsEnabled: Boolean(demoMode) && !guardActive,
-    reason: explicitOptIn
-      ? 'ALLOW_LOCAL_DEMO=true'
-      : localBinding
-        ? `HOST=${hostText} is loopback`
-        : isProduction
-          ? 'production demo guardrail'
-          : 'demo mode',
-  };
 }
 
 /**
@@ -136,11 +98,8 @@ function limitSocketPayload(payload, maxBytes = DEFAULT_MAX_SOCKET_PAYLOAD_BYTES
 }
 
 module.exports = {
-  LOOPBACK_HOSTS,
   DEFAULT_MAX_SOCKET_PAYLOAD_BYTES,
   parseTrustProxy,
-  isLoopbackHost,
-  computeDemoAvailability,
   buildCsp,
   redactRecipient,
   redactNotificationForSocket,

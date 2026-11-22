@@ -89,6 +89,15 @@ async function start() {
 }
 
 async function setup() {
+  if (
+    String(process.env.NODE_ENV || '').toLowerCase() === 'production' ||
+    process.env.MYSQL_URL ||
+    process.env.DATABASE_URL
+  ) {
+    throw new Error(
+      'Refusing to seed a hosted/production database. Use `db:setup` only on a local MySQL instance; production must use `setup-production` plus `bootstrap-production`.',
+    );
+  }
   const schema = fs.readFileSync(path.join(ROOT, 'database', 'schema.sql'), 'utf8');
   const conn = await mysql.createConnection(connectionOptions());
   try {

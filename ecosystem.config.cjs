@@ -1,16 +1,32 @@
 /**
- * PM2 process definition — "alive forever" on this machine.
+ * PM2 process definition for a local production-like backend.
  *
  *   npm i -g pm2
- *   npm run pm2:start
+ *   npm run build
+ *   pm2 start ecosystem.config.cjs && pm2 save
  *   pm2 startup          # then run the admin command it prints (once)
  *
  * The backend serves frontend/dist on :4000 and restarts itself if it crashes.
- * For real MySQL traffic set DEMO_MODE=false in backend/.env first.
+ * Strict live: the API uses the MySQL instance configured in backend/.env and
+ * creates no seed data. Bootstrap real staff accounts with
+ * `node scripts/bootstrap-production.js` before serving users.
+ *
+ * No secrets are stored here. JWT_SECRET is taken from the shell environment
+ * when supplied; otherwise backend/server.js reads backend/.env via dotenv.
+ * Database credentials likewise come from backend/.env, never from this file.
  */
 const path = require('path');
 
 const root = __dirname;
+
+// Pass through a shell-provided secret without ever hardcoding one. If absent,
+// the backend's dotenv loader reads backend/.env at startup.
+const env = {
+  NODE_ENV: 'production',
+  PORT: 4000,
+  HOST: '127.0.0.1',
+  ...(process.env.JWT_SECRET ? { JWT_SECRET: process.env.JWT_SECRET } : {}),
+};
 
 module.exports = {
   apps: [
@@ -25,15 +41,7 @@ module.exports = {
       max_restarts: 30,
       min_uptime: '10s',
       restart_delay: 2000,
-      env: {
-        NODE_ENV: 'production',
-        PORT: 4000,
-        // This PM2 process is a local demo bound to this machine only. The
-        // production guardrail requires an explicit loopback HOST or
-        // ALLOW_LOCAL_DEMO=true; never copy this binding to a public host.
-        HOST: '127.0.0.1',
-        // DEMO_MODE: 'false', // uncomment in production once MySQL is reachable
-      },
+      env,
       out_file: path.join(root, 'logs', 'chsc-out.log'),
       error_file: path.join(root, 'logs', 'chsc-error.log'),
       merge_logs: true,

@@ -6,8 +6,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:production": "node scripts/db.js setup-production && node scripts/bootstrap-production.js && node server.js",
     "dev": "node --watch server.js",
     "seed": "node seed.js",
+    "db:bootstrap": "node scripts/bootstrap-production.js",
+    "verify:live": "node scripts/verify-live.js",
     "db:setup": "node scripts/db.js setup",
     "db:migrate": "node scripts/db.js migrate",
     "db:start": "node scripts/db.js start",

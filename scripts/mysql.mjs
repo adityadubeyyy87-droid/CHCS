@@ -5,8 +5,9 @@
  *                           data directory on first run) in the background
  *   npm run mysql:stop    → graceful shutdown, with a forced fallback
  *
- * The UI works without MySQL (DEMO mode). This only exists so LIVE · MySQL is
- * one command away when you want the real database.
+ * This is a LOCAL DEVELOPMENT helper only. CHSC has no offline or simulation
+ * fallback; the app requires a real MySQL backend. Production uses hosted MySQL
+ * bootstrapped with migrations only (no seed data).
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -43,25 +44,28 @@ function portOpen(port = 3306, host = '127.0.0.1') {
 }
 
 function rebuildPortable(mysqld) {
-  // The portable datadir holds only seeded demo data. If InnoDB refuses to
-  // boot, the safe fix is a fresh datadir (not deleting individual undo
-  // files, which can orphan a tablespace ID). Keep the old one for forensics.
+  // The portable datadir is for local development only and may contain local
+  // fixtures. If InnoDB refuses to boot, the safe fix is a fresh datadir (not
+  // deleting individual undo files, which can orphan a tablespace ID). Keep the
+  // old one for forensics.
   if (!fs.existsSync(PORTABLE_DATA)) return false;
   const backup = `${PORTABLE_DATA}.corrupt-${Date.now()}`;
   fs.renameSync(PORTABLE_DATA, backup);
-  console.log(`Moved unbootable data to ${path.basename(backup)} and rebuilding a fresh demo database.`);
+  console.log(`Moved unbootable data to ${path.basename(backup)} and rebuilding a fresh local development database.`);
   initializePortable(mysqld);
   return true;
 }
 
-function seedPortable() {
+function setupPortable() {
+  // LOCAL ONLY: db:setup applies database/schema.sql, which includes local
+  // fixtures for development/tests. Never point this helper at hosted MySQL.
   const adjacentNpmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   const cmd = fs.existsSync(adjacentNpmCli) ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
   const args = fs.existsSync(adjacentNpmCli)
     ? [adjacentNpmCli, '--prefix', path.join(ROOT, 'backend'), 'run', 'db:setup']
     : ['--prefix', path.join(ROOT, 'backend'), 'run', 'db:setup'];
   const result = spawnSync(cmd, args, { stdio: 'inherit', shell: !fs.existsSync(adjacentNpmCli) });
-  if (result.status !== 0) throw new Error('Database seeding failed');
+  if (result.status !== 0) throw new Error('Local database setup failed');
 }
 
 function initializePortable(mysqld) {
@@ -98,7 +102,7 @@ async function boot(mysqld, args, timeoutMs = 16000) {
 async function start() {
   if (await portOpen()) { console.log('MySQL is already listening on :3306.'); return; }
   const mysqld = first(MYSQLD_CANDIDATES);
-  if (!mysqld) { console.error('mysqld.exe not found. Install MySQL 8 or stay in DEMO mode.'); process.exit(1); }
+  if (!mysqld) { console.error('mysqld.exe not found. Install MySQL 8 for local development.'); process.exit(1); }
 
   if (mysqld !== 'mysqld' && !fs.existsSync(PORTABLE_DATA)) initializePortable(mysqld);
   const portable = mysqld !== 'mysqld' && fs.existsSync(PORTABLE_DATA);
@@ -111,10 +115,10 @@ async function start() {
   if (await boot(mysqld, args)) { console.log('MySQL is up on :3306.'); return; }
 
   if (portable && rebuildPortable(mysqld) && await boot(mysqld, args)) {
-    console.log('MySQL is up on :3306 with a fresh demo database.');
+    console.log('MySQL is up on :3306 with a fresh local development database.');
     try {
-      seedPortable();
-      console.log('Demo data reseeded. Ready for LIVE · MySQL.');
+      setupPortable();
+      console.log('Local fixtures applied. Ready for LIVE · MySQL.');
     } catch (err) {
       console.error(err.message);
       process.exit(1);

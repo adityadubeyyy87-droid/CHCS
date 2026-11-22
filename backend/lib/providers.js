@@ -6,10 +6,10 @@
  * Each provider exposes `{ name, live, send(message) }`. `send` resolves with
  * `{ ok, provider, simulated, reference? }` on success and throws on failure so
  * the reminder engine can retry with backoff. With no gateway configured the
- * mock provider records the message and resolves — the rest of the pipeline
+ * sandbox provider records the attempt and resolves — the rest of the pipeline
  * (scheduling, attempts, audit) is exercised exactly as it would be in
- * production. Simulated deliveries are always flagged `simulated: true` and
- * never presented as real.
+ * production. Sandbox attempts are always flagged `simulated: true` and
+ * never presented as real provider deliveries.
  */
 
 const nodemailer = require('nodemailer');
@@ -26,8 +26,8 @@ function buildEmailProvider(env, { quiet = false } = {}) {
       live: false,
       async send({ to }) {
         // Never print or persist raw recipients / message bodies in sandbox logs.
-        if (!quiet) console.log(`[EMAIL MOCK] → ${redactRecipient(to)} (content omitted)`);
-        return { ok: true, provider: 'Email Sandbox', simulated: true, reference: `mock-email-${redactRecipient(to)}` };
+        if (!quiet) console.log(`[EMAIL SANDBOX] → ${redactRecipient(to)} (content omitted)`);
+        return { ok: true, provider: 'Email Sandbox', simulated: true, reference: `sandbox-email-${redactRecipient(to)}` };
       },
     };
   }
@@ -62,8 +62,8 @@ function buildSmsProvider(env, { quiet = false } = {}) {
       name: 'SMS Sandbox',
       live: false,
       async send({ to }) {
-        if (!quiet) console.log(`[SMS MOCK] → ${redactRecipient(to)} (content omitted)`);
-        return { ok: true, provider: 'SMS Sandbox', simulated: true, reference: `mock-sms-${redactRecipient(to)}` };
+        if (!quiet) console.log(`[SMS SANDBOX] → ${redactRecipient(to)} (content omitted)`);
+        return { ok: true, provider: 'SMS Sandbox', simulated: true, reference: `sandbox-sms-${redactRecipient(to)}` };
       },
     };
   }

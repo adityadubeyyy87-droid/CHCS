@@ -12,7 +12,7 @@
  *
  * A conference room, a college lab and a hospital campus all share one public
  * IP. A plain 10-per-IP auth limit locks out an entire room after a handful of
- * legitimate logins — during a live demo it looks like the product is broken.
+ * legitimate logins — during a live camp it looks like the product is broken.
  * Instead the auth bucket counts only *failed* attempts (skipSuccessfulRequests)
  * and is keyed per (IP + identifier), so:
  *   - one account cannot be brute-forced,
@@ -96,7 +96,7 @@ function createLimiters({ disabled = false } = {}) {
       message: 'Too many API requests. Slow down and retry shortly.',
       disabled,
     }),
-    // Only failures count, so a normal multi-role demo never trips it.
+    // Only failures count, so normal multi-role sign-ins never trip it.
     auth: limiter({
       windowMs: 15 * 60 * 1000,
       limit: 10,

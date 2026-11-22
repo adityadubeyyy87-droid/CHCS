@@ -111,7 +111,7 @@ describe('rate limiting', () => {
     const app = express();
     const limiters = createLimiters({ disabled: false });
     // The auth bucket deliberately ignores successful logins so a multi-role
-    // demo behind one IP is not locked out. Use the booking bucket here to
+    // sign-in behind one IP is not locked out. Use the booking bucket here to
     // verify the shared 429 envelope.
     app.use(limiters.booking);
     app.get('/x', (_req, res) => res.json({ ok: true }));

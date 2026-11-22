@@ -1,28 +1,40 @@
 #!/usr/bin/env node
 /* ============================================================================
- * CHSC · 20-REQUEST LAST-SEAT CONCURRENCY AUDIT
+ * CHSC · 50-REQUEST / 10-SEAT CONCURRENCY AUDIT
  * ----------------------------------------------------------------------------
- * Fires 20 truly simultaneous HTTP booking requests at a camp with exactly one
- * physical seat. The Express route runs:
+ * Fires 50 parallel booking transactions at one capacity-10 slot through the
+ * production-capable, admin-guarded `/api/admin/concurrency-proof` endpoint:
  *
- *   SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
- *   BEGIN;
  *   SELECT id, capacity, booked_count FROM slots WHERE id = ? FOR UPDATE;
- *   ...
- *   COMMIT;
+ *   ... increment or FIFO-waitlist, then COMMIT;
  *
- * Request #1 acquires the InnoDB X-lock, increments booked_count and commits.
- * Requests #2–#20 wait on the same mutex, then deterministically observe
- * booked_count == capacity and are routed into the FIFO waitlist.
+ * Ten transactions win a seat; the other forty are deterministically placed on
+ * the FIFO waitlist. Zero overbooking is asserted against the live database.
  *
- * Run (server must be running):
- *   node concurrency-test.js
+ * This is a LIVE audit: there is no demo login and no seeded identity. A real
+ * ADMIN session is read from the environment, one temporary camp is created via
+ * the real API, and only the rows this script created are removed afterwards.
+ *
+ * Run (server must be running with a live MySQL connection):
+ *   ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='...' node concurrency-test.js
  *   API_URL=http://localhost:4000 node concurrency-test.js
  * ========================================================================== */
 
+require('dotenv').config();
+
+const path = require('path');
+const mysql = require('mysql2/promise');
+const { dbConnectionOptions } = require(path.join(__dirname, 'lib', 'db-config'));
+
 const API_URL = (process.env.API_URL || 'http://localhost:4000').replace(/\/$/, '');
-const REQUEST_COUNT = 20;
-const PASSWORD = 'RaceTest@123';
+const REQUEST_COUNT = 50;
+const SEAT_COUNT = 10;
+const ADMIN_EMAIL = String(
+  process.env.ADMIN_EMAIL || process.env.BOOTSTRAP_ADMIN_EMAIL || '',
+).trim();
+const ADMIN_PASSWORD = String(
+  process.env.ADMIN_PASSWORD || process.env.BOOTSTRAP_ADMIN_PASSWORD || '',
+);
 
 const c = {
   reset: '\x1b[0m',
@@ -33,7 +45,6 @@ const c = {
   red: '\x1b[31m',
   cyan: '\x1b[36m',
   blue: '\x1b[34m',
-  white: '\x1b[37m',
 };
 
 function line(char = '─', width = 92) {
@@ -76,17 +87,28 @@ async function api(pathname, options = {}) {
   return { response, status: response.status, body };
 }
 
-async function main() {
-  const stamp = Date.now();
+function invariant(ok, label, value) {
+  console.log(`  ${ok ? `${c.green}✓` : `${c.red}✗`}${c.reset} ${pad(label, 26)}${value}`);
+  return ok;
+}
 
+async function main() {
   console.log('');
   console.log(`${c.cyan}${c.bold}${line('═')}${c.reset}`);
   console.log(`${c.cyan}${c.bold}  CHSC · PESSIMISTIC LOCK CONCURRENCY AUDIT${c.reset}`);
-  console.log(`${c.dim}  20 simultaneous bookings · one seat · SELECT ... FOR UPDATE${c.reset}`);
+  console.log(
+    `${c.dim}  ${REQUEST_COUNT} parallel booking transactions · one capacity-${SEAT_COUNT} slot · real MySQL${c.reset}`,
+  );
   console.log(`${c.cyan}${c.bold}${line('═')}${c.reset}`);
   console.log(`${c.dim}API:${c.reset} ${API_URL}`);
   console.log(`${c.dim}Time:${c.reset} ${new Date().toISOString()}`);
   console.log('');
+
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+    throw new Error(
+      'Set ADMIN_EMAIL (or BOOTSTRAP_ADMIN_EMAIL) and ADMIN_PASSWORD (or BOOTSTRAP_ADMIN_PASSWORD) for an existing admin account.',
+    );
+  }
 
   const health = await api('/api/health');
   if (health.status !== 200 || !health.body?.ok) {
@@ -94,216 +116,156 @@ async function main() {
       `Server/API is not reachable at ${API_URL}. Start it with: cd backend && node server.js`,
     );
   }
-  console.log(
-    `${c.green}✓${c.reset} API online · MySQL ${health.body.database || 'unknown'} · demo=${health.body.demoMode}`,
-  );
+  if (health.body.demoMode !== false) {
+    throw new Error('Backend must report demoMode:false; this audit never uses demo identities.');
+  }
   if (health.body.database !== 'connected') {
-    throw new Error(
-      'MySQL is offline. Start MySQL and run database/schema.sql before running this stress test.',
-    );
+    throw new Error('MySQL is offline. This audit requires a live database; no demo fallback exists.');
   }
+  console.log(
+    `${c.green}✓${c.reset} API online · MySQL ${health.body.database} · demoMode=${health.body.demoMode}`,
+  );
 
-  // Demo organizer token (seeded account), so the script needs no manual login.
-  const login = await api('/api/auth/demo-login', {
+  const login = await api('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ role: 'ORGANIZER' }),
+    body: JSON.stringify({ identifier: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
   });
-  if (login.status !== 200 || !login.body?.token) {
-    throw new Error(`Demo organizer login failed (${login.status}): ${JSON.stringify(login.body)}`);
+  if (login.status !== 200 || !login.body?.token || login.body?.user?.role !== 'ADMIN') {
+    throw new Error(`Admin login failed (${login.status}): ${JSON.stringify(login.body)}`);
   }
-  const organizerToken = login.body.token;
+  const adminToken = login.body.token;
+  console.log(`${c.green}✓${c.reset} Real admin session established for ${login.body.user.email}`);
 
-  // A one-seat camp gives us an exact last-seat race with k = 1 interval.
+  // One temporary published camp with exactly one capacity-10 slot. The proof
+  // endpoint reuses this slot and restores booked_count to zero before returning.
   const camp = await api('/api/camps', {
     method: 'POST',
-    headers: { authorization: `Bearer ${organizerToken}` },
+    headers: { authorization: `Bearer ${adminToken}` },
     body: JSON.stringify({
-      title: `CONCURRENCY TEST · ${new Date(stamp).toISOString()}`,
-      descriptionEn: 'Automated last-seat race-condition audit. Safe to cancel.',
-      descriptionKn: 'ಸ್ವಯಂಚಾಲಿತ ಸ್ಥಳ ಪರೀಕ್ಷೆ.',
-      venue: 'CMRIT Concurrency Lab',
-      address: 'CMRIT, Kundalahalli, Bengaluru',
+      title: `CONCURRENCY AUDIT · ${new Date().toISOString()}`,
+      descriptionEn: 'Automated 50-request / 10-seat row-lock audit. Removed after the run.',
+      venue: 'CHSC Concurrency Lab',
+      address: 'CMRIT, Kundalahalli, Bengaluru 560037',
       city: 'Bengaluru',
       campDate: tomorrow(),
       startTime: '09:00',
       endTime: '09:30',
       slotDurationMins: 30,
-      totalCapacity: 1,
-      physicalCapacity: 1,
+      totalCapacity: SEAT_COUNT,
       status: 'PUBLISHED',
     }),
   });
   if (camp.status !== 201 || !camp.body?.camp?.slots?.length) {
-    throw new Error(`Failed to create race camp (${camp.status}): ${JSON.stringify(camp.body)}`);
+    throw new Error(`Failed to create audit camp (${camp.status}): ${JSON.stringify(camp.body)}`);
   }
-
   const campId = camp.body.camp.id;
   const slotId = camp.body.camp.slots[0].id;
   console.log(
-    `${c.green}✓${c.reset} Race arena ready · camp ${c.bold}#${campId}${c.reset} · slot ${c.bold}#${slotId}${c.reset} · capacity ${c.bold}1${c.reset}`,
-  );
-  console.log(`${c.dim}  Registering ${REQUEST_COUNT} independent patient identities...${c.reset}`);
-
-  // Each racer needs a distinct patient identity because UNIQUE(slot_id, patient_id)
-  // intentionally prevents one patient from holding duplicate bookings.
-  const registrationResults = await Promise.all(
-    Array.from({ length: REQUEST_COUNT }, async (_, index) => {
-      const number = String(index + 1).padStart(2, '0');
-      const phone = `9${String(stamp).slice(-6)}${String(index + 1).padStart(3, '0')}`;
-      const result = await api('/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: `Race Patient ${number}`,
-          email: `race.${stamp}.${index + 1}@example.com`,
-          phone,
-          password: PASSWORD,
-          ageGroup: '18-29',
-          preferredLanguage: index % 2 === 0 ? 'en' : 'kn',
-        }),
-      });
-      return { index, number, status: result.status, token: result.body?.token, body: result.body };
-    }),
+    `${c.green}✓${c.reset} Temporary camp #${campId} · slot #${slotId} · capacity ${SEAT_COUNT}`,
   );
 
-  const racers = registrationResults.filter((row) => row.status === 201 && row.token);
-  if (racers.length !== REQUEST_COUNT) {
-    const failures = registrationResults.filter((row) => row.status !== 201);
-    throw new Error(
-      `Only ${racers.length}/${REQUEST_COUNT} patient registrations succeeded: ${JSON.stringify(failures.slice(0, 2))}`,
-    );
-  }
-  console.log(`${c.green}✓${c.reset} ${racers.length} patient sessions ready.`);
-  console.log('');
-  console.log(`${c.amber}${c.bold}⚡ FIRING ${REQUEST_COUNT} SIMULTANEOUS BOOKING REQUESTS...${c.reset}`);
-  console.log(`${c.dim}   BFF (barrier) released with Promise.all() at ${new Date().toISOString()}${c.reset}`);
-  console.log('');
-
-  const wallStart = process.hrtime.bigint();
-  const results = await Promise.all(
-    racers.map(async (racer) => {
-      const started = process.hrtime.bigint();
-      const result = await api(`/api/slots/${slotId}/book`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${racer.token}` },
-        body: JSON.stringify({
-          travelMode: racer.index % 2 === 0 ? 'WALK' : 'AUTO_BUS',
-          pledge: true,
-        }),
-      });
-      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-      return {
-        index: racer.index,
-        number: racer.number,
-        status: result.status,
-        body: result.body,
-        token: racer.token,
-        elapsedMs,
-      };
-    }),
-  );
-  const wallMs = Number(process.hrtime.bigint() - wallStart) / 1e6;
-
-  results.sort((a, b) => a.index - b.index);
-
-  // Phase 2: the 201 response is a HELD reservation. Confirm it through the
-  // public API so the audit still ends with a real CONFIRMED booking.
-  const held = results.filter((row) => row.status === 201 && row.body?.booking?.status === 'HELD');
-  const confirmations = await Promise.all(
-    held.map((row) =>
-      api(`/api/bookings/${row.body.booking.id}/confirm`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${row.token}` },
-        body: '{}',
-      }),
-    ),
-  );
-  const confirmed = confirmations.filter((row) => row.status === 200);
-
-  const http201 = results.filter((row) => row.status === 201);
-  const http202 = results.filter((row) => row.status === 202);
-  const other = results.filter((row) => ![201, 202].includes(row.status));
-
-  console.log(`${c.cyan}${c.bold}${line('═')}${c.reset}`);
-  console.log(`${c.cyan}${c.bold}  ATOMIC BOOKING AUDIT TABLE${c.reset}`);
-  console.log(`${c.cyan}${c.bold}${line('═')}${c.reset}`);
-  console.log(
-    `${c.bold}${pad('#', 4)}${pad('HTTP', 7)}${pad('OUTCOME', 15)}${pad('LATENCY', 11, 'right')}${pad('  TOKEN / WAITLIST POSITION', 49)}${c.reset}`,
-  );
-  console.log(line('─'));
-
-  for (const row of results) {
-    const color = row.status === 201 ? c.green : row.status === 202 ? c.amber : c.red;
-    const outcome =
-      row.status === 201
-        ? 'HELD→CONFIRMED'
-        : row.status === 202
-          ? 'WAITLISTED'
-          : row.status === 409
-            ? 'DUPLICATE'
-            : 'ERROR';
-    const detail =
-      row.status === 201
-        ? `booking ${row.body?.booking?.tokenNumber || '—'} · ${row.body?.booking?.qrToken || '—'}`
-        : row.status === 202
-          ? `FIFO #${row.body?.waitlist?.position ?? '—'}`
-          : `code=${row.body?.code || '—'} ${row.body?.error || ''}`.slice(0, 47);
-    console.log(
-      `${pad(row.number, 4)}${pad(row.status, 7)}${color}${pad(outcome, 15)}${c.reset}` +
-        `${pad(`${row.elapsedMs.toFixed(1)} ms`, 11, 'right')}${pad(`  ${detail}`, 49)}`,
-    );
+  let proof;
+  let cleanupAudit = null;
+  try {
+    const wallStart = process.hrtime.bigint();
+    proof = await api('/api/admin/concurrency-proof', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ campId }),
+    });
+    proof.wallMs = Number(process.hrtime.bigint() - wallStart) / 1e6;
+  } finally {
+    // Delete only the camp/slot this script created. The proof endpoint already
+    // removed its own temporary patients, bookings and waitlist entries and
+    // restored the reused slot's booked_count. Audit rows are append-only by
+    // design and are intentionally left as evidence of the run.
+    const conn = await mysql.createConnection(dbConnectionOptions({ multipleStatements: false }));
+    try {
+      await conn.query('DELETE FROM slots WHERE camp_id = ?', [campId]);
+      await conn.query('DELETE FROM camps WHERE id = ?', [campId]);
+      const [[counts]] = await conn.query(
+        `SELECT
+           (SELECT COUNT(*) FROM users WHERE email LIKE 'proof.%@invalid.local') AS tempUsers,
+           (SELECT COUNT(*) FROM bookings WHERE camp_id = ?) AS tempBookings,
+           (SELECT COUNT(*) FROM waitlist WHERE camp_id = ?) AS tempWaiters`,
+        [campId, campId],
+      );
+      cleanupAudit = counts;
+    } finally {
+      await conn.end();
+    }
   }
 
-  console.log(line('─'));
-  console.log(
-    `${c.bold}Wall-clock:${c.reset} ${wallMs.toFixed(1)} ms   ` +
-      `${c.green}201 CREATED: ${http201.length}${c.reset}   ` +
-      `${c.amber}202 WAITLISTED: ${http202.length}${c.reset}   ` +
-      `${other.length ? c.red : c.dim}other: ${other.length}${c.reset}`,
-  );
+  if (proof.status !== 200) {
+    throw new Error(`Concurrency proof failed (${proof.status}): ${JSON.stringify(proof.body)}`);
+  }
+  const p = proof.body;
+  if (Array.isArray(p.positions) && p.positions.length === REQUEST_COUNT - SEAT_COUNT) {
+    console.log(`${c.dim}  FIFO waitlist positions: ${p.positions.join(', ')}${c.reset}`);
+  }
+  console.log(`${c.dim}  Wall-clock: ${proof.wallMs.toFixed(1)} ms${c.reset}`);
   console.log('');
 
-  const finalCamp = await api(`/api/camps/${campId}`);
-  const finalSlot = finalCamp.body?.camp?.slots?.[0];
-  const overbooked = Number(finalSlot?.bookedCount || 0) > Number(finalSlot?.capacity || 0);
-  const zeroOverbooking = !overbooked && Number(finalSlot?.bookedCount) === 1;
+  const after = await api(`/api/camps/${campId}/slots`);
+  const finalSlot = after.body?.slots?.[0];
 
   console.log(`${c.blue}${c.bold}  INVARIANT VERIFICATION${c.reset}`);
-  console.log(`  ${zeroOverbooking ? `${c.green}✓` : `${c.red}✗`}${c.reset} booked_count    = ${finalSlot?.bookedCount ?? '?'} / capacity ${finalSlot?.capacity ?? '?'}`);
-  console.log(`  ${zeroOverbooking ? `${c.green}✓` : `${c.red}✗`}${c.reset} overbookings     = ${Math.max(0, Number(finalSlot?.bookedCount || 0) - Number(finalSlot?.capacity || 0))}`);
-  console.log(`  ${http202.length === 19 ? `${c.green}✓` : `${c.red}✗`}${c.reset} FIFO waitlisted  = ${http202.length}`);
-  console.log(`  ${http201.length === 1 ? `${c.green}✓` : `${c.red}✗`}${c.reset} held→confirmed  = ${confirmed.length}`);
-  console.log(`  ${c.green}✓${c.reset} isolation        = READ COMMITTED + row-level X-lock`);
-  console.log(`  ${c.green}✓${c.reset} unique guard     = UNIQUE(slot_id, patient_id)`);
-  console.log(`  ${c.green}✓${c.reset} capacity guard   = CHECK(booked_count <= capacity)`);
+  const checks = [
+    invariant(p.totalRequests === REQUEST_COUNT, 'total requests', p.totalRequests),
+    invariant(p.capacity === SEAT_COUNT, 'slot capacity', p.capacity),
+    invariant(p.confirmed === SEAT_COUNT, 'confirmed seats', p.confirmed),
+    invariant(p.waitlisted === REQUEST_COUNT - SEAT_COUNT, 'FIFO waitlisted', p.waitlisted),
+    invariant(p.errors === 0, 'transaction errors', p.errors),
+    invariant(p.zeroOverbooked === true, 'zero overbooking', p.zeroOverbooked),
+    // The `db` block is evidence captured before the endpoint's finally-cleanup.
+    invariant(p.db?.capacity === SEAT_COUNT, 'DB evidence capacity', p.db?.capacity),
+    invariant(p.db?.booked_count === SEAT_COUNT, 'DB evidence seats taken', p.db?.booked_count),
+    invariant(
+      p.db?.confirmedBookings === SEAT_COUNT,
+      'DB evidence confirmed',
+      p.db?.confirmedBookings,
+    ),
+    invariant(
+      p.db?.waitingBookings === REQUEST_COUNT - SEAT_COUNT,
+      'DB evidence waiters',
+      p.db?.waitingBookings,
+    ),
+    invariant(
+      after.status === 200 && Array.isArray(after.body?.slots) && !finalSlot,
+      'temporary camp removed',
+      'camp deleted',
+    ),
+    invariant(
+      Number(cleanupAudit?.tempUsers) === 0,
+      'temp users removed',
+      cleanupAudit?.tempUsers,
+    ),
+    invariant(
+      Number(cleanupAudit?.tempBookings) === 0,
+      'temp bookings removed',
+      cleanupAudit?.tempBookings,
+    ),
+    invariant(
+      Number(cleanupAudit?.tempWaiters) === 0,
+      'temp waiters removed',
+      cleanupAudit?.tempWaiters,
+    ),
+  ];
   console.log('');
 
-  // Graceful cleanup: hide the synthetic camp from the public schedule.
-  await api(`/api/camps/${campId}/status`, {
-    method: 'PATCH',
-    headers: { authorization: `Bearer ${organizerToken}` },
-    body: JSON.stringify({ status: 'CANCELLED' }),
-  });
-
-  const pass =
-    zeroOverbooking &&
-    http201.length === 1 &&
-    confirmed.length === 1 &&
-    http202.length === 19 &&
-    other.length === 0;
-
+  const pass = checks.every(Boolean);
   console.log(`${c.bold}${line('═')}${c.reset}`);
   if (pass) {
-    console.log(`${c.green}${c.bold}  RESULT: PASS — 1 Confirmed · 19 Safely Waitlisted · 0 Overbookings${c.reset}`);
-    console.log(`${c.dim}  The last seat was protected by an InnoDB exclusive row lock.${c.reset}`);
-    console.log(`${c.bold}${line('═')}${c.reset}`);
-    console.log('');
-    return;
+    console.log(
+      `${c.green}${c.bold}  RESULT: PASS — ${SEAT_COUNT} Confirmed · ${REQUEST_COUNT - SEAT_COUNT} Safely Waitlisted · 0 Overbookings${c.reset}`,
+    );
+    console.log(`${c.dim}  Protected by live InnoDB row locks. No synthetic rows remain.${c.reset}`);
+  } else {
+    console.log(`${c.red}${c.bold}  RESULT: FAIL — inspect the invariant table above${c.reset}`);
+    process.exitCode = 1;
   }
-
-  console.log(`${c.red}${c.bold}  RESULT: FAIL — inspect the audit table above${c.reset}`);
   console.log(`${c.bold}${line('═')}${c.reset}`);
   console.log('');
-  process.exitCode = 1;
 }
 
 main().catch((error) => {

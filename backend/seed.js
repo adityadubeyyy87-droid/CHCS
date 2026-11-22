@@ -1,10 +1,18 @@
 #!/usr/bin/env node
-// seed.js — installs database/schema.sql into MySQL and verifies the demo seed.
-// Usage:  cd backend && npm run seed
+// Local-only destructive seed installer. Never use against hosted MySQL.
 require('dotenv').config();
 const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
+
+if (
+  String(process.env.NODE_ENV || '').toLowerCase() === 'production' ||
+  process.env.MYSQL_URL ||
+  process.env.DATABASE_URL
+) {
+  console.error('Refusing to seed a hosted/production database. Use: npm run start:production');
+  process.exit(1);
+}
 
 (async () => {
   const conn = await mysql.createConnection({
@@ -27,7 +35,7 @@ const path = require('path');
     )
     .filter(Boolean);
 
-  console.log(`Applying database/schema.sql (${statements.length} statements)…`);
+  console.log(`Applying LOCAL-ONLY database/schema.sql (${statements.length} statements)…`);
   for (const stmt of statements) {
     try {
       await conn.query(stmt);
@@ -49,10 +57,8 @@ const path = require('path');
   );
   await conn.end();
 
-  console.log('Seed complete ✔');
+  console.log('Local seed complete ✔ (never run against production)');
   console.table ? console.table(counts[0]) : console.log(counts[0]);
-  console.log('Demo logins → admin@cmrit.edu / Admin@123 · all others / Password@123');
-  console.log('Or use POST /api/auth/demo-login { "role": "PATIENT" } etc.');
 })().catch((error) => {
   console.error('Seed failed:', error.message);
   process.exit(1);

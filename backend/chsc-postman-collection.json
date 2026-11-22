@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "CHSC — Community Health Screening Camp Scheduler",
-    "description": "Postman collection for the CHSC API. Covers authentication, camp management, patient booking, waitlist, attendance, staff assignment, analytics, and admin operations. All role-based endpoints are included with demo accounts.\n\nDemo accounts (seeded):\n- Admin: admin@cmrit.edu / Admin@123\n- Organizer: organizer@cmrit.edu / Password@123\n- Doctor: doctor@cmrit.edu / Password@123\n- Volunteer: volunteer@cmrit.edu / Password@123\n- Patient: patient@cmrit.edu / Password@123",
+    "description": "Postman collection for the CHSC API. Covers authentication, camp management, patient booking, waitlist, attendance, staff assignment, analytics, and admin operations. LIVE DATA ONLY: log in with real operational staff credentials or self-register as a patient; there are no demo endpoints or seeded sample records.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -42,22 +42,9 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"identifier\": \"patient@cmrit.edu\",\n  \"password\": \"Password@123\"\n}"
+              "raw": "{\n  \"identifier\": \"{{staffEmail}}\",\n  \"password\": \"{{staffPassword}}\"\n}"
             },
             "description": "Login with email/phone and password. Returns JWT token and user object."
-          }
-        },
-        {
-          "name": "POST /api/auth/demo-login",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/api/auth/demo-login",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"role\": \"PATIENT\"\n}"
-            },
-            "description": "One-click demo login for any role (PATIENT, ORGANIZER, DOCTOR, VOLUNTEER, ADMIN)."
           }
         },
         {
@@ -391,30 +378,31 @@
       ]
     },
     {
-      "name": "08. Demo Utilities",
+      "name": "08. Live Operations",
       "item": [
         {
-          "name": "POST /api/demo/rush",
+          "name": "POST /api/admin/concurrency-proof",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/api/demo/rush",
+            "url": "{{baseUrl}}/api/admin/concurrency-proof",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{organizerToken}}" }
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"campId\": 1\n}"
             },
-            "description": "Add synthetic demand to available slots (demo only)."
+            "description": "Runs 50 real InnoDB transactions against one capacity-10 slot and removes every temporary row before responding. Proof only; no sample data remains."
           }
         },
         {
-          "name": "POST /api/demo/reset-notice",
+          "name": "GET /api/admin/audit-log",
           "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}/api/demo/reset-notice",
-            "description": "Demo reset hint. Full DB reset: mysql -u root -p < database/schema.sql"
+            "method": "GET",
+            "url": "{{baseUrl}}/api/admin/audit-log?page=1&pageSize=20",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "description": "Append-only audit trail of real mutations, including CONCURRENCY_PROOF."
           }
         }
       ]
@@ -426,6 +414,8 @@
     { "key": "patientToken", "value": "" },
     { "key": "organizerToken", "value": "" },
     { "key": "doctorToken", "value": "" },
-    { "key": "adminToken", "value": "" }
+    { "key": "adminToken", "value": "" },
+    { "key": "staffEmail", "value": "" },
+    { "key": "staffPassword", "value": "" }
   ]
 }

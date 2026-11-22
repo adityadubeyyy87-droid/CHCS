@@ -36,7 +36,6 @@ const remindersEngine = require('./lib/reminders');
 const { dbConnectionOptions } = require('./lib/db-config');
 const {
   parseTrustProxy,
-  computeDemoAvailability,
   buildCsp,
   redactRecipient,
   redactNotificationForSocket,
@@ -45,9 +44,11 @@ const {
 
 const PORT = Number(process.env.PORT || 4000);
 const HOST = String(process.env.HOST || '').trim() || undefined;
-const JWT_SECRET = process.env.JWT_SECRET || 'chsc-cmrit-dev-secret-change-in-viva';
+const JWT_SECRET = String(process.env.JWT_SECRET || '').trim();
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+}
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '12h';
-const DEMO_MODE = String(process.env.DEMO_MODE || 'true') !== 'false';
 const FRONTEND_ORIGIN =
   process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4000,http://127.0.0.1:4000';
 const ALLOWED_ORIGINS = FRONTEND_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean);
@@ -66,15 +67,6 @@ const PROMOTION_HOLD_MINUTES = boundedIntEnv('PROMOTION_HOLD_MINUTES', 15, 1, 14
 const HOLD_EXPIRY_BATCH_SIZE = boundedIntEnv('HOLD_EXPIRY_BATCH_SIZE', 100, 1, 1000);
 const HOLD_EXPIRY_CRON = String(process.env.HOLD_EXPIRY_CRON || '* * * * *');
 const ACTIVE_BOOKING_STATUSES = ['HELD', 'CONFIRMED', 'CHECKED_IN', 'COMPLETED'];
-
-const DEMO_AVAILABILITY = computeDemoAvailability({
-  nodeEnv: process.env.NODE_ENV,
-  demoMode: DEMO_MODE,
-  allowLocalDemo: process.env.ALLOW_LOCAL_DEMO,
-  host: process.env.HOST,
-  allowedOrigins: ALLOWED_ORIGINS,
-});
-const DEMO_ENDPOINTS_ENABLED = DEMO_AVAILABILITY.endpointsEnabled;
 
 class ApiError extends Error {
   constructor(status, message, code = 'API_ERROR', details = null) {
@@ -100,7 +92,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // Camera is required for the optional BarcodeDetector QR scanner on Camp Day.
+  // Microphone and geolocation are never used by this application.
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
   if (req.secure && !isDevRuntime) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
@@ -302,12 +296,33 @@ function publicBooking(row) {
     checkedInAt: row.checked_in_at,
     cancelledAt: row.cancelled_at,
     waitlistPosition: row.waitlist_position !== undefined ? Number(row.waitlist_position) : undefined,
-    campTitle: row.camp_title || undefined,
+    campTitle: row.camp_title || row.title || undefined,
     campDate: row.camp_date || undefined,
     venue: row.venue || undefined,
+    address: row.address || undefined,
     startTime: row.start_time || undefined,
     endTime: row.end_time || undefined,
   };
+}
+
+/** Attach real camp/slot context to a booking row before it is serialised. */
+function withBookingContext(row, camp, slot) {
+  if (!row) return row;
+  return {
+    ...row,
+    camp_title: camp?.camp_title || camp?.title || row.camp_title || row.title,
+    camp_date: camp?.camp_date || row.camp_date,
+    venue: camp?.venue || row.venue,
+    address: camp?.address || row.address,
+    start_time: slot?.start_time || row.start_time,
+    end_time: slot?.end_time || row.end_time,
+  };
+}
+
+/** Only the minimum promoted-patient identity is safe for a REST response. */
+function publicPromotedPatient(patient) {
+  if (!patient) return null;
+  return { id: patient.id, name: patient.name };
 }
 
 function publicNotification(row) {
@@ -322,6 +337,7 @@ function publicNotification(row) {
     message: row.message,
     provider: row.provider,
     status: row.status,
+    simulated: String(row.status || '').toUpperCase() === 'SIMULATED',
     sentAt: row.sent_at,
   };
 }
@@ -476,7 +492,7 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
       recipient: patient.phone,
       message,
       provider: providerFor('SMS'),
-      status: 'SIMULATED',
+      status: 'PENDING',
       payload: { slotId: slot.id, token: booking.qr_token },
     }),
     await insertNotification(conn, {
@@ -488,7 +504,7 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
       subject: `Your health camp pass · ${booking.token_number}`,
       message,
       provider: providerFor('EMAIL'),
-      status: 'SIMULATED',
+      status: 'PENDING',
       payload: { slotId: slot.id, token: booking.qr_token },
     }),
   ];
@@ -575,7 +591,7 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
       recipient: waiter.phone,
       message,
       provider: providerFor('SMS'),
-      status: 'SIMULATED',
+      status: 'PENDING',
       payload: { fromWaitlistId: waiter.id, slotId, holdExpiresAt: toIso(booking.hold_expires_at) },
     }),
     await insertNotification(conn, {
@@ -587,7 +603,7 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
       subject: `Claim your health camp pass ${booking.token_number}`,
       message,
       provider: providerFor('EMAIL'),
-      status: 'SIMULATED',
+      status: 'PENDING',
       payload: { fromWaitlistId: waiter.id, slotId, holdExpiresAt: toIso(booking.hold_expires_at) },
     }),
   ];
@@ -654,7 +670,7 @@ async function releaseReservedSeat(
         recipient: patient.phone,
         message,
         provider: providerFor('SMS'),
-        status: 'SIMULATED',
+        status: 'PENDING',
         payload: { reason },
       }),
     );
@@ -860,14 +876,6 @@ function requireRole(...roles) {
   };
 }
 
-/** Explicit guard for every /api/demo/* surface (and demo admin login). */
-function requireDemoMode(_req, _res, next) {
-  if (!DEMO_ENDPOINTS_ENABLED) {
-    return next(new ApiError(403, 'Demo endpoints are disabled.', 'DEMO_DISABLED'));
-  }
-  return next();
-}
-
 /* ---------------------------------------------------------------------------
  * Reminder gateway (Nodemailer + Fast2SMS/Twilio sandbox + Socket.io mirror)
  * ------------------------------------------------------------------------- */
@@ -884,15 +892,26 @@ if (process.env.SMTP_HOST) {
   });
 }
 
+function providerMeta(channel) {
+  const provider = channel === 'SMS' ? providers.sms : providers.email;
+  return {
+    name: provider.name,
+    live: Boolean(provider.live),
+    status: provider.live ? 'PENDING' : 'SIMULATED',
+    simulated: !provider.live,
+  };
+}
+
 function providerFor(channel) {
-  if (channel === 'SMS') {
-    return process.env.SMS_PROVIDER || 'Fast2SMS Sandbox';
-  }
-  return 'Nodemailer Sandbox';
+  return providerMeta(channel).name;
 }
 
 async function insertNotification(conn, data) {
   const payload = data.payload ? JSON.stringify(data.payload) : null;
+  const meta = providerMeta(data.channel);
+  // A configured real provider starts PENDING and is updated to SENT/FAILED by
+  // the delivery attempt. With no credentials it stays honestly SIMULATED.
+  const status = meta.live ? 'PENDING' : 'SIMULATED';
   const [result] = await conn.query(
     `INSERT INTO notifications_log
        (booking_id, user_id, channel, type, recipient, subject, message, provider, status, payload)
@@ -905,8 +924,8 @@ async function insertNotification(conn, data) {
       data.recipient,
       data.subject || null,
       data.message,
-      data.provider || providerFor(data.channel),
-      data.status || 'SIMULATED',
+      data.provider || meta.name,
+      status,
       payload,
     ],
   );
@@ -919,10 +938,10 @@ async function insertNotification(conn, data) {
     recipient: data.recipient,
     subject: data.subject || null,
     message: data.message,
-    provider: data.provider || providerFor(data.channel),
-    status: data.status || 'SIMULATED',
+    provider: data.provider || meta.name,
+    status,
     sentAt: new Date().toISOString(),
-    simulated: true,
+    simulated: meta.simulated,
   };
 }
 
@@ -1299,7 +1318,7 @@ async function buildAnalytics() {
     capacity: Number(camp.slot_capacity || camp.total_capacity || 0),
     date: camp.camp_date,
     status: camp.status,
-    provenance: 'seeded',
+    provenance: 'live-mysql',
   }));
 
   const attendanceVsNoShow = campRows
@@ -1310,7 +1329,7 @@ async function buildAnalytics() {
         camp: camp.venue.split(' ')[0],
         attended: Number(counts.CHECKED_IN || 0) + Number(counts.COMPLETED || 0),
         noShow: Number(counts.NO_SHOW || 0),
-        provenance: 'seeded',
+        provenance: 'live-mysql',
       };
     });
 
@@ -1321,7 +1340,7 @@ async function buildAnalytics() {
       : 0,
     booked: Number(row.booked),
     capacity: Number(row.capacity),
-    provenance: 'seeded',
+    provenance: 'live-mysql',
   }));
 
   let attended = 0;
@@ -1339,10 +1358,6 @@ async function buildAnalytics() {
       totalRegistered: Number(patientCount.total),
       attendanceRate: Number(attendanceRate.toFixed(1)),
       waitlistPromotions: Number(promotedCount.total),
-      // Transparent label: modelled uplift, not a measured causal inference.
-      noShowReductionPct: 27,
-      noShowReductionBasis:
-        'Modelled 25–30% uplift from implementation intentions + timed reminders (Gollwitzer, 1999; meta-analytic range).',
       totalBookings: statusRows.reduce((sum, row) => sum + Number(row.total), 0),
       noShowRate: Number(noShowRate.toFixed(1)),
     },
@@ -1353,8 +1368,8 @@ async function buildAnalytics() {
       generatedAt: new Date().toISOString(),
       engine: 'MySQL aggregate queries',
       isolation: 'READ COMMITTED + explicit row locks for writes',
-      provenance: 'seeded',
-      note: 'All analytics values are derived from seeded demonstration data. No field-collected patient data is present.',
+      provenance: 'live-mysql',
+      note: 'All analytics values are computed from live database rows. Empty periods return zero rather than invented figures.',
     },
   };
 }
@@ -1445,7 +1460,7 @@ app.get('/api/health', async (_req, res) => {
   res.status(db ? 200 : 503).json({
     ok: db,
     service: 'CHSC API',
-    demoMode: DEMO_MODE,
+    demoMode: false,
     database: db ? 'connected' : 'offline',
     dbVersion,
     socket: 'ready',
@@ -1532,34 +1547,6 @@ app.post(
   }),
 );
 
-app.post(
-  '/api/auth/demo-login',
-  asyncHandler(async (req, res) => {
-    if (!DEMO_ENDPOINTS_ENABLED) throw new ApiError(403, 'Demo login is disabled.', 'DEMO_DISABLED');
-    const role = String(req.body?.role || 'PATIENT').toUpperCase();
-    if (!['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'].includes(role)) {
-      throw new ApiError(400, 'Unknown demo role.', 'INVALID_ROLE');
-    }
-    const preferredEmail =
-      role === 'PATIENT'
-        ? 'patient@cmrit.edu'
-        : role === 'ADMIN'
-          ? 'admin@cmrit.edu'
-          : role === 'ORGANIZER'
-            ? 'organizer@cmrit.edu'
-            : role === 'DOCTOR'
-              ? 'doctor@cmrit.edu'
-              : 'volunteer@cmrit.edu';
-    const [rows] = await pool.query(
-      'SELECT * FROM users WHERE role = ? ORDER BY (email = ?) DESC, id ASC LIMIT 1',
-      [role, preferredEmail],
-    );
-    if (!rows.length) throw new ApiError(404, 'No demo user for this role.', 'DEMO_USER_MISSING');
-    const user = safeUser(rows[0]);
-    res.json({ user, token: signToken(user), demo: true });
-  }),
-);
-
 app.get(
   '/api/auth/me',
   authenticate,
@@ -1573,11 +1560,12 @@ app.get(
 );
 
 /* ---------------------------------------------------------------------------
- * PUBLIC CAMP READ APIs + DEMO BOOTSTRAP
+ * PUBLIC CAMP READ APIs
  * ------------------------------------------------------------------------- */
 
 app.get(
   '/api/camps',
+  optionalAuth,
   asyncHandler(async (req, res) => {
     const paging = parsePagination(req.query);
     if (!paging) {
@@ -1587,10 +1575,21 @@ app.get(
         'INVALID_PAGINATION',
       );
     }
-    const { camps, total } = await loadCampCollection(
-      paging.requested ? { limit: paging.limit, offset: paging.offset } : {},
-    );
-    res.json({ camps, pagination: buildPagination(total, paging) });
+    // DRAFT camps are internal until an organiser publishes them. Only the
+    // authenticated management workspace may ask for that scope.
+    const manageScope = String(req.query.scope || '').toLowerCase() === 'manage';
+    if (manageScope && (!req.user || !['ORGANIZER', 'ADMIN'].includes(req.user.role))) {
+      throw new ApiError(403, 'You cannot view unpublished camps.', 'MANAGE_SCOPE_FORBIDDEN');
+    }
+    const options = manageScope
+      ? { where: `c.status IN ('DRAFT','PUBLISHED','COMPLETED')` }
+      : {};
+    if (paging.requested) {
+      options.limit = paging.limit;
+      options.offset = paging.offset;
+    }
+    const { camps, total } = await loadCampCollection(options);
+    res.json({ camps, pagination: buildPagination(total, paging), scope: manageScope ? 'manage' : 'public' });
   }),
 );
 
@@ -1621,29 +1620,6 @@ app.get(
   '/api/queue/:campId',
   asyncHandler(async (req, res) => {
     res.json({ queue: await getQueueSnapshot(req.params.campId) });
-  }),
-);
-
-app.get(
-  '/api/demo/bootstrap',
-  requireDemoMode,
-  asyncHandler(async (_req, res) => {
-    const camps = await loadAllCampBundles();
-    const [notificationRows] = await pool.query(
-      'SELECT * FROM notifications_log ORDER BY sent_at DESC, id DESC LIMIT 30',
-    );
-    const analytics = await buildAnalytics();
-    const advisor = await buildCapacityAdvisor(100, ALPHA_MAX);
-    const queue = await getQueueSnapshot(camps[0]?.id || 1);
-    res.json({
-      source: 'mysql',
-      camps,
-      notifications: notificationRows.map(publicNotification),
-      analytics,
-      advisor,
-      queue,
-      generatedAt: new Date().toISOString(),
-    });
   }),
 );
 
@@ -2066,7 +2042,7 @@ app.post(
       const slot = slotRows[0];
 
       const [campRows] = await conn.query(
-        'SELECT id, title, venue, camp_date, status FROM camps WHERE id = ?',
+        'SELECT id, title, venue, address, camp_date, status FROM camps WHERE id = ?',
         [slot.camp_id],
       );
       if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
@@ -2094,6 +2070,8 @@ app.post(
         return {
           kind: 'duplicate',
           booking: existingRows[0],
+          camp,
+          slot,
           message: 'You already hold a booking for this slot.',
         };
       }
@@ -2111,6 +2089,8 @@ app.post(
         return {
           kind: 'camp_duplicate',
           booking: campActive[0],
+          camp,
+          slot,
           message: 'You already have an active booking at this camp. Reschedule it instead.',
         };
       }
@@ -2150,7 +2130,7 @@ app.post(
           recipient: patient.phone,
           message,
           provider: providerFor('SMS'),
-          status: 'SIMULATED',
+          status: 'PENDING',
           payload: { slotId, position: waitRow.position },
         });
         const email = await insertNotification(conn, {
@@ -2162,7 +2142,7 @@ app.post(
           subject: `Waitlist #${waitRow.position} · ${camp.title}`,
           message,
           provider: providerFor('EMAIL'),
-          status: 'SIMULATED',
+          status: 'PENDING',
           payload: { slotId, position: waitRow.position },
         });
 
@@ -2229,13 +2209,13 @@ app.post(
 
     if (outcome.kind === 'duplicate') {
       throw new ApiError(409, outcome.message, 'DUPLICATE_BOOKING', {
-        booking: publicBooking(outcome.booking),
+        booking: publicBooking(withBookingContext(outcome.booking, outcome.camp, outcome.slot)),
       });
     }
 
     if (outcome.kind === 'camp_duplicate') {
       throw new ApiError(409, outcome.message, 'ALREADY_BOOKED_IN_CAMP', {
-        booking: publicBooking(outcome.booking),
+        booking: publicBooking(withBookingContext(outcome.booking, outcome.camp, outcome.slot)),
       });
     }
 
@@ -2261,7 +2241,7 @@ app.post(
       });
     }
 
-    const payload = publicBooking(outcome.booking);
+    const payload = publicBooking(withBookingContext(outcome.booking, outcome.camp, outcome.slot));
     emitBounded(io, 'booking:held', { booking: safeSocketBooking(outcome.booking), at: new Date().toISOString() });
     return res.status(201).json({
       status: 'HELD',
@@ -2286,7 +2266,7 @@ app.post(
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
         `SELECT b.*, s.capacity, s.booked_count, s.start_time, s.end_time,
-                c.title, c.venue, c.camp_date, c.status AS camp_status,
+                c.title, c.title AS camp_title, c.venue, c.address, c.camp_date, c.status AS camp_status,
                 p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
          FROM bookings b
          JOIN slots s ON s.id = b.slot_id
@@ -2391,7 +2371,7 @@ app.patch(
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
         `SELECT b.*, s.capacity, s.booked_count, s.start_time, s.end_time,
-                c.title, c.venue, c.camp_date,
+                c.title, c.title AS camp_title, c.venue, c.address, c.camp_date,
                 p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
          FROM bookings b
          JOIN slots s ON s.id = b.slot_id
@@ -2418,7 +2398,7 @@ app.patch(
           ...released,
           cancelledBooking: released.releasedBooking,
           promotedBooking: released.promoted?.booking || null,
-          promotedPatient: released.promoted?.patient || null,
+          promotedPatient: publicPromotedPatient(released.promoted?.patient),
           autoPromoted: Boolean(released.promoted),
         };
       }
@@ -2457,7 +2437,7 @@ app.patch(
           recipient: booking.patient_phone,
           message: cancelMessage,
           provider: providerFor('SMS'),
-          status: 'SIMULATED',
+          status: 'PENDING',
           payload: { autoPromoted: Boolean(promoted) },
         }),
       );
@@ -2466,7 +2446,7 @@ app.patch(
       return {
         cancelledBooking: { ...booking, status: 'CANCELLED' },
         promotedBooking: promoted?.booking || null,
-        promotedPatient: promoted?.patient || null,
+        promotedPatient: publicPromotedPatient(promoted?.patient),
         autoPromoted: Boolean(promoted),
         notifications,
         audits: [
@@ -2507,7 +2487,7 @@ app.patch(
       booking: publicBooking(outcome.cancelledBooking),
       autoPromoted: outcome.autoPromoted,
       promotedBooking: outcome.autoPromoted ? publicBooking(outcome.promotedBooking) : null,
-      promotedPatient: outcome.autoPromoted ? outcome.promotedPatient : null,
+      promotedPatient: outcome.autoPromoted ? publicPromotedPatient(outcome.promotedPatient) : null,
     });
   }),
 );
@@ -2682,7 +2662,8 @@ app.post(
 
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
-        `SELECT b.*, s.start_time, s.end_time, c.title, c.venue, c.camp_date,
+        `SELECT b.*, s.start_time, s.end_time, c.title, c.title AS camp_title,
+                c.venue, c.address, c.camp_date,
                 p.name AS patient_name, p.phone, p.email
          FROM bookings b
          JOIN slots s ON s.id = b.slot_id
@@ -2736,8 +2717,9 @@ app.post(
     const payload = {
       ...publicBooking(outcome.booking),
       patientName: outcome.booking.patient_name,
-      campTitle: outcome.booking.title,
+      campTitle: outcome.booking.camp_title || outcome.booking.title,
       venue: outcome.booking.venue,
+      address: outcome.booking.address,
       startTime: outcome.booking.start_time,
       endTime: outcome.booking.end_time,
     };
@@ -3568,327 +3550,178 @@ app.delete(
 );
 
 /* ---------------------------------------------------------------------------
- * DEMO OPERATIONS (no destructive SQL; safe localhost helpers)
+ * LIVE CONCURRENCY PROOF — 50 simultaneous transactions vs one capacity-10 slot
+ * Uses real InnoDB SELECT ... FOR UPDATE row locks. The temporary identities and
+ * rows created for the race are removed before the response is returned, so the
+ * result is real evidence without leaving seeded/demo data in the database.
  * ------------------------------------------------------------------------- */
 
 app.post(
-  '/api/demo/rush',
-  requireDemoMode,
+  '/api/admin/concurrency-proof',
   authenticate,
   requireRole('ORGANIZER', 'ADMIN'),
   asyncHandler(async (req, res) => {
-    const campId = Number(req.body?.campId || 1);
-    const [slots] = await pool.query(
-      `SELECT id FROM slots WHERE camp_id = ? AND booked_count < capacity
-       ORDER BY slot_index LIMIT 5`,
-      [campId],
-    );
-    const updated = [];
-    for (const slot of slots) {
-      const increment = Math.min(1, Math.ceil(Math.random() * 2));
-      await pool.query(
-        `UPDATE slots SET booked_count = LEAST(capacity, booked_count + ?) WHERE id = ?`,
-        [increment, slot.id],
-      );
-      updated.push(slot.id);
-    }
-    await auditLog({
-      actorId: req.user.id,
-      actorName: req.user.name,
-      action: 'DEMO_RUSH',
-      targetType: 'camp',
-      targetId: campId,
-      before: null,
-      after: { slotsTouched: updated.length },
-    });
-    emitBounded(io, 'demo:rush', { campId, slots: updated, at: new Date().toISOString() });
-    res.json({
-      campId,
-      slotsTouched: updated,
-      note: 'Demo rush adds synthetic demand to available slots only; capacity check constraint is preserved.',
-    });
-  }),
-);
-
-app.post(
-  '/api/demo/reset-notice',
-  requireDemoMode,
-  asyncHandler(async (_req, res) => {
-    res.json({
-      reset: 'Frontend local-state reset is authoritative for offline screenshots.',
-      sqlHint:
-        'For a full database reset, run: mysql -u root -p < database/schema.sql',
-    });
-  }),
-);
-
-/* ---------------------------------------------------------------------------
- * LIVE CONCURRENCY PROOF — 50 simultaneous bookings vs one capacity-10 slot
- * Runs the race inside the server (no HTTP rate limits) using real
- * SELECT ... FOR UPDATE transactions. Returns the live result for the demo page.
- * ------------------------------------------------------------------------- */
-
-app.post(
-  '/api/demo/concurrency',
-  requireDemoMode,
-  authenticate,
-  requireRole('ORGANIZER', 'ADMIN'),
-  asyncHandler(async (req, res) => {
-    const campId = Number(req.body?.campId || 1);
+    const campId = Number(req.body?.campId);
+    if (!Number.isInteger(campId)) throw new ApiError(400, 'A valid campId is required.', 'VALIDATION');
     const [camps] = await pool.query('SELECT id, status FROM camps WHERE id = ?', [campId]);
     if (!camps.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
-    if (camps[0].status !== 'PUBLISHED') throw new ApiError(409, 'Camp must be PUBLISHED for the demo.', 'CAMP_NOT_OPEN');
+    if (camps[0].status !== 'PUBLISHED') {
+      throw new ApiError(409, 'Camp must be PUBLISHED for the proof.', 'CAMP_NOT_OPEN');
+    }
 
-    // Find or create an empty capacity-10 slot for the race.
-    let [slots] = await pool.query(
+    const [slots] = await pool.query(
       `SELECT id, capacity, booked_count FROM slots
        WHERE camp_id = ? AND capacity = 10 AND booked_count = 0
        ORDER BY id LIMIT 1`,
       [campId],
     );
     let slotId;
+    let createdSlot = false;
     if (!slots.length) {
-      const maxIdx = await pool.query('SELECT COALESCE(MAX(slot_index), 0) AS m FROM slots WHERE camp_id = ?', [campId]);
-      const nextIndex = Number(maxIdx[0][0].m) + 1;
+      const [[maxIdx]] = await pool.query(
+        'SELECT COALESCE(MAX(slot_index), 0) AS m FROM slots WHERE camp_id = ?',
+        [campId],
+      );
       const [insert] = await pool.query(
         `INSERT INTO slots (camp_id, slot_index, start_time, end_time, capacity, booked_count)
          VALUES (?, ?, '08:00:00', '08:30:00', 10, 0)`,
-        [campId, nextIndex],
+        [campId, Number(maxIdx.m) + 1],
       );
       slotId = insert.insertId;
+      createdSlot = true;
     } else {
       slotId = slots[0].id;
     }
 
-    // Create 50 distinct patients.
+    const runId = Date.now().toString(36);
     const patients = [];
-    for (let i = 0; i < 50; i += 1) {
-      const email = `race.${Date.now()}.${i}@test.local`;
-      const phone = `9${String(Math.floor(1e8 + Math.random() * 9e8))}`;
-      const hash = await bcrypt.hash('Race@1234', 4);
-      const [result] = await pool.query(
-        `INSERT INTO users (name, email, phone, password_hash, role)
-         VALUES (?, ?, ?, ?, 'PATIENT')`,
-        [`Race Patient ${i + 1}`, email, phone, hash],
-      );
-      patients.push(result.insertId);
-    }
+    const originalBookedCount = Number(slots.length ? slots[0].booked_count : 0);
+    let payload;
+    try {
+      for (let i = 0; i < 50; i += 1) {
+        const hash = await bcrypt.hash(`Proof@${runId}!${i}`, 4);
+        const [result] = await pool.query(
+          `INSERT INTO users (name, email, phone, password_hash, role)
+           VALUES (?, ?, ?, ?, 'PATIENT')`,
+          [
+            `Verification Patient ${i + 1}`,
+            `proof.${runId}.${i}@invalid.local`,
+            String(7000000000 + (Date.now() % 1000000) * 100 + i),
+            hash,
+          ],
+        );
+        patients.push(result.insertId);
+      }
 
-    // Run 50 concurrent booking transactions against the same slot row.
-    const results = await Promise.all(
-      patients.map((patientId) =>
-        withTransaction(async (conn) => {
-          const [rows] = await conn.query(
-            `SELECT id, camp_id, capacity, booked_count FROM slots WHERE id = ? FOR UPDATE`,
-            [slotId],
-          );
-          if (!rows.length) return { status: 404, patientId };
-          const slot = rows[0];
-          if (Number(slot.booked_count) >= Number(slot.capacity)) {
-            const [u] = await conn.query('SELECT phone FROM users WHERE id = ?', [patientId]);
-            const recipientPhone = u.length ? u[0].phone : '0000000000';
-            const [w] = await conn.query(
-              `SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+      const results = await Promise.all(
+        patients.map((patientId) =>
+          withTransaction(async (conn) => {
+            const [rows] = await conn.query(
+              'SELECT id, camp_id, capacity, booked_count FROM slots WHERE id = ? FOR UPDATE',
               [slotId],
             );
-            const position = Number(w[0].n) + 1;
-            await conn.query(
-              `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
-               VALUES (?, ?, ?, ?, 'WAITING')`,
-              [slotId, campId, patientId, position],
+            if (!rows.length) return { status: 404, patientId };
+            const slot = rows[0];
+            if (Number(slot.booked_count) >= Number(slot.capacity)) {
+              const [w] = await conn.query(
+                `SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+                [slotId],
+              );
+              const position = Number(w[0].n) + 1;
+              await conn.query(
+                `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
+                 VALUES (?, ?, ?, ?, 'WAITING')`,
+                [slotId, campId, patientId, position],
+              );
+              return { status: 202, patientId, position };
+            }
+            await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?', [slotId]);
+            const [bookingInsert] = await conn.query(
+              `INSERT INTO bookings
+                 (slot_id, camp_id, patient_id, qr_token, token_number, status, hold_expires_at)
+               VALUES (?, ?, ?, ?, ?, 'HELD', DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+              [
+                slotId,
+                campId,
+                patientId,
+                `CHSC-PROOF-${crypto.randomInt(100000, 999999)}-${patientId}`,
+                `P-${crypto.randomInt(100000, 999999)}`,
+                BOOKING_HOLD_MINUTES,
+              ],
             );
             await conn.query(
-              `INSERT INTO notifications_log
-               (booking_id, user_id, channel, type, recipient, message, provider, status)
-               VALUES (NULL, ?, 'SMS', 'WAITLIST_JOINED', ?, ?, 'Demo', 'SIMULATED')`,
-              [patientId, recipientPhone, `Waitlist #${position}`],
+              `UPDATE bookings SET status = 'CONFIRMED', hold_expires_at = NULL WHERE id = ?`,
+              [bookingInsert.insertId],
             );
-            return { status: 202, patientId, position };
-          }
-          await conn.query(`UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?`, [slotId]);
-          const [u] = await conn.query('SELECT phone FROM users WHERE id = ?', [patientId]);
-          const recipientPhone = u.length ? u[0].phone : '0000000000';
-          const qr = `CHSC-BLR-${crypto.randomInt(100000, 999999)}`;
-          const tn = `A-${crypto.randomInt(100000, 999999)}`;
-          const [bookingInsert] = await conn.query(
-            `INSERT INTO bookings
-               (slot_id, camp_id, patient_id, qr_token, token_number, status, hold_expires_at)
-             VALUES (?, ?, ?, ?, ?, 'HELD', DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
-            [slotId, campId, patientId, qr, tn, BOOKING_HOLD_MINUTES],
-          );
-          // Same lock, same transaction: HELD → CONFIRMED proves the two-phase
-          // hold flow without changing the proof's observable 10/40/0 result.
-          await conn.query(
-            `UPDATE bookings SET status = 'CONFIRMED', hold_expires_at = NULL WHERE id = ?`,
-            [bookingInsert.insertId],
-          );
-          await conn.query(
-            `INSERT INTO notifications_log
-             (booking_id, user_id, channel, type, recipient, message, provider, status)
-             VALUES (?, ?, 'SMS', 'BOOKING_CONFIRMED', ?, ?, 'Demo', 'SIMULATED')`,
-            [bookingInsert.insertId, patientId, recipientPhone, `Confirmed ${tn}`],
-          );
-          return { status: 201, patientId };
-        }),
-      ),
-    );
+            return { status: 201, patientId, bookingId: bookingInsert.insertId };
+          }),
+        ),
+      );
 
-    const confirmed = results.filter((r) => r.status === 201);
-    const waitlisted = results.filter((r) => r.status === 202);
-    const errors = results.filter((r) => r.status >= 500);
+      const confirmed = results.filter((r) => r.status === 201);
+      const waitlisted = results.filter((r) => r.status === 202);
+      const errors = results.filter((r) => r.status >= 500);
+      const positions = waitlisted.map((r) => r.position).sort((a, b) => a - b);
 
-    const [[slotRow]] = await pool.query(
-      'SELECT booked_count, capacity FROM slots WHERE id = ?',
-      [slotId],
-    );
-    const [[confirmedCount]] = await pool.query(
-      `SELECT COUNT(*) AS total FROM bookings WHERE slot_id = ? AND status = 'CONFIRMED'`,
-      [slotId],
-    );
-    const [[waitingCount]] = await pool.query(
-      `SELECT COUNT(*) AS total FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
-      [slotId],
-    );
-    const positions = waitlisted.map((r) => r.position).sort((a, b) => a - b);
-
-    await auditLog({
-      actorId: req.user.id,
-      actorName: req.user.name,
-      action: 'DEMO_CONCURRENCY',
-      targetType: 'camp',
-      targetId: campId,
-      before: null,
-      after: { slotId, confirmed: confirmed.length, waitlisted: waitlisted.length },
-    });
-
-    return res.json({
-      slotId,
-      capacity: 10,
-      totalRequests: 50,
-      confirmed: confirmed.length,
-      waitlisted: waitlisted.length,
-      errors: errors.length,
-      positions,
-      db: {
-        booked_count: Number(slotRow.booked_count),
-        capacity: Number(slotRow.capacity),
-        confirmedBookings: Number(confirmedCount.total),
-        waitingBookings: Number(waitingCount.total),
-      },
-      zeroOverbooked:
+      const [[slotRow]] = await pool.query(
+        'SELECT booked_count, capacity FROM slots WHERE id = ?',
+        [slotId],
+      );
+      const [[confirmedCount]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM bookings WHERE slot_id = ? AND status = 'CONFIRMED'`,
+        [slotId],
+      );
+      const [[waitingCount]] = await pool.query(
+        `SELECT COUNT(*) AS total FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+        [slotId],
+      );
+      const zeroOverbooked =
         Number(slotRow.booked_count) <= 10 &&
         Number(confirmedCount.total) === 10 &&
-        Number(waitingCount.total) === 40,
-    });
-  }),
-);
+        Number(waitingCount.total) === 40 &&
+        errors.length === 0;
 
-/* ---------------------------------------------------------------------------
- * DEMO MODE SCENARIO LOADER — non-destructive, repeatable scenario setup
- * Idempotent upserts (never DELETE). Scenarios: full-slot, waitlist-active, camp-day.
- * ------------------------------------------------------------------------- */
+      payload = {
+        slotId,
+        capacity: 10,
+        totalRequests: 50,
+        confirmed: confirmed.length,
+        waitlisted: waitlisted.length,
+        errors: errors.length,
+        positions,
+        db: {
+          booked_count: Number(slotRow.booked_count),
+          capacity: Number(slotRow.capacity),
+          confirmedBookings: Number(confirmedCount.total),
+          waitingBookings: Number(waitingCount.total),
+        },
+        zeroOverbooked,
+        source: 'Live MySQL transactions (SELECT ... FOR UPDATE)',
+      };
 
-app.post(
-  '/api/demo/scenario/:name',
-  requireDemoMode,
-  authenticate,
-  requireRole('ORGANIZER', 'ADMIN'),
-  asyncHandler(async (req, res) => {
-    const name = String(req.params.name || '');
-    const [camp] = await pool.query(
-      `SELECT id, title, status, total_capacity, physical_capacity, start_time, end_time, camp_date
-       FROM camps WHERE status = 'PUBLISHED' ORDER BY id LIMIT 1`,
-    );
-    if (!camp.length) throw new ApiError(404, 'No published camp found for scenario.', 'NO_PUBLISHED_CAMP');
-    const campId = camp[0].id;
-
-    if (name === 'full-slot') {
-      // Fill the first slot to capacity with bookings from seeded patients
-      const [[slot]] = await pool.query(
-        `SELECT id, capacity, booked_count FROM slots WHERE camp_id = ? ORDER BY slot_index LIMIT 1`,
-        [campId],
-      );
-      if (!slot) throw new ApiError(404, 'No slot found.', 'NO_SLOT');
-      const patients = await pool.query('SELECT id FROM users WHERE role = "PATIENT" LIMIT 30');
-      let booked = Number(slot.booked_count || 0);
-      for (const p of patients[0]) {
-        if (booked >= Number(slot.capacity)) break;
-        const [existing] = await pool.query(
-          'SELECT id FROM bookings WHERE slot_id = ? AND patient_id = ? AND status = "CONFIRMED"',
-          [slot.id, p.id],
-        );
-        if (existing.length) continue;
-        await pool.query(
-          `INSERT INTO bookings (slot_id, camp_id, patient_id, qr_token, token_number, status, booked_at)
-           VALUES (?, ?, ?, ?, ?, 'CONFIRMED', NOW())`,
-          [slot.id, campId, p.id, `CHSC-BLR-${crypto.randomInt(100000, 999999)}`, `A-${crypto.randomInt(100000, 999999)}`],
-        );
-        await pool.query(`UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?`, [slot.id]);
-        booked += 1;
-      }
       await auditLog({
         actorId: req.user.id,
         actorName: req.user.name,
-        action: 'DEMO_SCENARIO',
+        action: 'CONCURRENCY_PROOF',
         targetType: 'camp',
         targetId: campId,
         before: null,
-        after: { scenario: 'full-slot', slotId: slot.id, booked },
+        after: { slotId, confirmed: payload.confirmed, waitlisted: payload.waitlisted, errors: payload.errors },
       });
-      return res.json({ scenario: 'full-slot', campId, slotId: slot.id, booked });
-    }
 
-    if (name === 'waitlist-active') {
-      // Create a full slot + 8 waiting patients
-      const [[slot]] = await pool.query(
-        `SELECT id, capacity FROM slots WHERE camp_id = ? ORDER BY slot_index LIMIT 1`,
-        [campId],
-      );
-      if (!slot) throw new ApiError(404, 'No slot found.', 'NO_SLOT');
-      await pool.query(`UPDATE slots SET booked_count = capacity WHERE id = ?`, [slot.id]);
-      const patients = await pool.query('SELECT id FROM users WHERE role = "PATIENT" LIMIT 10');
-      let pos = 0;
-      for (const p of patients[0]) {
-        const [existing] = await pool.query(
-          'SELECT id FROM waitlist WHERE slot_id = ? AND patient_id = ? AND status = "WAITING"',
-          [slot.id, p.id],
-        );
-        if (existing.length) continue;
-        pos += 1;
-        await pool.query(
-          `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status, created_at)
-           VALUES (?, ?, ?, ?, 'WAITING', NOW())`,
-          [slot.id, campId, p.id, pos],
-        );
-      }
-      await auditLog({
-        actorId: req.user.id,
-        actorName: req.user.name,
-        action: 'DEMO_SCENARIO',
-        targetType: 'camp',
-        targetId: campId,
-        before: null,
-        after: { scenario: 'waitlist-active', slotId: slot.id, waitlist: pos },
-      });
-      return res.json({ scenario: 'waitlist-active', campId, slotId: slot.id, waitlist: pos });
+    } finally {
+      // Remove only the rows created for this proof. A pre-existing empty slot
+      // is restored to its original counter; a slot created for the proof is
+      // deleted. No patient or historical booking outside the race is touched.
+      const patientIds = patients.length ? patients : [0];
+      await pool.query('DELETE FROM notifications_log WHERE user_id IN (?)', [patientIds]);
+      await pool.query('DELETE FROM waitlist WHERE slot_id = ? AND patient_id IN (?)', [slotId, patientIds]);
+      await pool.query('DELETE FROM bookings WHERE slot_id = ? AND patient_id IN (?)', [slotId, patientIds]);
+      await pool.query('DELETE FROM users WHERE id IN (?)', [patientIds]);
+      if (createdSlot) await pool.query('DELETE FROM slots WHERE id = ?', [slotId]);
+      else await pool.query('UPDATE slots SET booked_count = ? WHERE id = ?', [originalBookedCount, slotId]);
     }
-
-    if (name === 'camp-day') {
-      // Mark camp as in-flight: some checked-in, some confirmed, some no-show history
-      await pool.query(`UPDATE camps SET status = 'PUBLISHED' WHERE id = ?`, [campId]);
-      await auditLog({
-        actorId: req.user.id,
-        actorName: req.user.name,
-        action: 'DEMO_SCENARIO',
-        targetType: 'camp',
-        targetId: campId,
-        before: null,
-        after: { scenario: 'camp-day' },
-      });
-      return res.json({ scenario: 'camp-day', campId, note: 'Use Control Room to view live board' });
-    }
-
-    throw new ApiError(400, 'Unknown scenario. Use: full-slot | waitlist-active | camp-day', 'UNKNOWN_SCENARIO');
+    return res.json(payload);
   }),
 );
 
@@ -3939,8 +3772,8 @@ app.get(
 /**
  * Handshake authentication: every socket is tied to a live DB user. Anonymous
  * visitors are rejected so no private event or room can be observed without a
- * session. The frontend already treats `Authentication error` as "sign in to
- * enable realtime" and continues in demo/offline mode.
+ * session. The frontend treats `Authentication error` as "sign in to enable
+ * realtime"; no offline or simulated data is substituted.
  */
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace(/^Bearer\s+/i, '');
@@ -4073,12 +3906,12 @@ app.use((error, _req, res, _next) => {
   res.status(databaseOffline ? 503 : status).json({
     ok: false,
     error: databaseOffline
-      ? 'MySQL is offline. The React local-state engine remains fully usable.'
+      ? 'MySQL is offline. This action requires a live database; no local fallback is available.'
       : message,
     code: databaseOffline ? 'DB_OFFLINE' : code,
     requestId: _req.id,
     details: databaseOffline
-      ? { hint: 'Start MySQL, run database/schema.sql, then check backend/.env.' }
+      ? { hint: 'Start/check the connected MySQL host and verify DB credentials. No demo fallback is enabled.' }
       : error.details || null,
   });
 });
@@ -4093,22 +3926,15 @@ if (require.main === module) {
   console.log(`  API        : http://localhost:${PORT}/api/health`);
   console.log(`  Socket.io  : ws://localhost:${PORT}`);
   console.log(`  Frontend   : ${FRONTEND_ORIGIN}`);
-  console.log(`  Demo mode  : ${DEMO_ENDPOINTS_ENABLED ? 'ON' : 'OFF'}`);
-  if (DEMO_AVAILABILITY.guardActive) {
-    console.error('  ╔══════════════════════════════════════════════════════════════╗');
-    console.error('  ║  SECURITY: production demo guardrail is ACTIVE              ║');
-    console.error('  ║  /api/demo/* and demo admin login are DISABLED.             ║');
-    console.error('  ║  Set ALLOW_LOCAL_DEMO=true (or HOST=127.0.0.1) to opt in.   ║');
-    console.error('  ╚══════════════════════════════════════════════════════════════╝');
-  }
+  console.log('  Data mode  : LIVE ONLY · demo endpoints and fallback removed');
   console.log(`  DB target  : ${process.env.DB_USER || 'root'}@${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}/${process.env.DB_NAME || 'community_health_scheduler'}`);
   console.log('');
   pool
     .query('SELECT 1')
     .then(() => console.log('  ✓ MySQL pool connected. Live API is ready.'))
     .catch((error) => {
-      console.log(`  ⚠ MySQL not reachable (${error.code || error.message}).`);
-      console.log('    The frontend will automatically use its deterministic local-state engine.');
+      console.error(`  ✖ MySQL not reachable (${error.code || error.message}). No demo fallback is available.`);
+      console.error('    Check the database host/credentials; the API will return real errors.');
     });
   });
 }
