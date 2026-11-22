@@ -149,7 +149,7 @@ export default function Manage() {
             <Card>
               <CardHead icon="gear" title="Camp configuration" sub="Venue, window and slot parameters"
                 actions={<Badge status={camp.status} />} />
-              <div className="detail-facts">
+              <div className="detail-facts fact-grid-4">
                 <div><small>Venue</small><strong>{camp.venue}</strong></div>
                 <div><small>Date</small><strong>{fmtDate(camp.campDate)}</strong></div>
                 <div><small>Window</small><strong>{fmtTime12(camp.startTime)}–{fmtTime12(camp.endTime)}</strong></div>

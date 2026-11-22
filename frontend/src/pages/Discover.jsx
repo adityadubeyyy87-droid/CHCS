@@ -289,7 +289,7 @@ export default function Discover() {
               <Card className="detail-card entrance card-tilt">
                 <CardHead title={selected.title} sub={`${selected.venue} · ${selected.address}`} icon="pin" />
                 <p className="detail-desc">{selected.descriptionEn || 'Free community screening camp.'}</p>
-                <div className="detail-facts">
+                <div className="detail-facts fact-grid-4">
                   <div><small>Date</small><strong>{fmtDate(selected.campDate)}</strong></div>
                   <div><small>Hours</small><strong>{fmtTime12(selected.startTime)}–{fmtTime12(selected.endTime)}</strong></div>
                   <div><small>Slot length</small><strong>{selected.slotDurationMins} min</strong></div>
