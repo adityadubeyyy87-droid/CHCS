@@ -395,3 +395,26 @@ Final push evidence for this pass (normal, non-forced pushes only):
 | `Deploy CHSC (free public site)` for the final pushed commit | `45055081169` (`main`): `completed` / `success`; the duplicate `master` trigger was superseded/cancelled |
 | Published Pages assets | `assets/index-BgATRaIV.js` + `assets/index-C2NpWuvB.css`; HTTP `200` |
 | Fresh hosted browser after push | Patient Discover shows all three live camps, `LIVE · MySQL`, zero `role=alert`, zero console errors |
+
+---
+
+## 11. Classroom role-login standard
+
+For live demonstrations, five accounts now use a consistent `role@chcs.app` identifier and one shared strong password. The password is a host secret and is deliberately **not** recorded in this repository, in workflow files or in logs.
+
+| Login identifier | Role | User ID | Verified |
+|---|---|---:|---|
+| `admin@chcs.app` | `ADMIN` | `151` | `/api/auth/me` → `ADMIN`, active |
+| `organizer@chcs.app` | `ORGANIZER` | `149` | `/api/auth/me` → `ORGANIZER`, active |
+| `doctor@chcs.app` | `DOCTOR` | `150` | `/api/auth/me` → `DOCTOR`, active |
+| `volunteer@chcs.app` | `VOLUNTEER` | `147` | `/api/auth/me` → `VOLUNTEER`, active |
+| `patient@chcs.app` | `PATIENT` | `148` | `/api/auth/me` → `PATIENT`, active |
+
+Operational cleanup performed through the live admin API:
+
+- the legacy `role@chsc.app` bootstrap accounts (`126`–`129`) were deactivated;
+- new doctor, volunteer and organiser accounts were assigned to all three published camps;
+- obsolete staff assignments for the deactivated accounts were removed;
+- hosted browser checks confirmed the new doctor and volunteer see **Camp Day** with the QR scanner, the new patient sees **Find Health Camps**, and the new admin sees **Manage**, **Analytics** and **Notification Center** — all with `LIVE · MySQL` and zero console errors.
+
+No application code changed for this credential standard, so the deployed bundle remains `11bde03`. `DEPLOYMENT.md` documents the convention without storing the secret.
