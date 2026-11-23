@@ -89,6 +89,8 @@ Copy `backend/.env.example` to `backend/.env` for local use and fill in real val
 | `BOOTSTRAP_DOCTOR_EMAIL` / `BOOTSTRAP_DOCTOR_PASSWORD` / `BOOTSTRAP_DOCTOR_NAME` | Real doctor account |
 | `BOOTSTRAP_VOLUNTEER_EMAIL` / `BOOTSTRAP_VOLUNTEER_PASSWORD` / `BOOTSTRAP_VOLUNTEER_NAME` | Real volunteer account |
 | `BOOTSTRAP_PHONE_SEED` | Starting phone number for the bootstrap accounts (digits only) |
+
+For classroom demonstrations, role accounts may follow the `role@chcs.app` pattern (`admin@chcs.app`, `organizer@chcs.app`, `doctor@chcs.app`, `volunteer@chcs.app`, plus `patient@chcs.app`) and share one strong demo password. The password is a host secret: it must never be committed to this repository or written into a workflow log. Legacy `role@chsc.app` bootstrap accounts can be deactivated through the admin API after the replacement accounts are verified.
 | `PURGE_ON_BOOT` | `false` — never erase live data on restart |
 | `ALLOW_PRODUCTION_PURGE` | `false` normally. Only for an intentional one-time reset together with `PURGE_ON_BOOT=true`; production refuses to purge without it. |
 
