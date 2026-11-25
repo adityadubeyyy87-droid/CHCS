@@ -205,3 +205,29 @@ npm run live      # from the repository root
 ---
 
 _Any new test must pass before the next feature ships (test-first release policy). Re-run everything after code changes; this file records past evidence, not a live status endpoint._
+
+---
+
+## Addendum — Maps ticket QR + transactional delivery pass (2026-11-25)
+
+Commit: `b597205` (pushed to `master` and `main`).
+
+Measured in this pass:
+
+| Check | Result |
+|---|---|
+| Backend suite (`cd backend && npm test`) | **24 files / 139 tests passed** |
+| Frontend suite (`cd frontend && npm test`) | **8 tests passed** |
+| Frontend production build (`npm run build`) | PASS, `index-BzYKdfw_.js` published to Pages |
+| Production schema + all 5 migrations, applied twice to a scratch MySQL 8.4 database | PASS, idempotent, 0 rows |
+| GitHub Pages deploy workflow | PASS |
+| Local live API: `/api/health`, `/api/camps`, `/n/<real token>` | PASS — `demoMode:false`, Maps 302 redirect |
+
+New coverage in this pass:
+
+- `tests/unit/maps.test.js` — coordinate/address Maps URLs, token-in-fragment QR payloads, token extraction, short links.
+- `tests/unit/messages.test.js` — booking ID, camp, date, time, full address, Maps link, short link, inline QR CID, HTML escaping, reschedule/cancellation copy.
+- `tests/unit/validation.test.js` — optional coordinate coercion, blank-string handling, out-of-range rejection.
+- `tests/integration/ticketing.test.js` — 60-bit ticket tokens, Maps QR check-in, `/n/<token>` redirect, confirmation payload content, duplicate confirmation suppression, reschedule EMAIL+SMS, organizer coordinate update, honest sandbox retry refusal.
+
+Honest deployment note: the GitHub Pages frontend redeployed automatically. The Railway backend at the public URL was still serving the previous build when this addendum was written (`/n/<fake>` returned the SPA HTML instead of the API's 404). The new backend code is committed and locally verified; a Railway redeploy requires dashboard/CLI access and must be completed before the hosted backend exposes `/n/<token>` or the new notification payloads. Real SMTP/SMS delivery also remains blocked until provider credentials (and Indian DLT sender/template) are configured; rows are correctly labelled **Sandbox** until then.
