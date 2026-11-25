@@ -3,10 +3,11 @@
 // Contains no medical data by design — identity + logistics only.
 import React, { useState } from 'react';
 import Qr from '../lib/qr.jsx';
-import { Badge, Button, Modal } from './ui.jsx';
+import { Badge, Button, Icon, Modal } from './ui.jsx';
 import { fmtDate, fmtTime12, cls } from '../lib/format.js';
 import { useApp } from '../store.jsx';
 import { downloadIcs } from '../lib/ics.js';
+import { mapsUrlFor, qrPayloadFor } from '../lib/maps.js';
 
 export { bookingToIcs, downloadIcs } from '../lib/ics.js';
 
@@ -25,6 +26,8 @@ export function Passport({ booking, onClose, embedded = false, celebrated = fals
   const [seal, setSeal] = useState(celebrated);
   if (!booking) return null;
   const name = booking.patientName || user?.name || 'Community Member';
+  const mapsUrl = mapsUrlFor(booking);
+  const qrPayload = qrPayloadFor(booking);
 
   return (
     <div className={cls('passport', seal && 'passport-sealed')} role="region" aria-label="Digital Health Passport">
@@ -67,14 +70,20 @@ export function Passport({ booking, onClose, embedded = false, celebrated = fals
             <strong>{booking.venue}<br /><span className="muted">{booking.address}</span></strong>
           </div>
           <div className="passport-refs">
+            <div><small>Booking ID</small><strong className="mono">#{booking.id}</strong></div>
             <div><small>Token</small><strong className="mono">{booking.tokenNumber}</strong></div>
             <div><small>Reference</small><strong className="mono">{booking.qrToken}</strong></div>
           </div>
+          {mapsUrl && (
+            <a className="passport-nav" href={mapsUrl} target="_blank" rel="noreferrer">
+              <Icon name="pin" size={14} /> Open Google Maps directions
+            </a>
+          )}
         </div>
 
         <div className="passport-qr">
-          <Qr text={booking.qrToken} size={148} dark="#04310f" className={cls('qr-pulse', seal && 'qr-pulse')} label={`QR pass ${booking.qrToken}`} />
-          <p className="muted">Show at the gate · no printing needed</p>
+          <Qr text={qrPayload} size={148} dark="#04310f" className={cls('qr-pulse', seal && 'qr-pulse')} label={`QR pass ${booking.qrToken} with Google Maps navigation`} />
+          <p className="muted">Scan at the gate · opens Google Maps directions</p>
         </div>
       </div>
 
@@ -95,6 +104,11 @@ export function Passport({ booking, onClose, embedded = false, celebrated = fals
 
       {!embedded && (
         <div className="passport-actions">
+          {mapsUrl && (
+            <Button variant="ghost" size="sm" icon="pin" onClick={() => window.open(mapsUrl, '_blank', 'noopener,noreferrer')}>
+              Google Maps directions
+            </Button>
+          )}
           <Button variant="ghost" size="sm" icon="download" onClick={() => { downloadIcs(booking); toast('Calendar file downloaded (.ics)'); }}>Add to calendar</Button>
           <Button variant="ghost" size="sm" icon="qr" onClick={() => window.print()}>Print / save PDF</Button>
         </div>

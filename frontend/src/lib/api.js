@@ -147,6 +147,8 @@ export const api = {
   staffMe: () => call('/api/staff/me'),
 
   createCamp: (payload) => call('/api/camps', { method: 'POST', body: payload }),
+  updateCamp: (campId, payload) =>
+    call(`/api/camps/${encodeURIComponent(campId)}`, { method: 'PATCH', body: payload }),
   generateSlots: (campId, payload) =>
     call(`/api/camps/${encodeURIComponent(campId)}/generate-slots`, {
       method: 'POST',
@@ -175,6 +177,8 @@ export const api = {
     call('/api/admin/capacity-advisor', { qs: { physicalCapacity } }),
   notifications: (limit = 50, page = 1) =>
     call('/api/admin/notifications', { qs: { page, pageSize: limit } }),
+  retryNotification: (id) =>
+    call(`/api/admin/notifications/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   users: () => call('/api/admin/users'),
   setRole: (id, role) =>
     call(`/api/admin/users/${encodeURIComponent(id)}/role`, {

@@ -25,14 +25,30 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
-const nodemailer = require('nodemailer');
 const { Server } = require('socket.io');
+
+// Optional: inline ticket QR in HTML email. If the package is unavailable the
+// email still ships with the booking ID, reference and navigation links.
+let QRCode = null;
+try {
+  QRCode = require('qrcode');
+} catch {
+  QRCode = null;
+}
 
 const { schemas, validateBody, validateQuery } = require('./lib/validation');
 const { parsePagination, buildPagination } = require('./lib/pagination');
 const { createLimiters } = require('./lib/limits');
 const { createProviders } = require('./lib/providers');
 const remindersEngine = require('./lib/reminders');
+const {
+  buildMapsUrl,
+  buildTicketQrPayload,
+  extractTicketToken,
+  publicBaseUrl,
+  buildShortNavigationUrl,
+} = require('./lib/maps');
+const { buildMessages } = require('./lib/messages');
 const { dbConnectionOptions } = require('./lib/db-config');
 const {
   parseTrustProxy,
@@ -190,8 +206,14 @@ function maskEmail(email = '') {
   return `${local.slice(0, 2)}***@${domain}`;
 }
 
+// 60 bits of cryptographic entropy in a human-typable base32 token. Legacy
+// six-digit tokens remain valid for check-in, but every new pass is unguessable.
+const QR_TOKEN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function makeQrToken() {
-  return `CHSC-BLR-${crypto.randomInt(100000, 999999)}`;
+  const bytes = crypto.randomBytes(12);
+  let body = '';
+  for (const byte of bytes) body += QR_TOKEN_ALPHABET[byte % QR_TOKEN_ALPHABET.length];
+  return `CHSC-BLR-${body}`;
 }
 
 function makeTokenNumber() {
@@ -224,6 +246,9 @@ function publicCamp(row) {
     venue: row.venue,
     address: row.address,
     city: row.city,
+    latitude: row.latitude !== null && row.latitude !== undefined ? Number(row.latitude) : null,
+    longitude: row.longitude !== null && row.longitude !== undefined ? Number(row.longitude) : null,
+    mapsUrl: buildMapsUrl(row),
     campDate: row.camp_date,
     startTime: row.start_time,
     endTime: row.end_time,
@@ -280,6 +305,7 @@ function toIso(value) {
 
 function publicBooking(row) {
   if (!row) return null;
+  const mapsUrl = buildMapsUrl(row);
   return {
     id: row.id,
     slotId: row.slot_id,
@@ -300,8 +326,35 @@ function publicBooking(row) {
     campDate: row.camp_date || undefined,
     venue: row.venue || undefined,
     address: row.address || undefined,
+    city: row.city || undefined,
+    latitude: row.latitude !== null && row.latitude !== undefined ? Number(row.latitude) : undefined,
+    longitude: row.longitude !== null && row.longitude !== undefined ? Number(row.longitude) : undefined,
+    mapsUrl: mapsUrl || undefined,
+    // The exact string encoded in the ticket QR: Google Maps directions plus the
+    // opaque ticket token in the fragment (ignored by Maps, read by our scanner).
+    qrPayload: buildTicketQrPayload(mapsUrl, row.qr_token) || undefined,
     startTime: row.start_time || undefined,
     endTime: row.end_time || undefined,
+  };
+}
+
+/** Everything a transactional message needs, with a real Maps navigation URL. */
+function bookingMessageDetails({ booking, patient, camp, slot }) {
+  const mapsUrl = buildMapsUrl(camp || {});
+  return {
+    patientName: patient?.name,
+    bookingId: booking?.id,
+    tokenNumber: booking?.token_number,
+    qrToken: booking?.qr_token,
+    campTitle: camp?.title,
+    campDate: camp?.camp_date,
+    startTime: slot?.start_time,
+    endTime: slot?.end_time,
+    venue: camp?.venue,
+    address: camp?.address,
+    city: camp?.city,
+    mapsUrl,
+    shortUrl: buildShortNavigationUrl(publicBaseUrl(process.env), booking?.qr_token),
   };
 }
 
@@ -314,6 +367,9 @@ function withBookingContext(row, camp, slot) {
     camp_date: camp?.camp_date || row.camp_date,
     venue: camp?.venue || row.venue,
     address: camp?.address || row.address,
+    city: camp?.city || row.city,
+    latitude: camp?.latitude ?? row.latitude,
+    longitude: camp?.longitude ?? row.longitude,
     start_time: slot?.start_time || row.start_time,
     end_time: slot?.end_time || row.end_time,
   };
@@ -337,8 +393,12 @@ function publicNotification(row) {
     message: row.message,
     provider: row.provider,
     status: row.status,
+    attempts: Number(row.attempts || 0),
+    lastError: row.last_error || null,
+    providerMessageId: row.provider_message_id || null,
     simulated: String(row.status || '').toUpperCase() === 'SIMULATED',
     sentAt: row.sent_at,
+    updatedAt: row.updated_at || row.sent_at,
   };
 }
 
@@ -479,10 +539,14 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
     startTime: slot.start_time,
   });
 
-  const message =
-    `CHSC confirmed: ${patient.name}, token ${booking.token_number} for ${camp.title} at ` +
-    `${formatTime12(slot.start_time)}. Pass ${booking.qr_token}. Arrive 10 min early. ` +
-    `Zero-penalty release available in My Bookings.`;
+  const details = bookingMessageDetails({
+    booking,
+    patient,
+    camp,
+    slot,
+  });
+  const built = buildMessages('BOOKING_CONFIRMED', details);
+  const payload = { ...details, slotId: slot.id, eventKey: 'confirmed' };
   const notifications = [
     await insertNotification(conn, {
       bookingId: booking.id,
@@ -490,10 +554,11 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
       channel: 'SMS',
       type: 'BOOKING_CONFIRMED',
       recipient: patient.phone,
-      message,
+      message: built.sms,
       provider: providerFor('SMS'),
       status: 'PENDING',
-      payload: { slotId: slot.id, token: booking.qr_token },
+      eventKey: 'confirmed',
+      payload,
     }),
     await insertNotification(conn, {
       bookingId: booking.id,
@@ -501,11 +566,12 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
       channel: 'EMAIL',
       type: 'BOOKING_CONFIRMED',
       recipient: patient.email,
-      subject: `Your health camp pass · ${booking.token_number}`,
-      message,
+      subject: built.subject,
+      message: built.text,
       provider: providerFor('EMAIL'),
       status: 'PENDING',
-      payload: { slotId: slot.id, token: booking.qr_token },
+      eventKey: 'confirmed',
+      payload,
     }),
   ];
 
@@ -525,7 +591,8 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
 /** Atomically give a released seat to the next eligible FIFO waiter as a HELD claim. */
 async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
   const [slotRows] = await conn.query(
-    `SELECT s.*, c.title, c.camp_date, c.status AS camp_status
+    `SELECT s.*, c.title, c.venue, c.address, c.city, c.latitude, c.longitude,
+            c.camp_date, c.status AS camp_status
      FROM slots s JOIN camps c ON c.id = s.camp_id
      WHERE s.id = ? FOR UPDATE`,
     [slotId],
@@ -578,10 +645,20 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
     [booking.hold_expires_at, waiter.id],
   );
 
-  const message =
-    `Great news ${waiter.name}! A neighbour released a seat. Claim your place for ` +
-    `${slot.title} at ${formatTime12(slot.start_time)} within ${PROMOTION_HOLD_MINUTES} minutes. ` +
-    `Pass ${booking.qr_token}. No payment or penalty.`;
+  const details = bookingMessageDetails({
+    booking,
+    patient: { name: waiter.name },
+    camp: slot,
+    slot,
+  });
+  const built = buildMessages('WAITLIST_PROMOTED', details);
+  const payload = {
+    ...details,
+    fromWaitlistId: waiter.id,
+    slotId,
+    holdExpiresAt: toIso(booking.hold_expires_at),
+    eventKey: `promotion-${waiter.id}`,
+  };
   const notifications = [
     await insertNotification(conn, {
       bookingId: booking.id,
@@ -589,10 +666,11 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
       channel: 'SMS',
       type: 'WAITLIST_PROMOTED',
       recipient: waiter.phone,
-      message,
+      message: built.sms,
       provider: providerFor('SMS'),
       status: 'PENDING',
-      payload: { fromWaitlistId: waiter.id, slotId, holdExpiresAt: toIso(booking.hold_expires_at) },
+      eventKey: `promotion-${waiter.id}`,
+      payload,
     }),
     await insertNotification(conn, {
       bookingId: booking.id,
@@ -600,11 +678,12 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
       channel: 'EMAIL',
       type: 'WAITLIST_PROMOTED',
       recipient: waiter.email,
-      subject: `Claim your health camp pass ${booking.token_number}`,
-      message,
+      subject: built.subject,
+      message: built.text,
       provider: providerFor('EMAIL'),
       status: 'PENDING',
-      payload: { fromWaitlistId: waiter.id, slotId, holdExpiresAt: toIso(booking.hold_expires_at) },
+      eventKey: `promotion-${waiter.id}`,
+      payload,
     }),
   ];
 
@@ -631,7 +710,8 @@ async function releaseReservedSeat(
   { finalStatus = 'EXPIRED', reason = 'hold_expired' } = {},
 ) {
   const [slotRows] = await conn.query(
-    `SELECT s.*, c.title, c.camp_date, c.status AS camp_status
+    `SELECT s.*, c.title, c.venue, c.address, c.city, c.latitude, c.longitude,
+            c.camp_date, c.status AS camp_status
      FROM slots s JOIN camps c ON c.id = s.camp_id
      WHERE s.id = ? FOR UPDATE`,
     [booking.slot_id],
@@ -658,9 +738,14 @@ async function releaseReservedSeat(
 
   const notifications = [];
   if (patient) {
-    const message =
-      `CHSC: ${patient.name}, your ${reason === 'patient_cancelled' ? 'cancelled' : 'expired'} ` +
-      `reservation for ${slot.title} was released. No penalty was applied.`;
+    const details = bookingMessageDetails({
+      booking,
+      patient,
+      camp: slot,
+      slot,
+    });
+    const built = buildMessages('CANCELLATION', details);
+    const payload = { ...details, reason, eventKey: `release-${finalStatus}` };
     notifications.push(
       await insertNotification(conn, {
         bookingId: booking.id,
@@ -668,10 +753,24 @@ async function releaseReservedSeat(
         channel: 'SMS',
         type: 'CANCELLATION',
         recipient: patient.phone,
-        message,
+        message: built.sms,
         provider: providerFor('SMS'),
         status: 'PENDING',
-        payload: { reason },
+        eventKey: `release-${finalStatus}`,
+        payload,
+      }),
+      await insertNotification(conn, {
+        bookingId: booking.id,
+        userId: patient.id,
+        channel: 'EMAIL',
+        type: 'CANCELLATION',
+        recipient: patient.email,
+        subject: built.subject,
+        message: built.text,
+        provider: providerFor('EMAIL'),
+        status: 'PENDING',
+        eventKey: `release-${finalStatus}`,
+        payload,
       }),
     );
   }
@@ -877,20 +976,8 @@ function requireRole(...roles) {
 }
 
 /* ---------------------------------------------------------------------------
- * Reminder gateway (Nodemailer + Fast2SMS/Twilio sandbox + Socket.io mirror)
+ * Transactional gateway (SMTP + Fast2SMS, sandbox when unconfigured)
  * ------------------------------------------------------------------------- */
-
-let smtpTransporter = null;
-if (process.env.SMTP_HOST) {
-  smtpTransporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE || 'false') === 'true',
-    auth: process.env.SMTP_USER
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
-  });
-}
 
 function providerMeta(channel) {
   const provider = channel === 'SMS' ? providers.sms : providers.email;
@@ -906,16 +993,33 @@ function providerFor(channel) {
   return providerMeta(channel).name;
 }
 
+const MAX_DELIVERY_ATTEMPTS = 3;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Stable idempotency key: one event, one channel, one booking/user. */
+function notificationDedupeKey(data) {
+  if (data.dedupeKey) return String(data.dedupeKey).slice(0, 190);
+  const event = data.eventKey || 'primary';
+  const owner = data.bookingId ? `b${data.bookingId}` : `u${data.userId || 0}`;
+  return `${owner}:${data.type}:${data.channel}:${event}`.slice(0, 190);
+}
+
 async function insertNotification(conn, data) {
   const payload = data.payload ? JSON.stringify(data.payload) : null;
   const meta = providerMeta(data.channel);
   // A configured real provider starts PENDING and is updated to SENT/FAILED by
   // the delivery attempt. With no credentials it stays honestly SIMULATED.
   const status = meta.live ? 'PENDING' : 'SIMULATED';
+  const dedupeKey = notificationDedupeKey(data);
   const [result] = await conn.query(
     `INSERT INTO notifications_log
-       (booking_id, user_id, channel, type, recipient, subject, message, provider, status, payload)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (booking_id, user_id, channel, type, recipient, subject, message, provider, status,
+        dedupe_key, payload)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
     [
       data.bookingId || null,
       data.userId || null,
@@ -926,9 +1030,11 @@ async function insertNotification(conn, data) {
       data.message,
       data.provider || meta.name,
       status,
+      dedupeKey,
       payload,
     ],
   );
+  const duplicate = Number(result.affectedRows) !== 1;
   return {
     id: result.insertId,
     bookingId: data.bookingId || null,
@@ -940,71 +1046,202 @@ async function insertNotification(conn, data) {
     message: data.message,
     provider: data.provider || meta.name,
     status,
+    attempts: 0,
+    lastError: null,
+    providerMessageId: null,
+    dedupeKey,
+    duplicate,
     sentAt: new Date().toISOString(),
     simulated: meta.simulated,
   };
 }
 
-async function updateNotificationStatus(id, status) {
+async function updateNotificationStatus(id, status, extra = {}) {
   try {
-    await pool.query('UPDATE notifications_log SET status = ? WHERE id = ?', [status, id]);
+    const columns = ['status = ?'];
+    const params = [status];
+    if (extra.attempts !== undefined) {
+      columns.push('attempts = ?');
+      params.push(extra.attempts);
+    }
+    if (extra.lastError !== undefined) {
+      columns.push('last_error = ?');
+      params.push(extra.lastError ? String(extra.lastError).slice(0, 500) : null);
+    }
+    if (extra.providerMessageId !== undefined) {
+      columns.push('provider_message_id = ?');
+      params.push(extra.providerMessageId ? String(extra.providerMessageId).slice(0, 190) : null);
+    }
+    params.push(id);
+    await pool.query(`UPDATE notifications_log SET ${columns.join(', ')} WHERE id = ?`, params);
   } catch (error) {
     console.warn('[notification status update]', error.message);
   }
 }
 
-async function attemptRealDelivery(notification) {
-  try {
-    if (
-      notification.channel === 'EMAIL' &&
-      smtpTransporter &&
-      process.env.SMTP_USER &&
-      !String(notification.recipient).endsWith('@example.com')
-    ) {
-      await smtpTransporter.sendMail({
-        from: process.env.MAIL_FROM || 'CMRIT Community Health <no-reply@cmrit.edu>',
-        to: notification.recipient,
-        subject: notification.subject || 'Community Health Camp update',
-        text: notification.message,
-      });
-      await updateNotificationStatus(notification.id, 'SENT');
-      return;
-    }
+/**
+ * Rebuild the full logistics payload for a notification. New rows carry it in
+ * `payload`; legacy rows are hydrated from the booking so an admin retry still
+ * produces a complete, navigable message.
+ */
+async function hydrateNotificationDetails(row) {
+  const payload = decodeJsonColumn(row.payload) || {};
+  const details = {
+    patientName: payload.patientName,
+    bookingId: row.booking_id,
+    tokenNumber: payload.tokenNumber,
+    qrToken: payload.qrToken,
+    campTitle: payload.campTitle,
+    campDate: payload.campDate,
+    startTime: payload.startTime,
+    endTime: payload.endTime,
+    venue: payload.venue,
+    address: payload.address,
+    city: payload.city,
+    mapsUrl: payload.mapsUrl,
+    shortUrl: payload.shortUrl,
+    waitlistPosition: payload.waitlistPosition,
+  };
 
-    if (notification.channel === 'SMS' && process.env.FAST2SMS_API_KEY) {
-      const url = new URL('https://www.fast2sms.com/dev/bulkV2');
-      url.searchParams.set('route', 'q');
-      url.searchParams.set('message', notification.message.slice(0, 480));
-      url.searchParams.set('language', 'english');
-      url.searchParams.set('flash', '0');
-      url.searchParams.set('numbers', notification.recipient);
-      const response = await fetch(url, {
-        headers: { authorization: process.env.FAST2SMS_API_KEY },
-      });
-      await updateNotificationStatus(notification.id, response.ok ? 'SENT' : 'FAILED');
-      return;
-    }
-
-    // Offline review path: DB audit + live UI interception. Never print raw
-    // recipients, patient names or QR/token values to the console.
-    console.log(
-      `[GATEWAY ${notification.channel} · ${notification.provider}] → ${redactRecipient(notification.recipient)} (message omitted)`,
+  if (row.booking_id && (!details.campTitle || !details.mapsUrl || !details.qrToken)) {
+    const [rows] = await pool.query(
+      `SELECT b.id, b.token_number, b.qr_token, p.name AS patient_name,
+              c.title, c.camp_date, c.venue, c.address, c.city, c.latitude, c.longitude,
+              s.start_time, s.end_time
+       FROM bookings b
+       JOIN camps c ON c.id = b.camp_id
+       JOIN slots s ON s.id = b.slot_id
+       JOIN users p ON p.id = b.patient_id
+       WHERE b.id = ?`,
+      [row.booking_id],
     );
-    await updateNotificationStatus(notification.id, 'SIMULATED');
+    if (rows.length) {
+      const booking = rows[0];
+      details.patientName = details.patientName || booking.patient_name;
+      details.tokenNumber = details.tokenNumber || booking.token_number;
+      details.qrToken = details.qrToken || booking.qr_token;
+      details.campTitle = details.campTitle || booking.title;
+      details.campDate = details.campDate || booking.camp_date;
+      details.startTime = details.startTime || booking.start_time;
+      details.endTime = details.endTime || booking.end_time;
+      details.venue = details.venue || booking.venue;
+      details.address = details.address || booking.address;
+      details.city = details.city || booking.city;
+      details.mapsUrl = details.mapsUrl || buildMapsUrl(booking);
+      details.shortUrl =
+        details.shortUrl ||
+        buildShortNavigationUrl(publicBaseUrl(process.env), details.qrToken);
+    }
+  }
+
+  if (!details.mapsUrl && (details.venue || details.address)) {
+    details.mapsUrl = buildMapsUrl(details);
+  }
+  return details;
+}
+
+async function deliverNotification(notification, { force = false } = {}) {
+  if (!notification?.id) return null;
+  try {
+    const [rows] = await pool.query('SELECT * FROM notifications_log WHERE id = ?', [
+      notification.id,
+    ]);
+    if (!rows.length) return null;
+    const row = rows[0];
+
+    // Idempotent: a completed or honestly-simulated row is never re-sent unless
+    // an administrator explicitly asks for a retry.
+    if (!force && ['SENT', 'SIMULATED'].includes(row.status)) return row;
+
+    const provider = row.channel === 'SMS' ? providers.sms : providers.email;
+    const details = await hydrateNotificationDetails(row);
+    const built = buildMessages(row.type, details, { qrCid: 'chsc-ticket' });
+
+    if (!provider.live) {
+      // Sandbox is an honest audit state, not a provider delivery.
+      console.log(
+        `[GATEWAY ${row.channel} · ${provider.name}] → ${redactRecipient(row.recipient)} (message omitted)`,
+      );
+      await updateNotificationStatus(row.id, 'SIMULATED', {
+        attempts: Number(row.attempts || 0),
+        lastError: null,
+      });
+      return { ...row, status: 'SIMULATED' };
+    }
+
+    if (!row.recipient) {
+      await updateNotificationStatus(row.id, 'FAILED', {
+        lastError: 'No recipient on file for this channel.',
+      });
+      return { ...row, status: 'FAILED' };
+    }
+
+    let attachments = [];
+    if (row.channel === 'EMAIL' && QRCode && details.qrToken) {
+      try {
+        const qrPayload = buildTicketQrPayload(details.mapsUrl, details.qrToken);
+        const png = await QRCode.toBuffer(qrPayload, {
+          type: 'png',
+          width: 420,
+          margin: 1,
+          errorCorrectionLevel: 'M',
+          color: { dark: '#04310f', light: '#ffffff' },
+        });
+        attachments = [{ filename: 'chsc-pass.png', content: png, cid: 'chsc-ticket' }];
+      } catch (qrError) {
+        console.warn('[email qr]', qrError.message);
+      }
+    }
+
+    let lastError = null;
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+      await updateNotificationStatus(row.id, 'QUEUED', { attempts: attempt });
+      try {
+        const result = await provider.send({
+          to: row.recipient,
+          subject: built.subject,
+          text: row.channel === 'SMS' ? built.sms : built.text,
+          html: row.channel === 'EMAIL' ? built.html : undefined,
+          attachments,
+          replyTo: process.env.MAIL_REPLY_TO || undefined,
+        });
+        const finalStatus = result.simulated ? 'SIMULATED' : 'SENT';
+        await updateNotificationStatus(row.id, finalStatus, {
+          attempts: attempt,
+          lastError: null,
+          providerMessageId: result.reference || null,
+        });
+        return { ...row, status: finalStatus, attempts: attempt };
+      } catch (error) {
+        lastError = error;
+        console.warn(
+          `[gateway delivery ${row.channel} attempt ${attempt}/${MAX_DELIVERY_ATTEMPTS}]`,
+          String(error.message || error).slice(0, 200),
+        );
+        if (attempt < MAX_DELIVERY_ATTEMPTS) await sleep(1000 * 2 ** (attempt - 1));
+      }
+    }
+
+    await updateNotificationStatus(row.id, 'FAILED', {
+      attempts: MAX_DELIVERY_ATTEMPTS,
+      lastError: lastError?.message || 'Provider rejected the message.',
+    });
+    return { ...row, status: 'FAILED', lastError: lastError?.message || null };
   } catch (error) {
     console.warn('[gateway delivery]', error.message);
-    await updateNotificationStatus(notification.id, 'FAILED');
+    await updateNotificationStatus(notification.id, 'FAILED', { lastError: error.message });
+    return null;
   }
 }
 
 function publishNotifications(notifications = []) {
   for (const notification of notifications) {
-    if (!notification) continue;
+    if (!notification || notification.duplicate) continue;
     // The live Gateway Interceptor Drawer listens to a PII-free summary.
     const safe = redactNotificationForSocket(notification);
     emitBounded(io, 'gateway:message', safe);
     emitBounded(io, 'notification:new', safe);
-    attemptRealDelivery(notification);
+    deliverNotification(notification);
   }
 }
 
@@ -1640,6 +1877,8 @@ app.post(
       venue,
       address,
       city = 'Bengaluru',
+      latitude = null,
+      longitude = null,
       campDate,
       startTime,
       endTime,
@@ -1669,10 +1908,10 @@ app.post(
     const result = await withTransaction(async (conn) => {
       const [campInsert] = await conn.query(
         `INSERT INTO camps
-          (title, description_en, description_kn, venue, address, city, camp_date,
-           start_time, end_time, slot_duration_mins, total_capacity, physical_capacity,
-           status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (title, description_en, description_kn, venue, address, city, latitude, longitude,
+           camp_date, start_time, end_time, slot_duration_mins, total_capacity,
+           physical_capacity, status, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           String(title).trim(),
           String(descriptionEn || ''),
@@ -1680,6 +1919,8 @@ app.post(
           String(venue).trim(),
           String(address).trim(),
           String(city).trim(),
+          latitude,
+          longitude,
           campDate,
           startTime,
           endTime,
@@ -1928,9 +2169,11 @@ app.patch(
       venue: 'venue',
       address: 'address',
       city: 'city',
+      latitude: 'latitude',
+      longitude: 'longitude',
     };
     const [beforeRows] = await pool.query(
-      'SELECT title, description_en, description_kn, venue, address, city FROM camps WHERE id = ?',
+      'SELECT title, description_en, description_kn, venue, address, city, latitude, longitude FROM camps WHERE id = ?',
       [campId],
     );
     if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
@@ -2042,7 +2285,7 @@ app.post(
       const slot = slotRows[0];
 
       const [campRows] = await conn.query(
-        'SELECT id, title, venue, address, camp_date, status FROM camps WHERE id = ?',
+        'SELECT id, title, venue, address, city, latitude, longitude, camp_date, status FROM camps WHERE id = ?',
         [slot.camp_id],
       );
       if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
@@ -2118,20 +2361,31 @@ app.post(
           waitRow = { id: waitInsert.insertId, position, status: 'WAITING' };
         }
 
-        const message =
-          `CHSC waitlist: ${patient.name}, you are #${waitRow.position} for ${camp.title} at ` +
-          `${formatTime12(slot.start_time)}. We will auto-promote you if a neighbour releases a seat. ` +
-          `No payment or penalty.`;
+        const details = {
+          patientName: patient.name,
+          campTitle: camp.title,
+          campDate: camp.camp_date,
+          startTime: slot.start_time,
+          endTime: slot.end_time,
+          venue: camp.venue,
+          address: camp.address,
+          city: camp.city,
+          mapsUrl: buildMapsUrl(camp),
+          waitlistPosition: waitRow.position,
+        };
+        const built = buildMessages('WAITLIST_JOINED', details);
+        const payload = { ...details, slotId, position: waitRow.position };
         const sms = await insertNotification(conn, {
           bookingId: null,
           userId: patient.id,
           channel: 'SMS',
           type: 'WAITLIST_JOINED',
           recipient: patient.phone,
-          message,
+          message: built.sms,
           provider: providerFor('SMS'),
           status: 'PENDING',
-          payload: { slotId, position: waitRow.position },
+          eventKey: `slot-${slotId}`,
+          payload,
         });
         const email = await insertNotification(conn, {
           bookingId: null,
@@ -2139,11 +2393,12 @@ app.post(
           channel: 'EMAIL',
           type: 'WAITLIST_JOINED',
           recipient: patient.email,
-          subject: `Waitlist #${waitRow.position} · ${camp.title}`,
-          message,
+          subject: built.subject,
+          message: built.text,
           provider: providerFor('EMAIL'),
           status: 'PENDING',
-          payload: { slotId, position: waitRow.position },
+          eventKey: `slot-${slotId}`,
+          payload,
         });
 
         return {
@@ -2266,7 +2521,8 @@ app.post(
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
         `SELECT b.*, s.capacity, s.booked_count, s.start_time, s.end_time,
-                c.title, c.title AS camp_title, c.venue, c.address, c.camp_date, c.status AS camp_status,
+                c.title, c.title AS camp_title, c.venue, c.address, c.city,
+                c.latitude, c.longitude, c.camp_date, c.status AS camp_status,
                 p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
          FROM bookings b
          JOIN slots s ON s.id = b.slot_id
@@ -2371,7 +2627,8 @@ app.patch(
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
         `SELECT b.*, s.capacity, s.booked_count, s.start_time, s.end_time,
-                c.title, c.title AS camp_title, c.venue, c.address, c.camp_date,
+                c.title, c.title AS camp_title, c.venue, c.address, c.city,
+                c.latitude, c.longitude, c.camp_date,
                 p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
          FROM bookings b
          JOIN slots s ON s.id = b.slot_id
@@ -2424,10 +2681,18 @@ app.patch(
       });
       const notifications = [];
 
-      const cancelMessage =
-        `CHSC: ${booking.patient_name}, your booking for ${booking.title} at ` +
-        `${formatTime12(booking.start_time)} has been released. Thank you for helping a neighbour. ` +
-        `No penalty was applied.`;
+      const details = bookingMessageDetails({
+        booking,
+        patient: { name: booking.patient_name },
+        camp: booking,
+        slot: booking,
+      });
+      const built = buildMessages('CANCELLATION', details);
+      const payload = {
+        ...details,
+        autoPromoted: Boolean(promoted),
+        eventKey: 'cancelled',
+      };
       notifications.push(
         await insertNotification(conn, {
           bookingId: booking.id,
@@ -2435,10 +2700,24 @@ app.patch(
           channel: 'SMS',
           type: 'CANCELLATION',
           recipient: booking.patient_phone,
-          message: cancelMessage,
+          message: built.sms,
           provider: providerFor('SMS'),
           status: 'PENDING',
-          payload: { autoPromoted: Boolean(promoted) },
+          eventKey: 'cancelled',
+          payload,
+        }),
+        await insertNotification(conn, {
+          bookingId: booking.id,
+          userId: booking.patient_id,
+          channel: 'EMAIL',
+          type: 'CANCELLATION',
+          recipient: booking.patient_email,
+          subject: built.subject,
+          message: built.text,
+          provider: providerFor('EMAIL'),
+          status: 'PENDING',
+          eventKey: 'cancelled',
+          payload,
         }),
       );
       if (promoted) notifications.push(...promoted.notifications);
@@ -2502,8 +2781,12 @@ app.patch(
 
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
-        `SELECT b.*, c.camp_date, c.status AS camp_status
-         FROM bookings b JOIN camps c ON c.id = b.camp_id
+        `SELECT b.*, c.title, c.venue, c.address, c.city, c.latitude, c.longitude,
+                c.camp_date, c.status AS camp_status,
+                p.name AS patient_name, p.phone AS patient_phone, p.email AS patient_email
+         FROM bookings b
+         JOIN camps c ON c.id = b.camp_id
+         JOIN users p ON p.id = b.patient_id
          WHERE b.id = ? FOR UPDATE`,
         [bookingId],
       );
@@ -2568,10 +2851,55 @@ app.patch(
         startTime: target.start_time,
       });
 
+      // A reschedule is a real event: the patient must receive the new time,
+      // venue and navigation link over both channels.
+      const details = bookingMessageDetails({
+        booking,
+        patient: { name: booking.patient_name },
+        camp: booking,
+        slot: target,
+      });
+      const built = buildMessages('RESCHEDULED', details);
+      const eventKey = `reschedule-${newSlotId}-${Date.now()}`;
+      const payload = {
+        ...details,
+        fromSlotId: Number(booking.slot_id),
+        toSlotId: newSlotId,
+        eventKey,
+      };
+      const notifications = [
+        await insertNotification(conn, {
+          bookingId,
+          userId: booking.patient_id,
+          channel: 'SMS',
+          type: 'RESCHEDULED',
+          recipient: booking.patient_phone,
+          message: built.sms,
+          provider: providerFor('SMS'),
+          status: 'PENDING',
+          eventKey,
+          payload,
+        }),
+        await insertNotification(conn, {
+          bookingId,
+          userId: booking.patient_id,
+          channel: 'EMAIL',
+          type: 'RESCHEDULED',
+          recipient: booking.patient_email,
+          subject: built.subject,
+          message: built.text,
+          provider: providerFor('EMAIL'),
+          status: 'PENDING',
+          eventKey,
+          payload,
+        }),
+      ];
+
       return {
         fromSlotId: Number(booking.slot_id),
         toSlot: target,
         campId: Number(booking.camp_id),
+        notifications,
       };
     });
 
@@ -2590,6 +2918,7 @@ app.patch(
       fromSlotId: outcome.fromSlotId,
       toSlotId: Number(outcome.toSlot.id),
     });
+    publishNotifications(outcome.notifications);
 
     res.json({
       status: 'RESCHEDULED',
@@ -2607,6 +2936,7 @@ app.get(
   asyncHandler(async (req, res) => {
     const [rows] = await pool.query(
       `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
+              c.city, c.latitude, c.longitude,
               s.start_time, s.end_time, w.position AS waitlist_position
        FROM bookings b
        JOIN camps c ON c.id = b.camp_id
@@ -2626,6 +2956,7 @@ app.get(
   asyncHandler(async (req, res) => {
     const [rows] = await pool.query(
       `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
+              c.city, c.latitude, c.longitude,
               s.start_time, s.end_time
        FROM bookings b
        JOIN camps c ON c.id = b.camp_id
@@ -2649,6 +2980,33 @@ app.get(
 );
 
 /* ---------------------------------------------------------------------------
+ * SHORT NAVIGATION LINK (used in SMS)
+ * `/n/<token>` resolves the real camp and redirects to Google Maps. The token
+ * is opaque and the destination is built only from database values, so this is
+ * never an open redirect.
+ * ------------------------------------------------------------------------- */
+
+app.get(
+  '/n/:token',
+  asyncHandler(async (req, res) => {
+    const token = extractTicketToken(req.params.token);
+    if (!token) throw new ApiError(404, 'Navigation link not found.', 'NAV_NOT_FOUND');
+    const [rows] = await pool.query(
+      `SELECT c.venue, c.address, c.city, c.latitude, c.longitude
+       FROM bookings b JOIN camps c ON c.id = b.camp_id
+       WHERE b.qr_token = ? OR b.token_number = ?
+       LIMIT 1`,
+      [token, token],
+    );
+    if (!rows.length) throw new ApiError(404, 'Navigation link not found.', 'NAV_NOT_FOUND');
+    const mapsUrl = buildMapsUrl(rows[0]);
+    if (!mapsUrl) throw new ApiError(404, 'This camp has no navigation address.', 'NAV_UNAVAILABLE');
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(302, mapsUrl);
+  }),
+);
+
+/* ---------------------------------------------------------------------------
  * QR CHECK-IN + LIVE QUEUE BROADCAST
  * ------------------------------------------------------------------------- */
 
@@ -2657,13 +3015,15 @@ app.post(
   authenticate,
   requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
   asyncHandler(async (req, res) => {
-    const token = String(req.body?.qrToken || '').trim();
+    // The QR encodes a Google Maps URL with the opaque ticket token in its
+    // fragment. A raw token and the legacy six-digit pass are still accepted.
+    const token = extractTicketToken(req.body?.qrToken);
     if (!token) throw new ApiError(400, 'qrToken is required.', 'VALIDATION');
 
     const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.query(
         `SELECT b.*, s.start_time, s.end_time, c.title, c.title AS camp_title,
-                c.venue, c.address, c.camp_date,
+                c.venue, c.address, c.city, c.latitude, c.longitude, c.camp_date,
                 p.name AS patient_name, p.phone, p.email
          FROM bookings b
          JOIN slots s ON s.id = b.slot_id
@@ -3280,6 +3640,50 @@ app.get(
     res.json({
       notifications: rows.map(publicNotification),
       pagination: buildPagination(Number(total), paging),
+    });
+  }),
+);
+
+app.post(
+  '/api/admin/notifications/:id/retry',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new ApiError(400, 'Invalid notification id.', 'VALIDATION');
+    }
+    const [rows] = await pool.query('SELECT * FROM notifications_log WHERE id = ?', [id]);
+    if (!rows.length) throw new ApiError(404, 'Notification not found.', 'NOTIFICATION_NOT_FOUND');
+
+    const meta = providerMeta(rows[0].channel);
+    if (!meta.live) {
+      throw new ApiError(
+        409,
+        `${rows[0].channel} provider is not configured. Configure SMTP/SMS credentials before retrying a real delivery.`,
+        'PROVIDER_NOT_CONFIGURED',
+        { channel: rows[0].channel, provider: meta.name },
+      );
+    }
+
+    const delivered = await deliverNotification(rows[0], { force: true });
+    const [fresh] = await pool.query('SELECT * FROM notifications_log WHERE id = ?', [id]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'RETRY_NOTIFICATION',
+      targetType: 'notification',
+      targetId: id,
+      before: { status: rows[0].status },
+      after: { status: fresh[0]?.status || delivered?.status || 'UNKNOWN' },
+    });
+    emitBounded(io, 'admin:notifications-changed', { id, status: fresh[0]?.status });
+    res.json({
+      notification: publicNotification(fresh[0]),
+      message:
+        fresh[0]?.status === 'SENT'
+          ? 'Provider accepted the message.'
+          : `Delivery finished with status ${fresh[0]?.status || 'UNKNOWN'}.`,
     });
   }),
 );

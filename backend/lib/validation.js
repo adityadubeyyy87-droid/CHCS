@@ -57,6 +57,16 @@ const campWindow = {
   physicalCapacity: capacity.optional(),
 };
 
+// Optional coordinates: blank strings mean "not supplied" instead of coercing
+// to 0 (which would put the camp in the Atlantic). Explicit null clears them.
+const coordinate = (min, max) =>
+  z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.coerce.number().min(min).max(max).nullable().optional(),
+  );
+const latitude = coordinate(-90, 90);
+const longitude = coordinate(-180, 180);
+
 const campCreateSchema = z
   .object({
     title: z.string().trim().min(3).max(180),
@@ -65,6 +75,8 @@ const campCreateSchema = z
     venue: z.string().trim().min(2).max(180),
     address: z.string().trim().min(4).max(255),
     city: z.string().trim().min(2).max(80).default('Bengaluru'),
+    latitude: latitude,
+    longitude: longitude,
     campDate: isoDate,
     status: z.enum(['DRAFT', 'PUBLISHED']).default('PUBLISHED'),
     ...campWindow,
@@ -82,6 +94,8 @@ const campUpdateSchema = z
     venue: z.string().trim().min(2).max(180).optional(),
     address: z.string().trim().min(4).max(255).optional(),
     city: z.string().trim().min(2).max(80).optional(),
+    latitude: latitude,
+    longitude: longitude,
   })
   .refine((value) => Object.keys(value).length > 0, 'No fields to update.');
 

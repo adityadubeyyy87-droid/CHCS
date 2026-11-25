@@ -100,15 +100,19 @@ For classroom demonstrations, role accounts may follow the `role@chcs.app` patte
 |---|---|
 | `PORT` | Backend port (`8080` on Railway, `4000` locally) |
 | `HOST` | `127.0.0.1` for local production-like PM2; leave unset in hosting |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | Real email delivery |
-| `FAST2SMS_API_KEY`, `SMS_PROVIDER` | Real SMS delivery |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`, `MAIL_REPLY_TO` | Real email delivery, including the inline QR ticket |
+| `FAST2SMS_API_KEY`, `SMS_PROVIDER`, `SMS_ROUTE` | Real SMS delivery. `SMS_ROUTE=t` for DLT transactional, `q` for quick route |
+| `SMS_SENDER_ID`, `SMS_DLT_TEMPLATE_ID` | Approved Indian DLT sender + template. Required for transactional route `t`; never invent these values |
+| `PUBLIC_BASE_URL` | Public backend origin used in SMS short links (`https://api.example.com/n/<token>`). Falls back to `RAILWAY_PUBLIC_DOMAIN`, then `FRONTEND_ORIGIN` |
 | `JWT_EXPIRES` | Token lifetime (default `12h`) |
 | `REMINDER_CRON` | Reminder sweep schedule; `off` disables automatic sweeping |
 | `HOLD_EXPIRY_CRON` | Hold/promotion expiry sweep schedule |
 | `RATE_LIMIT_DISABLED` | Test-only; keep unset/false in production |
 | `ALLOW_DESTRUCTIVE_SLOT_REBUILD` | Keep `false`; destructive rebuilds are never a deploy step |
 
-**SMTP/SMS honesty:** all provider credentials are optional. With none configured, notification attempts are recorded in `notifications_log` and labelled **Sandbox**. No real email or SMS delivery is claimed.
+**SMTP/SMS honesty:** all provider credentials are optional. With none configured, notification attempts are recorded in `notifications_log` and labelled **Sandbox**. No real email or SMS delivery is claimed. Delivery is marked `SENT` only when the provider accepts the message; `FAILED` rows store the provider error and can be retried from the Notification Center (`POST /api/admin/notifications/:id/retry`) once credentials are configured.
+
+**Tickets and navigation:** each booking gets a cryptographically random `CHSC-BLR-…` token. The ticket QR encodes a real Google Maps directions URL with the token in the fragment (`#chsc=<token>`), so a phone camera opens navigation and the CHSC scanner still checks the patient in. Camp latitude/longitude are optional; without them the destination is the encoded venue, address and city. The SMS short link `/n/<token>` resolves to the same Maps destination and is never an open redirect.
 
 ### Start
 

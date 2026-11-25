@@ -7,10 +7,12 @@ Full-stack HealthTech platform for running free community health screening camps
 ## What it does
 
 CHSC connects **patients, camp organizers, doctors/volunteers, and administrators** through one web platform:
-- **Patients:** Browse camps → view live slot availability → book → QR pass → SMS/email reminders → cancel/reschedule
-- **Organizers:** Create camps → auto-generate non-overlapping slots → assign staff → monitor capacity
-- **Doctors/Volunteers:** QR check-in → live waiting-room TV → attendance recording
-- **Admins:** Analytics → capacity advisor → CSV export → user management → reminder audit log
+- **Patients:** Browse camps → view live slot availability → book → QR pass with Google Maps directions → SMS/email confirmation → cancel/reschedule
+- **Organizers:** Create camps → set venue coordinates → auto-generate non-overlapping slots → assign staff → monitor capacity
+- **Doctors/Volunteers:** QR check-in (Maps QR or human token) → live waiting-room TV → attendance recording
+- **Admins:** Analytics → capacity advisor → CSV export → user management → notification delivery audit with retry
+
+Every confirmed booking, reschedule and cancellation writes real EMAIL + SMS rows to `notifications_log`, including booking ID, camp, date/time, full venue/address, ticket reference and a navigation link. The QR encodes a Google Maps directions URL with the opaque ticket token in the fragment, so one scan both navigates and checks in. Email additionally embeds the ticket QR inline. With no SMTP/SMS credentials the rows are honestly marked **Sandbox**; `SENT` is written only when the provider accepts the message.
 
 ## Key engineering guarantee — zero overbooking
 

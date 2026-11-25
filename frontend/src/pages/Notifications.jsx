@@ -10,6 +10,7 @@ import { Magnetic, InView, Spotlight } from '../components/motion';
 export default function Notifications() {
   const { user, gateway, toast, pushGateway, isOrganizer } = useApp();
   const [running, setRunning] = useState(false);
+  const [retryingId, setRetryingId] = useState(null);
   const canSeeLog = isOrganizer;
 
   const log = useFetch(
@@ -36,6 +37,20 @@ export default function Notifications() {
       if (canSeeLog) await log.reload();
     } catch (err) { toast(err.message, 'bad'); }
     finally { setRunning(false); }
+  }
+
+  async function retry(n) {
+    if (!n?.id) return;
+    setRetryingId(n.id);
+    try {
+      const res = await api.retryNotification(n.id);
+      toast(res.message || 'Delivery retried.', res.notification?.status === 'SENT' ? 'ok' : 'warn');
+      if (canSeeLog) await log.reload();
+    } catch (err) {
+      toast(err.message, 'bad', 'A real retry needs configured SMTP/SMS credentials.');
+    } finally {
+      setRetryingId(null);
+    }
   }
 
   return (
@@ -80,6 +95,11 @@ export default function Notifications() {
                     </Badge>
                     {n.type && <Badge tone="muted">{String(n.type).replaceAll('_', ' ')}</Badge>}
                     <time className="muted">{relTime(n.sentAt || n.at)}</time>
+                    {canSeeLog && !n.local && String(n.status).toUpperCase() === 'FAILED' && (
+                      <Button size="sm" variant="ghost" icon="refresh" loading={retryingId === n.id} onClick={() => retry(n)}>
+                        Retry
+                      </Button>
+                    )}
                   </div>
                   <p className="gw-msg">
                     {n.subject && <strong>{n.subject} — </strong>}{n.message}
@@ -87,6 +107,8 @@ export default function Notifications() {
                   <p className="gw-meta muted">
                     → {n.recipient} · {n.provider || 'Gateway Interceptor'}
                     {n.bookingId ? ` · booking reference ${n.bookingId}` : ''}
+                    {n.attempts ? ` · ${n.attempts} attempt${n.attempts === 1 ? '' : 's'}` : ''}
+                    {n.lastError ? ` · ${n.lastError}` : ''}
                     {n.local && ' · captured live in this session'}
                   </p>
                 </article>

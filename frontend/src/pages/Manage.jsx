@@ -8,7 +8,8 @@ import { fmtDate, fmtTime12 } from '../lib/format.js';
 import { Tilt, InView, Magnetic, Spotlight } from '../components/motion';
 
 const EMPTY_FORM = {
-  title: '', descriptionEn: '', venue: '', address: '', campDate: '',
+  title: '', descriptionEn: '', venue: '', address: '', city: 'Bengaluru',
+  latitude: '', longitude: '', campDate: '',
   startTime: '09:00', endTime: '13:00', slotDurationMins: 30, totalCapacity: 96, physicalCapacity: 80,
 };
 
@@ -22,6 +23,8 @@ export default function Manage() {
   const [busy, setBusy] = useState(false);
   const [staffForm, setStaffForm] = useState({ userId: '', roleAtCamp: 'DOCTOR', shiftStart: '09:00', shiftEnd: '13:00', expectedLoadPerHour: 16, maxPatientsPerHour: 20, duties: '' });
   const [showSlotPlan, setShowSlotPlan] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const [closeOutBusy, setCloseOutBusy] = useState(false);
   const [closeOutResult, setCloseOutResult] = useState(null);
@@ -38,7 +41,10 @@ export default function Manage() {
     e.preventDefault();
     setBusy(true);
     try {
-      const res = await api.createCamp(form);
+      const payload = { ...form };
+      if (payload.latitude === '' || payload.latitude === null) delete payload.latitude;
+      if (payload.longitude === '' || payload.longitude === null) delete payload.longitude;
+      const res = await api.createCamp(payload);
       toast(`Camp created — ${res.slotPlan.length} slots generated automatically.`, 'ok', 'MySQL');
       setShowSlotPlan(res.slotPlan);
       setCreating(false);
@@ -72,6 +78,38 @@ export default function Manage() {
       toast(`Camp marked ${status.toLowerCase()}.`);
       await camps.reload();
     } catch (err) { toast(err.message, 'bad'); }
+  }
+
+  function openEdit() {
+    if (!camp) return;
+    setEditForm({
+      title: camp.title || '',
+      descriptionEn: camp.descriptionEn || '',
+      descriptionKn: camp.descriptionKn || '',
+      venue: camp.venue || '',
+      address: camp.address || '',
+      city: camp.city || 'Bengaluru',
+      latitude: camp.latitude ?? '',
+      longitude: camp.longitude ?? '',
+    });
+    setEditing(true);
+  }
+
+  async function saveEdit(e) {
+    e.preventDefault();
+    if (!camp || !editForm) return;
+    setBusy(true);
+    try {
+      const payload = { ...editForm };
+      payload.latitude = payload.latitude === '' || payload.latitude === null ? null : payload.latitude;
+      payload.longitude = payload.longitude === '' || payload.longitude === null ? null : payload.longitude;
+      const res = await api.updateCamp(camp.id, payload);
+      toast('Camp details saved to MySQL.', 'ok', res.camp?.mapsUrl ? 'Google Maps navigation updated.' : '');
+      setEditing(false);
+      const fresh = await camps.reload();
+      if (fresh?.camps) setSelected(fresh.camps.find((c) => c.id === camp.id) || fresh.camps[0]);
+    } catch (err) { toast(err.message, 'bad'); }
+    finally { setBusy(false); }
   }
 
   async function closeOutCamp() {
@@ -156,8 +194,18 @@ export default function Manage() {
                 <div><small>Slot Δt</small><strong>{camp.slotDurationMins} min</strong></div>
                 <div><small>Screening seats</small><strong>{camp.physicalCapacity}</strong></div>
                 <div><small>Booking capacity</small><strong>{camp.totalCapacity}</strong></div>
+                <div><small>City</small><strong>{camp.city}</strong></div>
+                <div>
+                  <small>Navigation</small>
+                  {camp.mapsUrl ? (
+                    <a href={camp.mapsUrl} target="_blank" rel="noreferrer">Open Google Maps</a>
+                  ) : (
+                    <strong className="muted">Add venue/address</strong>
+                  )}
+                </div>
               </div>
               <div className="row-actions">
+                <Button size="sm" variant="ghost" icon="gear" onClick={openEdit}>Edit venue & navigation</Button>
                 <Button size="sm" variant="ghost" icon="refresh" loading={busy} onClick={regenerate}>Regenerate slots</Button>
                 {camp.status === 'PUBLISHED' && (
                   <Button size="sm" variant="danger" icon="check" onClick={() => { setCloseOutResult(null); setConfirmClose(true); }}>
@@ -272,6 +320,15 @@ export default function Manage() {
             <Field label="Date"><Input required type="date" value={form.campDate} onChange={set('campDate')} /></Field>
           </div>
           <Field label="Address"><Input required value={form.address} onChange={set('address')} placeholder="Street, area, Bengaluru — PIN" /></Field>
+          <div className="field-row">
+            <Field label="City"><Input required value={form.city} onChange={set('city')} placeholder="Bengaluru" /></Field>
+            <Field label="Latitude (optional)" hint="Exact coordinates make Google Maps navigation precise. Leave blank to use the encoded address.">
+              <Input type="number" step="0.0000001" min="-90" max="90" value={form.latitude} onChange={set('latitude')} placeholder="12.9569" />
+            </Field>
+            <Field label="Longitude (optional)">
+              <Input type="number" step="0.0000001" min="-180" max="180" value={form.longitude} onChange={set('longitude')} placeholder="77.7011" />
+            </Field>
+          </div>
           <Field label="Description"><Input value={form.descriptionEn} onChange={set('descriptionEn')} placeholder="Free BP, sugar, BMI and vision screening" /></Field>
           <div className="field-row four">
             <Field label="Start"><Input required type="time" value={form.startTime} onChange={set('startTime')} /></Field>
@@ -289,6 +346,34 @@ export default function Manage() {
             </Magnetic>
           </div>
         </form>
+      </Modal>
+
+      <Modal open={editing} onClose={() => setEditing(false)} title="Edit camp details" wide>
+        {editForm && (
+          <form onSubmit={saveEdit} className="camp-form">
+            <Field label="Camp name"><Input required value={editForm.title} onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))} /></Field>
+            <div className="field-row">
+              <Field label="Venue"><Input required value={editForm.venue} onChange={(e) => setEditForm((f) => ({ ...f, venue: e.target.value }))} /></Field>
+              <Field label="City"><Input required value={editForm.city} onChange={(e) => setEditForm((f) => ({ ...f, city: e.target.value }))} /></Field>
+            </div>
+            <Field label="Address"><Input required value={editForm.address} onChange={(e) => setEditForm((f) => ({ ...f, address: e.target.value }))} /></Field>
+            <div className="field-row">
+              <Field label="Latitude (optional)" hint="Leave blank to navigate by the encoded venue and address.">
+                <Input type="number" step="0.0000001" min="-90" max="90" value={editForm.latitude} onChange={(e) => setEditForm((f) => ({ ...f, latitude: e.target.value }))} />
+              </Field>
+              <Field label="Longitude (optional)">
+                <Input type="number" step="0.0000001" min="-180" max="180" value={editForm.longitude} onChange={(e) => setEditForm((f) => ({ ...f, longitude: e.target.value }))} />
+              </Field>
+            </div>
+            <Field label="English description"><Input value={editForm.descriptionEn} onChange={(e) => setEditForm((f) => ({ ...f, descriptionEn: e.target.value }))} /></Field>
+            <div className="modal-foot">
+              <Button variant="ghost" type="button" onClick={() => setEditing(false)}>Cancel</Button>
+              <Magnetic intensity={0.4}>
+                <Button type="submit" icon="check" loading={busy}>Save to MySQL</Button>
+              </Magnetic>
+            </div>
+          </form>
+        )}
       </Modal>
 
       <Modal open={confirmClose} onClose={() => setConfirmClose(false)} title="Close out camp day">

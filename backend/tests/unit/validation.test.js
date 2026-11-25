@@ -100,6 +100,38 @@ describe('zod validation middleware', () => {
     await request(appWith(schemas.rescheduleSchema)).post('/x').send({}).expect(400);
   });
 
+  it('accepts optional camp coordinates and rejects out-of-range values', async () => {
+    const base = {
+      title: 'Coordinate Camp',
+      venue: 'Town Hall',
+      address: '12 Main Road, Bengaluru',
+      campDate: '2026-12-05',
+      startTime: '09:00',
+      endTime: '13:00',
+      slotDurationMins: 30,
+      totalCapacity: 48,
+    };
+
+    const accepted = await request(appWith(schemas.campCreateSchema))
+      .post('/x')
+      .send({ ...base, latitude: '12.9569', longitude: '77.7011' })
+      .expect(200);
+    expect(accepted.body.body.latitude).toBe(12.9569);
+    expect(accepted.body.body.longitude).toBe(77.7011);
+
+    const omitted = await request(appWith(schemas.campCreateSchema))
+      .post('/x')
+      .send(base)
+      .expect(200);
+    expect(omitted.body.body.latitude).toBeUndefined();
+
+    const invalid = await request(appWith(schemas.campUpdateSchema))
+      .post('/x')
+      .send({ latitude: 91, longitude: -181 })
+      .expect(400);
+    expect(invalid.body.code).toBe('VALIDATION_FAILED');
+  });
+
   it('leaves alphaMax absent so the server ALPHA_MAX setting is honoured', () => {
     expect(schemas.advisorQuerySchema.parse({})).not.toHaveProperty('alphaMax');
     expect(schemas.advisorQuerySchema.parse({ alphaMax: '0.1' }).alphaMax).toBe(0.1);

@@ -14,6 +14,8 @@
  * A stale `SENDING` row (process died mid-delivery) is recycled after 10 min.
  */
 
+const { buildMapsUrl, buildShortNavigationUrl, publicBaseUrl } = require('./maps');
+
 const REMINDER_TYPES = {
   REMINDER_24H: { minutesBefore: 24 * 60, phrase: 'tomorrow' },
   REMINDER_2H: { minutesBefore: 2 * 60, phrase: 'in about 2 hours' },
@@ -125,11 +127,19 @@ async function rescheduleForBooking(conn, { bookingId, campDate, startTime, now 
 
 function buildMessage(row) {
   const spec = REMINDER_TYPES[row.type] || REMINDER_TYPES.REMINDER_24H;
+  const mapsUrl = buildMapsUrl(row);
+  const shortUrl = buildShortNavigationUrl(publicBaseUrl(process.env), row.qr_token);
+  const address = [row.address, row.city].filter(Boolean).join(', ');
+  const navigation = shortUrl || mapsUrl;
   return (
     `CHSC reminder: ${row.name}, your ${row.title} at ${row.venue} starts ${spec.phrase} ` +
-    `at ${formatTime12(row.start_time)}. Please arrive 10 minutes early with your QR pass. ` +
+    `at ${formatTime12(row.start_time)}. ` +
+    `${address ? `Address: ${address}. ` : ''}` +
+    `Booking ID #${row.booking_id}. ` +
+    `${navigation ? `Navigate: ${navigation}. ` : ''}` +
+    `Please arrive 10 minutes early with your QR pass. ` +
     `Can't make it? Release your seat from My Bookings so a waiting neighbour can be promoted.`
-  );
+  ).slice(0, 480);
 }
 
 async function logDelivery(pool, { reminder, channel, status, recipient, subject, message, provider, error }) {
@@ -234,8 +244,9 @@ async function claimDueReminders(pool, { now, limit }) {
 
     const [rows] = await conn.query(
       `SELECT r.id AS reminder_id, r.booking_id, r.type, r.attempts,
-              b.patient_id, u.name, u.phone, u.email,
-              c.id AS camp_id, c.title, c.venue, c.camp_date,
+              b.patient_id, b.qr_token, u.name, u.phone, u.email,
+              c.id AS camp_id, c.title, c.venue, c.address, c.city,
+              c.latitude, c.longitude, c.camp_date,
               s.start_time
        FROM reminders r
        JOIN bookings b ON b.id = r.booking_id
