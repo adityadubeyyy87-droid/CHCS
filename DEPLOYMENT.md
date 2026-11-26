@@ -112,6 +112,32 @@ For classroom demonstrations, role accounts may follow the `role@chcs.app` patte
 
 **SMTP/SMS honesty:** all provider credentials are optional. With none configured, notification attempts are recorded in `notifications_log` and labelled **Sandbox**. No real email or SMS delivery is claimed. Delivery is marked `SENT` only when the provider accepts the message; `FAILED` rows store the provider error and can be retried from the Notification Center (`POST /api/admin/notifications/:id/retry`) once credentials are configured.
 
+### Enable real delivery (Gmail + Fast2SMS)
+
+Set these in the Railway service's **Variables** tab (never in the repository, a workflow file or a chat message). Gmail needs **2-Step Verification** enabled and a 16-character **App Password** generated at <https://myaccount.google.com/apppasswords> — the normal Google password is rejected.
+
+| Variable | Value |
+|---|---|
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_SECURE` | `false` (STARTTLS) |
+| `SMTP_USER` | the full Gmail address that sends the mail |
+| `SMTP_PASS` | the 16-character Gmail App Password (spaces removed) |
+| `MAIL_FROM` | the same Gmail address, e.g. `CMRIT Health Camp <you@gmail.com>` — Gmail rejects an unverified `no-reply@` identity |
+| `MAIL_REPLY_TO` | optional monitored inbox |
+| `FAST2SMS_API_KEY` | key from the Fast2SMS dashboard |
+| `SMS_PROVIDER` | `Fast2SMS` |
+| `SMS_ROUTE` | `q` for quick route, or `t` for DLT-compliant transactional |
+| `SMS_SENDER_ID`, `SMS_DLT_TEMPLATE_ID` | required only for route `t`; must be the values approved for the registered Indian entity — never guess them |
+
+Railway redeploys automatically after variables change. Verify without sending to a patient:
+
+1. `GET /api/admin/ops/readiness` → `providers.email.live === true` and `providers.sms.live === true`.
+2. `POST /api/admin/ops/delivery-test` with `{ "channel": "EMAIL" }` then `{ "channel": "SMS" }` → each returns `simulated:false`, `delivered:true` and a provider reference (Gmail message ID / Fast2SMS request ID).
+3. Confirm the messages arrived in the admin inbox and on the admin phone, then create a real patient booking: confirmation email + SMS are sent to the **email and phone stored on that patient's registration**.
+
+If Gmail returns "Username and Password not accepted", the App Password is wrong or 2-Step Verification is off. If Fast2SMS returns a DLT error, use the approved sender/template with `SMS_ROUTE=t`; the app will record the provider's exact response on a `FAILED` row instead of claiming delivery.
+
 **Tickets and navigation:** each booking gets a cryptographically random `CHSC-BLR-…` token. The ticket QR encodes a real Google Maps directions URL with the token in the fragment (`#chsc=<token>`), so a phone camera opens navigation and the CHSC scanner still checks the patient in. Camp latitude/longitude are optional; without them the destination is the encoded venue, address and city. The SMS short link `/n/<token>` resolves to the same Maps destination and is never an open redirect.
 
 ### Start
