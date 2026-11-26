@@ -52,6 +52,7 @@ describe('strict live / real data only', () => {
     );
     expect(sandbox.email).toMatchObject({ name: 'Email Sandbox', live: false });
     expect(sandbox.sms).toMatchObject({ name: 'SMS Sandbox', live: false });
+    expect(sandbox.push).toMatchObject({ name: 'Web Push Sandbox', live: false });
     expect(await sandbox.email.send({ to: 'patient@example.org', subject: 'x', text: 'x' })).toMatchObject({
       simulated: true,
       provider: 'Email Sandbox',
@@ -59,6 +60,11 @@ describe('strict live / real data only', () => {
     expect(await sandbox.sms.send({ to: '9999999999', text: 'x' })).toMatchObject({
       simulated: true,
       provider: 'SMS Sandbox',
+    });
+    expect(await sandbox.push.send({ subscriptions: [], subject: 'x', text: 'x' })).toMatchObject({
+      simulated: true,
+      provider: 'Web Push Sandbox',
+      accepted: 0,
     });
 
     const live = createProviders(
@@ -72,6 +78,7 @@ describe('strict live / real data only', () => {
     );
     expect(live.email).toMatchObject({ name: 'SMTP', live: true });
     expect(live.sms).toMatchObject({ name: 'Fast2SMS', live: true });
+    expect(live.push).toMatchObject({ name: 'Web Push Sandbox', live: false });
 
     // Every notification written by the live API must pair SIMULATED with a
     // Sandbox provider — a fake gateway is never presented as a real delivery.

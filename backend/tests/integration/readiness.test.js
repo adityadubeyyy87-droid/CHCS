@@ -47,6 +47,8 @@ describe('ops readiness and provider self-test', () => {
     expect(response.body.providers.email.live).toBe(false);
     expect(response.body.providers.email.status).toBe('SANDBOX');
     expect(response.body.providers.sms.live).toBe(false);
+    expect(response.body.providers.push.live).toBe(false);
+    expect(response.body.providers.freeReady).toBe(false);
     expect(response.body.providers.ready).toBe(false);
 
     // Presence booleans only — no secret value is ever echoed back.
@@ -56,6 +58,7 @@ describe('ops readiness and provider self-test', () => {
     expect(response.body.integrity).toEqual(expect.objectContaining({
       oversubscribedSlots: 0,
       failedNotifications: expect.any(Number),
+      browserDevices: expect.any(Number),
       unnotifiedConfirmedBookings: expect.any(Number),
     }));
 

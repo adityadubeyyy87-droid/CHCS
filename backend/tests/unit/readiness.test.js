@@ -34,6 +34,10 @@ describe('providerReadiness', () => {
     expect(result.email.missing).toEqual(['SMTP_HOST', 'SMTP_USER']);
     expect(result.sms.live).toBe(false);
     expect(result.sms.missing).toEqual(['FAST2SMS_API_KEY']);
+    expect(result.push.live).toBe(false);
+    expect(result.push.status).toBe('SANDBOX');
+    expect(result.push.missing).toEqual(['VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY']);
+    expect(result.freeReady).toBe(false);
     expect(result.email.present.SMTP_PASS).toBe(false);
   });
 
@@ -64,6 +68,19 @@ describe('providerReadiness', () => {
     expect(result.sms.route).toBe('q');
     expect(result.sms.missing).toEqual([]);
     expect(result.sms.note).toMatch(/quick route/i);
+  });
+
+  it('marks the free browser path live from VAPID keys without exposing them', () => {
+    const result = providerReadiness({
+      VAPID_PUBLIC_KEY: 'public-material',
+      VAPID_PRIVATE_KEY: 'private-material',
+    });
+    expect(result.push.live).toBe(true);
+    expect(result.push.status).toBe('READY');
+    expect(result.push.missing).toEqual([]);
+    expect(result.freeReady).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('private-material');
+    expect(JSON.stringify(result)).not.toContain('public-material');
   });
 });
 

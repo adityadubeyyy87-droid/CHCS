@@ -176,6 +176,15 @@ export const api = {
   readiness: () => call('/api/admin/ops/readiness'),
   testDelivery: (channel) =>
     call('/api/admin/ops/delivery-test', { method: 'POST', body: { channel } }),
+
+  // Free browser device alerts (Web Push / VAPID).
+  pushConfig: () => call('/api/push/config'),
+  pushDevices: () => call('/api/push/devices'),
+  subscribePush: (subscription) =>
+    call('/api/push/subscriptions', { method: 'POST', body: subscription }),
+  unsubscribePush: (endpoint) =>
+    call('/api/push/subscriptions', { method: 'DELETE', body: { endpoint } }),
+  testPush: () => call('/api/push/test', { method: 'POST' }),
   advisor: (physicalCapacity) =>
     call('/api/admin/capacity-advisor', { qs: { physicalCapacity } }),
   notifications: (limit = 50, page = 1) =>

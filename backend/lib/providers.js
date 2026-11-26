@@ -15,6 +15,15 @@
 const nodemailer = require('nodemailer');
 const { redactRecipient } = require('./security');
 
+// Browser push is deliberately optional: a missing package or missing VAPID keys
+// must downgrade to an honest sandbox, never crash the delivery pipeline.
+let webPush = null;
+try {
+  webPush = require('web-push');
+} catch {
+  webPush = null;
+}
+
 function buildEmailProvider(env, { quiet = false } = {}) {
   const host = env.SMTP_HOST;
   const user = env.SMTP_USER;
@@ -149,11 +158,124 @@ function buildSmsProvider(env, { quiet = false } = {}) {
   };
 }
 
+/**
+ * Free browser push delivery (Web Push / VAPID).
+ *
+ * The browser issues one subscription per device and the push service is run by
+ * the browser vendor at no per-message cost. We store only the endpoint and its
+ * encryption keys. A 404/410 response means the subscription is dead and must be
+ * pruned; any other failure is surfaced so the audit row becomes FAILED.
+ */
+function buildPushProvider(env = process.env, { quiet = false, client = webPush } = {}) {
+  const publicKey = String(env.VAPID_PUBLIC_KEY || '').trim();
+  const privateKey = String(env.VAPID_PRIVATE_KEY || '').trim();
+  const subject = String(
+    env.VAPID_SUBJECT ||
+      env.FRONTEND_ORIGIN?.split(',')[0] ||
+      'https://chsc.app',
+  ).trim();
+  const live = Boolean(client && publicKey && privateKey);
+
+  if (live) {
+    try {
+      client.setVapidDetails(subject, publicKey, privateKey);
+    } catch (error) {
+      if (!quiet) console.warn('[push provider] invalid VAPID configuration:', error.message);
+      return {
+        name: 'Web Push Sandbox',
+        live: false,
+        publicKey: null,
+        async send() {
+          return {
+            ok: true,
+            provider: 'Web Push Sandbox',
+            simulated: true,
+            reference: 'sandbox-push-unconfigured',
+          };
+        },
+      };
+    }
+  }
+
+  return {
+    name: live ? 'Web Push' : 'Web Push Sandbox',
+    live,
+    publicKey: live ? publicKey : null,
+    async send({ subscriptions = [], subject: title, text, url } = {}) {
+      if (!live) {
+        if (!quiet) console.log('[PUSH SANDBOX] no VAPID keys configured (content omitted)');
+        return {
+          ok: true,
+          provider: 'Web Push Sandbox',
+          simulated: true,
+          reference: 'sandbox-push-no-devices',
+          accepted: 0,
+          rejected: 0,
+          expired: [],
+        };
+      }
+      if (!subscriptions.length) throw new Error('No subscribed browser device on this account.');
+
+      const payload = JSON.stringify({
+        title: String(title || 'CHSC alert').slice(0, 120),
+        body: String(text || 'You have a new CHSC update.').slice(0, 480),
+        url: String(url || subject).slice(0, 2048),
+        tag: 'chsc-update',
+      });
+      const outcomes = await Promise.allSettled(
+        subscriptions.map((subscription) =>
+          client.sendNotification(subscription, payload, {
+            TTL: 12 * 60 * 60,
+            urgency: 'high',
+            topic: 'chsc-update',
+          }),
+        ),
+      );
+
+      const expired = [];
+      const failures = [];
+      let accepted = 0;
+      outcomes.forEach((outcome, index) => {
+        if (outcome.status === 'fulfilled') {
+          accepted += 1;
+          return;
+        }
+        const reason = outcome.reason || {};
+        const statusCode = Number(reason.statusCode || 0);
+        if (statusCode === 404 || statusCode === 410) {
+          expired.push(subscriptions[index].endpoint);
+        }
+        failures.push(
+          String(reason.body || reason.message || reason || 'Push service rejected the message.').slice(0, 200),
+        );
+      });
+
+      if (!accepted) throw new Error(failures[0] || 'The browser push service rejected every device.');
+
+      return {
+        ok: true,
+        provider: 'Web Push',
+        simulated: false,
+        reference: `webpush-accepted-${accepted}-${Date.now()}`,
+        accepted,
+        rejected: subscriptions.length - accepted,
+        expired,
+      };
+    },
+  };
+}
+
 function createProviders(env = process.env, options = {}) {
   return {
     email: buildEmailProvider(env, options),
     sms: buildSmsProvider(env, options),
+    push: buildPushProvider(env, options),
   };
 }
 
-module.exports = { createProviders, buildEmailProvider, buildSmsProvider };
+module.exports = {
+  createProviders,
+  buildEmailProvider,
+  buildSmsProvider,
+  buildPushProvider,
+};

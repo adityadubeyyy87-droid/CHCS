@@ -58,7 +58,7 @@ export default function Notifications() {
       <div className="split-left stack-lg">
         <Card>
           <CardHead icon="bell" title="Gateway Interceptor — audit log"
-            sub="Every SMS and email passes through this interceptor before it ever reaches a provider"
+            sub="Every email, SMS and browser alert passes through this interceptor before it reaches a provider"
             actions={canSeeLog && (
               <Spotlight color="rgba(16, 185, 129, 0.1)" size={300}>
                 <Magnetic intensity={0.4}>
@@ -86,7 +86,7 @@ export default function Notifications() {
               <InView key={n._id || `${n.id}-${i}`} once>
                 <article className={`gw-row ${n.local ? 'gw-local' : ''}`}>
                   <div className="gw-top">
-                    <Badge status={n.channel} tone={n.channel === 'SMS' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
+                    <Badge status={n.channel} tone={n.channel === 'SMS' || n.channel === 'PUSH' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
                     <Badge
                       status={n.status || 'PENDING'}
                       tone={String(n.status || '').toUpperCase() === 'SENT' ? 'ok' : String(n.status || '').toUpperCase() === 'FAILED' ? 'bad' : String(n.status || '').toUpperCase() === 'SIMULATED' ? 'sim' : 'info'}
@@ -122,9 +122,9 @@ export default function Notifications() {
         <Card className="tips-card">
           <CardHead icon="clock" title="Automated reminder schedule" sub="node-cron sweep · de-duplicated per booking" />
           <ul className="math-steps">
-            <li><strong>24 hours before</strong> the slot — Nodemailer email + Fast2SMS summary.</li>
-            <li><strong>2 hours before</strong> — final SMS with the slot time and the on-time pledge.</li>
-            <li><strong>On promotion</strong> from the waitlist — instant notice with the new token.</li>
+            <li><strong>24 hours before</strong> the slot — email + SMS summary, plus a free browser alert where enabled.</li>
+            <li><strong>2 hours before</strong> — final SMS with the slot time and the on-time pledge, mirrored to browser devices.</li>
+            <li><strong>On promotion</strong> from the waitlist — instant notice with the new token, including free device alerts.</li>
             <li>Each reminder type is stored in <span className="mono">notifications_log</span>, so a booking never receives the same reminder twice.</li>
           </ul>
         </Card>
@@ -135,6 +135,8 @@ export default function Notifications() {
             The backend logs delivery metadata through the interceptor. Where SMTP/SMS credentials are not configured,
             the provider runs in sandbox mode (Fast2SMS / Nodemailer test transport) and the real log row is marked{' '}
             <Badge status="SIMULATED" tone="sim">SIMULATED</Badge>. It is never presented as a completed provider delivery.
+            Free browser alerts are sent through Web Push only to devices that opted in; a row becomes SENT only when the
+            browser push service accepts it.
           </p>
           {!canSeeLog && (
             <p className="muted small">

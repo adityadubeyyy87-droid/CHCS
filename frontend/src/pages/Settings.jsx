@@ -4,6 +4,9 @@ import React, { useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import {
+  browserSubscription, enableDeviceAlerts, unsubscribeBrowserPush, pushSupported,
+} from '../lib/push.js';
+import {
   Badge, Button, Card, CardHead, EmptyState, ErrorNote, Field, Icon, Input,
   Modal, Sci, Select, Skeleton,
 } from '../components/ui.jsx';
@@ -114,6 +117,9 @@ export default function Settings() {
       </div>
 
       <div className="split-right stack-lg">
+        <InView once delay={0.15}>
+          <DeviceAlerts />
+        </InView>
         {isAdmin ? (
           <InView once>
             <AdminUsers />
@@ -144,6 +150,161 @@ export default function Settings() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+/**
+ * Free browser alerts. The backend owns VAPID and MySQL storage; this card only
+ * asks the browser for permission and a real PushManager subscription.
+ */
+function DeviceAlerts() {
+  const { toast } = useApp();
+  const config = useFetch(() => api.pushConfig(), []);
+  const devices = useFetch(() => api.pushDevices(), []);
+  const [busy, setBusy] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  const supported = pushSupported();
+  const enabled = Boolean(config.data?.enabled);
+  const deviceCount = devices.data?.devices?.length || 0;
+
+  async function enable() {
+    setBusy('enable');
+    try {
+      await enableDeviceAlerts(api);
+      toast('Free browser alerts enabled on this device.', 'ok', 'MySQL');
+      setTestResult(null);
+      await Promise.all([config.reload(), devices.reload()]);
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function disable() {
+    setBusy('disable');
+    try {
+      const subscription = await browserSubscription();
+      if (!subscription) {
+        throw new Error('This browser has no local alert subscription. Re-enable it first, then disable it here.');
+      }
+      await api.unsubscribePush(subscription.toJSON().endpoint);
+      await unsubscribeBrowserPush();
+      toast('Browser alert removed from this device.', 'ok', 'MySQL');
+      setTestResult(null);
+      await Promise.all([config.reload(), devices.reload()]);
+    } catch (err) {
+      toast(err.message, 'bad');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function test() {
+    setBusy('test');
+    setTestResult(null);
+    try {
+      const result = await api.testPush();
+      setTestResult(result);
+      toast(result.message || 'Browser push service accepted the test alert.', 'ok', 'Web Push');
+    } catch (err) {
+      setTestResult({ error: err.message });
+      toast(err.message, 'bad');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHead
+        icon="bell"
+        title="Free browser alerts"
+        sub="Web Push to your registered devices — no SMS wallet, no phone number sent to a paid gateway"
+        actions={<Badge tone={enabled ? 'ok' : 'sim'}>{enabled ? 'READY' : 'SANDBOX'}</Badge>}
+      />
+      <p className="muted small">
+        Each device grants its own permission. The browser vendor delivers the encrypted alert for free;
+        CHSC stores only the subscription endpoint and its encryption keys. No clinical data is included.
+      </p>
+      <div className="detail-facts">
+        <div><small>Backend VAPID</small><strong>{config.loading ? 'Checking…' : enabled ? 'Configured' : 'Not configured'}</strong></div>
+        <div><small>This browser</small><strong>{supported ? 'Supported' : 'Unsupported'}</strong></div>
+        <div><small>Devices on account</small><strong>{devices.loading ? '…' : deviceCount}</strong></div>
+      </div>
+
+      {config.error && <ErrorNote onRetry={config.reload}>{config.error}</ErrorNote>}
+      {devices.error && <ErrorNote onRetry={devices.reload}>{devices.error}</ErrorNote>}
+      {!supported && (
+        <p className="muted small">
+          Use a current Chrome, Edge, Firefox or Safari browser over HTTPS to receive device alerts.
+        </p>
+      )}
+      {supported && !enabled && !config.loading && !config.error && (
+        <p className="muted small">
+          The backend has no VAPID key pair yet, so no device can be registered. Nothing is simulated here.
+        </p>
+      )}
+
+      <div className="row-actions">
+        <Button
+          size="sm"
+          variant="primary"
+          icon="bell"
+          loading={busy === 'enable'}
+          disabled={!supported || !enabled || Boolean(busy)}
+          onClick={enable}
+        >
+          Enable this device
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="x"
+          loading={busy === 'disable'}
+          disabled={!deviceCount || Boolean(busy)}
+          onClick={disable}
+        >
+          Disable this device
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="send"
+          loading={busy === 'test'}
+          disabled={!deviceCount || Boolean(busy)}
+          onClick={test}
+        >
+          Send test alert
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="refresh"
+          disabled={Boolean(busy)}
+          onClick={() => { config.reload(); devices.reload(); }}
+        >
+          Refresh
+        </Button>
+      </div>
+
+      {deviceCount > 0 && (
+        <div className="push-devices" aria-label="Registered browser devices">
+          {devices.data.devices.map((device) => (
+            <div className="push-device" key={device.id}>
+              <span><Icon name="check" size={12} /> <strong>{device.endpointHost}</strong></span>
+              <small className="muted">{new Date(device.createdAt).toLocaleString()}</small>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {testResult && (
+        <p className={`small ${testResult.error ? 'text-danger' : ''}`} role="status" aria-live="polite">
+          {testResult.error || `${testResult.provider} · ${testResult.accepted} device(s) · ${testResult.reference || 'accepted'}`}
+        </p>
+      )}
+    </Card>
   );
 }
 

@@ -24,13 +24,23 @@ function codeList(provider) {
   ));
 }
 
-function ProviderCard({ channel, provider, canTest, testing, onTest }) {
+const PROVIDER_VIEW = {
+  EMAIL: { icon: 'send', title: 'Email delivery', testLabel: 'email' },
+  SMS: { icon: 'radio', title: 'SMS delivery', testLabel: 'SMS' },
+  PUSH: { icon: 'bell', title: 'Free browser alerts', testLabel: 'browser alert' },
+};
+
+function ProviderCard({ channel, provider, canTest, testing, onTest, deviceCount }) {
+  const view = PROVIDER_VIEW[channel] || PROVIDER_VIEW.EMAIL;
   const isEmail = channel === 'EMAIL';
+  const isSms = channel === 'SMS';
+  const isPush = channel === 'PUSH';
+
   return (
     <Card className="readiness-provider">
       <CardHead
-        icon={isEmail ? 'send' : 'radio'}
-        title={isEmail ? 'Email delivery' : 'SMS delivery'}
+        icon={view.icon}
+        title={view.title}
         sub={provider.note}
         actions={<Badge tone={provider.live ? 'ok' : 'sim'}>{provider.status}</Badge>}
       />
@@ -39,12 +49,13 @@ function ProviderCard({ channel, provider, canTest, testing, onTest }) {
           <small className="muted">Provider</small>
           <strong>{provider.provider}</strong>
         </div>
-        {isEmail ? (
+        {isEmail && (
           <div>
             <small className="muted">From address</small>
             <strong className="mono readiness-from">{provider.from}</strong>
           </div>
-        ) : (
+        )}
+        {isSms && (
           <div>
             <small className="muted">Route</small>
             <strong className="mono">
@@ -53,9 +64,21 @@ function ProviderCard({ channel, provider, canTest, testing, onTest }) {
             </strong>
           </div>
         )}
+        {isPush && (
+          <>
+            <div>
+              <small className="muted">Registered devices</small>
+              <strong>{deviceCount || 0}</strong>
+            </div>
+            <div>
+              <small className="muted">Cost per alert</small>
+              <strong>₹0 · browser vendor</strong>
+            </div>
+          </>
+        )}
       </div>
 
-      {!isEmail && (
+      {isSms && (
         <div className="readiness-dlt">
           <Badge tone={provider.dlt?.sender ? 'ok' : 'muted'}>DLT sender {provider.dlt?.sender ? 'set' : 'missing'}</Badge>
           <Badge tone={provider.dlt?.template ? 'ok' : 'muted'}>DLT template {provider.dlt?.template ? 'set' : 'missing'}</Badge>
@@ -71,16 +94,27 @@ function ProviderCard({ channel, provider, canTest, testing, onTest }) {
       )}
 
       <div className="row-actions">
-        <Button
-          size="sm"
-          variant="ghost"
-          icon="send"
-          onClick={() => onTest(channel)}
-          loading={testing === channel}
-          disabled={!canTest || Boolean(testing)}
-        >
-          {canTest ? `Send test ${isEmail ? 'email' : 'SMS'}` : 'Admin-only self-test'}
-        </Button>
+        {isPush ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="bell"
+            onClick={() => { window.location.hash = '#/settings'; }}
+          >
+            Open device alerts
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="send"
+            onClick={() => onTest(channel)}
+            loading={testing === channel}
+            disabled={!canTest || Boolean(testing)}
+          >
+            {canTest ? `Send test ${view.testLabel}` : 'Admin-only self-test'}
+          </Button>
+        )}
       </div>
     </Card>
   );
@@ -117,8 +151,9 @@ export default function Readiness() {
       <div className="stack-lg">
         <Card><CardHead icon="flask" title="Ops Readiness Console" sub="Reading live configuration and camp state…" /></Card>
         <div className="bento">
-          <Card className="bento-2"><Skeleton h={210} /></Card>
-          <Card className="bento-2"><Skeleton h={210} /></Card>
+          <div className="bento-3"><Card><Skeleton h={210} /></Card></div>
+          <div className="bento-3"><Card><Skeleton h={210} /></Card></div>
+          <div className="bento-3"><Card><Skeleton h={210} /></Card></div>
         </div>
         <Card><Skeleton h={180} /></Card>
       </div>
@@ -150,8 +185,12 @@ export default function Readiness() {
           sub="Delivery configuration and camp run-readiness, computed from live MySQL rows."
           actions={(
             <div className="row-actions">
-              <Badge tone={provider.ready ? 'ok' : report.providers?.sandboxOnly ? 'sim' : 'warn'}>
-                {provider.ready ? 'Email + SMS live' : report.providers?.sandboxOnly ? 'Sandbox only' : 'Partially configured'}
+              <Badge tone={provider.freeReady ? 'ok' : provider.ready ? 'warn' : 'sim'}>
+                {provider.freeReady
+                  ? 'Free browser alerts live'
+                  : provider.ready
+                    ? 'Partial · no free path'
+                    : 'Sandbox only'}
               </Badge>
               <Button size="sm" variant="ghost" icon="refresh" onClick={data.reload}>Re-run checks</Button>
             </div>
@@ -163,6 +202,7 @@ export default function Readiness() {
           <div className="kpi"><div className="value warn">{integrity.campsWithoutDoctor}</div><div className="label">No doctor</div></div>
           <div className="kpi"><div className="value">{integrity.unnotifiedConfirmedBookings}</div><div className="label">Un-notified bookings</div></div>
           <div className="kpi"><div className="value">{integrity.failedNotifications}</div><div className="label">Failed messages</div></div>
+          <div className="kpi"><div className="value ok">{integrity.browserDevices || 0}</div><div className="label">Browser devices</div></div>
         </div>
         <Sci k="ethical" as="p" className="muted small">
           Each score is 100 minus fixed penalties for named failures. This console is arithmetic over
@@ -171,7 +211,7 @@ export default function Readiness() {
       </Card>
 
       <div className="bento">
-        <div className="bento-2">
+        <div className="bento-3">
           <ProviderCard
             channel="EMAIL"
             provider={provider.email || { present: {}, missing: [] }}
@@ -180,11 +220,21 @@ export default function Readiness() {
             onTest={runTest}
           />
         </div>
-        <div className="bento-2">
+        <div className="bento-3">
           <ProviderCard
             channel="SMS"
             provider={provider.sms || { present: {}, missing: [] }}
             canTest={isAdmin}
+            testing={testing}
+            onTest={runTest}
+          />
+        </div>
+        <div className="bento-3">
+          <ProviderCard
+            channel="PUSH"
+            provider={provider.push || { present: {}, missing: [] }}
+            deviceCount={integrity.browserDevices}
+            canTest={false}
             testing={testing}
             onTest={runTest}
           />
@@ -209,7 +259,7 @@ export default function Readiness() {
           )}
           <p className="muted small">
             A sandbox result is an audit state, not a delivery claim. Configure the provider on the
-            backend and run the test again.
+            backend and run the test again. Browser-alert self-tests live in Settings.
           </p>
         </Card>
       )}
@@ -232,6 +282,7 @@ export default function Readiness() {
           <div className="kpi"><strong>{integrity.unnotifiedConfirmedBookings}</strong><span>Confirmed bookings without a confirmation</span></div>
           <div className="kpi"><strong>{integrity.campsWithoutVolunteer}</strong><span>Published camps without a volunteer</span></div>
           <div className="kpi"><strong>{integrity.campsWithoutSlots}</strong><span>Published camps without slots</span></div>
+          <div className="kpi"><strong>{integrity.browserDevices || 0}</strong><span>Registered browser devices</span></div>
         </div>
       </Card>
 

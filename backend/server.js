@@ -58,6 +58,13 @@ const {
   redactNotificationForSocket,
   limitSocketPayload,
 } = require('./lib/security');
+const {
+  validPushEndpoint,
+  parsePushSubscription,
+  loadPushSubscriptions,
+  prunePushSubscriptions,
+  publicPushDevice,
+} = require('./lib/push');
 
 const PORT = Number(process.env.PORT || 4000);
 const HOST = String(process.env.HOST || '').trim() || undefined;
@@ -84,6 +91,22 @@ const PROMOTION_HOLD_MINUTES = boundedIntEnv('PROMOTION_HOLD_MINUTES', 15, 1, 14
 const HOLD_EXPIRY_BATCH_SIZE = boundedIntEnv('HOLD_EXPIRY_BATCH_SIZE', 100, 1, 1000);
 const HOLD_EXPIRY_CRON = String(process.env.HOLD_EXPIRY_CRON || '* * * * *');
 const ACTIVE_BOOKING_STATUSES = ['HELD', 'CONFIRMED', 'CHECKED_IN', 'COMPLETED'];
+
+/**
+ * Clicking a device alert returns to the hosted app, not the raw API host.
+ * PUSH_APP_URL may include the GitHub Pages project subpath (`/CHCS`); without
+ * it we fall back to the configured frontend origin and finally local dev.
+ */
+function pushTargetUrl(env = process.env) {
+  const explicit = String(env.PUSH_APP_URL || env.PUSH_FRONTEND_URL || '').trim();
+  const frontend = explicit || String(env.FRONTEND_ORIGIN || '')
+    .split(',')
+    .map((item) => item.trim())
+    .find(Boolean);
+  const base = String(frontend || `http://localhost:${PORT}`).replace(/\/+$/, '');
+  if (base.endsWith('#/notifications')) return base;
+  return `${base}/#/notifications`;
+}
 
 class ApiError extends Error {
   constructor(status, message, code = 'API_ERROR', details = null) {
@@ -981,7 +1004,8 @@ function requireRole(...roles) {
  * ------------------------------------------------------------------------- */
 
 function providerMeta(channel) {
-  const provider = channel === 'SMS' ? providers.sms : providers.email;
+  const provider =
+    channel === 'SMS' ? providers.sms : channel === 'PUSH' ? providers.push : providers.email;
   return {
     name: provider.name,
     live: Boolean(provider.live),
@@ -1051,6 +1075,7 @@ async function insertNotification(conn, data) {
     lastError: null,
     providerMessageId: null,
     dedupeKey,
+    payload: data.payload || null,
     duplicate,
     sentAt: new Date().toISOString(),
     simulated: meta.simulated,
@@ -1154,7 +1179,19 @@ async function deliverNotification(notification, { force = false } = {}) {
     // an administrator explicitly asks for a retry.
     if (!force && ['SENT', 'SIMULATED'].includes(row.status)) return row;
 
-    const provider = row.channel === 'SMS' ? providers.sms : providers.email;
+    const provider =
+      row.channel === 'SMS' ? providers.sms : row.channel === 'PUSH' ? providers.push : providers.email;
+    const subscriptions = row.channel === 'PUSH'
+      ? await loadPushSubscriptions(pool, row.user_id)
+      : [];
+    if (row.channel === 'PUSH' && !subscriptions.length) {
+      // The mirror is only created when a device exists; this guards a race
+      // where the browser revoked the subscription before delivery started.
+      await updateNotificationStatus(row.id, 'SIMULATED', {
+        lastError: 'No subscribed browser device remained at delivery time.',
+      });
+      return { ...row, status: 'SIMULATED' };
+    }
     const details = await hydrateNotificationDetails(row);
     const built = buildMessages(row.type, details, { qrCid: 'chsc-ticket' });
 
@@ -1205,7 +1242,11 @@ async function deliverNotification(notification, { force = false } = {}) {
           html: row.channel === 'EMAIL' ? built.html : undefined,
           attachments,
           replyTo: process.env.MAIL_REPLY_TO || undefined,
+          ...(row.channel === 'PUSH'
+            ? { subscriptions, url: pushTargetUrl(process.env) }
+            : {}),
         });
+        if (result.expired?.length) await prunePushSubscriptions(pool, result.expired);
         const finalStatus = result.simulated ? 'SIMULATED' : 'SENT';
         await updateNotificationStatus(row.id, finalStatus, {
           attempts: attempt,
@@ -1235,6 +1276,52 @@ async function deliverNotification(notification, { force = false } = {}) {
   }
 }
 
+/**
+ * Mirror a real booking/reminder event to the patient's enabled browser devices.
+ * A push row is created only when at least one live subscription exists, so a
+ * user who never opted in never receives a failed or fabricated delivery row.
+ */
+async function queueDevicePush(notification) {
+  if (!notification?.userId || !providers.push.live) return null;
+  const subscriptions = await loadPushSubscriptions(pool, notification.userId);
+  if (!subscriptions.length) return null;
+
+  const rowLike = {
+    booking_id: notification.bookingId || null,
+    user_id: notification.userId,
+    payload: notification.payload || null,
+  };
+  const details = await hydrateNotificationDetails(rowLike);
+  const built = buildMessages(notification.type, details, { qrCid: 'chsc-ticket' });
+  const dedupeKey = notification.dedupeKey
+    ? notification.dedupeKey.replace(/:(EMAIL|SMS):/, ':PUSH:')
+    : notificationDedupeKey({
+        bookingId: notification.bookingId,
+        userId: notification.userId,
+        type: notification.type,
+        channel: 'PUSH',
+      });
+
+  const created = await insertNotification(pool, {
+    bookingId: notification.bookingId,
+    userId: notification.userId,
+    channel: 'PUSH',
+    type: notification.type,
+    recipient: `device:${notification.userId}`,
+    subject: built.subject,
+    message: String(built.text).slice(0, 480),
+    dedupeKey,
+    payload: { ...details, devicePush: true },
+  });
+  if (!created.duplicate) {
+    const safe = redactNotificationForSocket(created);
+    emitBounded(io, 'gateway:message', safe);
+    emitBounded(io, 'notification:new', safe);
+    deliverNotification(created);
+  }
+  return created;
+}
+
 function publishNotifications(notifications = []) {
   for (const notification of notifications) {
     if (!notification || notification.duplicate) continue;
@@ -1243,6 +1330,9 @@ function publishNotifications(notifications = []) {
     emitBounded(io, 'gateway:message', safe);
     emitBounded(io, 'notification:new', safe);
     deliverNotification(notification);
+    queueDevicePush(notification).catch((error) => {
+      console.warn('[device push mirror]', String(error.message || error).slice(0, 200));
+    });
   }
 }
 
@@ -1765,6 +1855,9 @@ async function buildOpsReadiness() {
             SUM(status = 'FAILED') AS failed
        FROM notifications_log`,
   );
+  const [[pushDeviceRow]] = await pool.query(
+    'SELECT COUNT(*) AS total FROM push_subscriptions',
+  );
   const [[unnotifiedRow]] = await pool.query(
     `SELECT COUNT(*) AS total
        FROM bookings b
@@ -1853,6 +1946,7 @@ async function buildOpsReadiness() {
       sentNotifications: Number(notifStatusRow.sent || 0),
       simulatedNotifications: Number(notifStatusRow.simulated || 0),
       failedNotifications: Number(notifStatusRow.failed || 0),
+      browserDevices: Number(pushDeviceRow.total || 0),
       unnotifiedConfirmedBookings: Number(unnotifiedRow.total || 0),
       oversubscribedSlots,
       campsWithoutDoctor,
@@ -1900,6 +1994,193 @@ if (process.env.NODE_ENV !== 'test' && HOLD_EXPIRY_CRON !== 'off') {
 }
 
 /* ---------------------------------------------------------------------------
+ * FREE DEVICE ALERTS — Web Push / VAPID
+ * No paid SMS gateway is involved. The browser issues the subscription and the
+ * browser vendor delivers the encrypted notification for free.
+ * ------------------------------------------------------------------------- */
+
+app.get('/api/push/config', (_req, res) => {
+  res.json({
+    ok: true,
+    enabled: Boolean(providers.push.live),
+    publicKey: providers.push.publicKey || null,
+    subject: providers.push.live ? pushTargetUrl(process.env) : null,
+    note: providers.push.live
+      ? 'Browser push is free. Each device grants its own notification permission.'
+      : 'VAPID keys are not configured; browser alerts are unavailable.',
+  });
+});
+
+app.get(
+  '/api/push/devices',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      'SELECT id, endpoint, created_at, updated_at FROM push_subscriptions WHERE user_id = ? ORDER BY id ASC',
+      [req.user.id],
+    );
+    res.json({ ok: true, enabled: Boolean(providers.push.live), devices: rows.map(publicPushDevice) });
+  }),
+);
+
+app.post(
+  '/api/push/subscriptions',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    let subscription;
+    try {
+      subscription = parsePushSubscription(req.body);
+    } catch (error) {
+      throw new ApiError(400, error.message, error.code || 'VALIDATION');
+    }
+    const [result] = await pool.query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         user_id = VALUES(user_id), p256dh = VALUES(p256dh), auth = VALUES(auth)`,
+      [req.user.id, subscription.endpoint, subscription.p256dh, subscription.auth],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'PUSH_DEVICE_ENABLED',
+      targetType: 'device',
+      targetId: Number(result.insertId) || null,
+      after: { endpointHost: new URL(subscription.endpoint).hostname },
+    });
+    res.status(201).json({ ok: true, deviceId: Number(result.insertId) || null, enabled: Boolean(providers.push.live) });
+  }),
+);
+
+app.delete(
+  '/api/push/subscriptions',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const endpoint = String(req.body?.endpoint || '').trim();
+    if (!validPushEndpoint(endpoint)) {
+      throw new ApiError(400, 'endpoint must be a supported HTTPS browser push service URL.', 'VALIDATION');
+    }
+    const [result] = await pool.query(
+      'DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?',
+      [req.user.id, endpoint],
+    );
+    if (!Number(result.affectedRows)) {
+      throw new ApiError(404, 'That device subscription was not found on this account.', 'DEVICE_NOT_FOUND');
+    }
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'PUSH_DEVICE_DISABLED',
+      targetType: 'device',
+      targetId: null,
+      after: { endpointHost: new URL(endpoint).hostname },
+    });
+    res.json({ ok: true, removed: Number(result.affectedRows) });
+  }),
+);
+
+app.post(
+  '/api/push/test',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const subscriptions = await loadPushSubscriptions(pool, req.user.id);
+    const testedAt = new Date().toISOString();
+    if (!providers.push.live) {
+      // Even a refused attempt is recorded — a silent failure looks like delivery.
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'DELIVERY_TEST_FAILED',
+        targetType: 'provider',
+        targetId: null,
+        after: {
+          channel: 'PUSH',
+          provider: providers.push.name,
+          error: 'PROVIDER_NOT_CONFIGURED',
+          testedAt,
+        },
+      });
+      throw new ApiError(
+        409,
+        'Browser push is not configured on the backend. Nothing was sent.',
+        'PROVIDER_NOT_CONFIGURED',
+        { channel: 'PUSH', provider: providers.push.name },
+      );
+    }
+    if (!subscriptions.length) {
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'DELIVERY_TEST_FAILED',
+        targetType: 'provider',
+        targetId: null,
+        after: { channel: 'PUSH', provider: providers.push.name, error: 'NO_DEVICE', testedAt },
+      });
+      throw new ApiError(
+        409,
+        'No browser alert is enabled on this account. Open Settings → Browser alerts and enable this device first.',
+        'NO_DEVICE',
+        { channel: 'PUSH' },
+      );
+    }
+    const text =
+      `CHSC browser alert test at ${testedAt}. ` +
+      'This free device notification contains no booking, patient or clinical data.';
+    try {
+      const result = await providers.push.send({
+        subscriptions,
+        subject: 'CHSC browser alert test',
+        text,
+        url: pushTargetUrl(process.env),
+      });
+      if (result.expired?.length) await prunePushSubscriptions(pool, result.expired);
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'DELIVERY_TEST',
+        targetType: 'provider',
+        targetId: null,
+        after: {
+          channel: 'PUSH',
+          provider: providers.push.name,
+          simulated: false,
+          accepted: result.accepted,
+          reference: result.reference,
+          testedAt,
+        },
+      });
+      res.json({
+        ok: true,
+        channel: 'PUSH',
+        provider: providers.push.name,
+        live: true,
+        simulated: false,
+        delivered: true,
+        accepted: result.accepted,
+        reference: result.reference || null,
+        recipient: `${subscriptions.length} browser device${subscriptions.length === 1 ? '' : 's'}`,
+        testedAt,
+        message: 'Your browser push service accepted the test alert. Check this device.',
+      });
+    } catch (error) {
+      const reason = String(error?.message || error || 'Push service rejected the message.').slice(0, 300);
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'DELIVERY_TEST_FAILED',
+        targetType: 'provider',
+        targetId: null,
+        after: { channel: 'PUSH', provider: providers.push.name, error: reason, testedAt },
+      });
+      throw new ApiError(502, `Web Push rejected the test alert: ${reason}`, 'PROVIDER_ERROR', {
+        channel: 'PUSH',
+        provider: providers.push.name,
+      });
+    }
+  }),
+);
+
+/* ---------------------------------------------------------------------------
  * HEALTH & AUTH
  * ------------------------------------------------------------------------- */
 
@@ -1920,6 +2201,7 @@ app.get('/api/health', async (_req, res) => {
     database: db ? 'connected' : 'offline',
     dbVersion,
     socket: 'ready',
+    push: providers.push.live ? 'configured' : 'unconfigured',
     time: new Date().toISOString(),
   });
 });
@@ -4256,6 +4538,9 @@ app.delete(
          WHERE user_id = ?`,
         [`purged.${id}@anonymized.invalid`, id],
       );
+      // Browser push endpoints identify a device, so erasure removes every
+      // subscription along with the direct contact fields.
+      await conn.query('DELETE FROM push_subscriptions WHERE user_id = ?', [id]);
 
       return {
         purged: true,
@@ -4710,4 +4995,6 @@ module.exports = {
   promotionHoldMinutes: PROMOTION_HOLD_MINUTES,
   providers,
   limiters,
+  queueDevicePush,
+  pushTargetUrl,
 };

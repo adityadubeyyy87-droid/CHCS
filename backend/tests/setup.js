@@ -22,3 +22,7 @@ delete process.env.SMTP_HOST;
 delete process.env.SMTP_USER;
 delete process.env.SMTP_PASS;
 delete process.env.FAST2SMS_API_KEY;
+// No test may send a real browser push. The VAPID provider must stay in its
+// honest sandbox state even if a developer's local .env has production keys.
+delete process.env.VAPID_PUBLIC_KEY;
+delete process.env.VAPID_PRIVATE_KEY;

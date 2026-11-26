@@ -17,6 +17,8 @@ const EMAIL_REQUIRED = ['SMTP_HOST', 'SMTP_USER'];
 const EMAIL_OPTIONAL = ['SMTP_PORT', 'SMTP_SECURE', 'SMTP_PASS', 'MAIL_FROM', 'MAIL_REPLY_TO'];
 const SMS_REQUIRED = ['FAST2SMS_API_KEY'];
 const SMS_OPTIONAL = ['SMS_PROVIDER', 'SMS_ROUTE', 'SMS_SENDER_ID', 'SMS_DLT_TEMPLATE_ID'];
+const PUSH_REQUIRED = ['VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY'];
+const PUSH_OPTIONAL = ['VAPID_SUBJECT'];
 
 function has(env, key) {
   return Boolean(String(env?.[key] ?? '').trim());
@@ -29,14 +31,16 @@ function presence(env, keys) {
 /**
  * Describe the configured providers without leaking a single secret.
  * `live` mirrors backend/lib/providers.js exactly: email needs SMTP_HOST and
- * SMTP_USER; SMS needs FAST2SMS_API_KEY.
+ * SMTP_USER; SMS needs FAST2SMS_API_KEY; browser push needs both VAPID keys.
  */
 function providerReadiness(env = process.env) {
   const emailPresent = presence(env, [...EMAIL_REQUIRED, ...EMAIL_OPTIONAL]);
   const smsPresent = presence(env, [...SMS_REQUIRED, ...SMS_OPTIONAL]);
+  const pushPresent = presence(env, [...PUSH_REQUIRED, ...PUSH_OPTIONAL]);
 
   const emailLive = has(env, 'SMTP_HOST') && has(env, 'SMTP_USER');
   const smsLive = has(env, 'FAST2SMS_API_KEY');
+  const pushLive = PUSH_REQUIRED.every((key) => has(env, key));
 
   const dltSender = has(env, 'SMS_SENDER_ID');
   const dltTemplate = has(env, 'SMS_DLT_TEMPLATE_ID');
@@ -44,6 +48,7 @@ function providerReadiness(env = process.env) {
 
   const emailMissing = EMAIL_REQUIRED.filter((key) => !emailPresent[key]);
   const smsMissing = SMS_REQUIRED.filter((key) => !smsPresent[key]);
+  const allLive = emailLive && smsLive && pushLive;
   if (route === 't') {
     if (!dltSender) smsMissing.push('SMS_SENDER_ID');
     if (!dltTemplate) smsMissing.push('SMS_DLT_TEMPLATE_ID');
@@ -79,8 +84,23 @@ function providerReadiness(env = process.env) {
           ? 'Fast2SMS transactional route with an approved DLT sender and template.'
           : 'Fast2SMS quick route without DLT sender/template. Indian carriers may reject traffic that is not on a registered template.',
     },
-    ready: emailLive && smsLive,
-    sandboxOnly: !emailLive && !smsLive,
+    push: {
+      channel: 'PUSH',
+      provider: pushLive ? 'Web Push (VAPID)' : 'Web Push Sandbox',
+      live: pushLive,
+      status: pushLive ? 'READY' : 'SANDBOX',
+      required: PUSH_REQUIRED,
+      present: pushPresent,
+      missing: PUSH_REQUIRED.filter((key) => !pushPresent[key]),
+      note: pushLive
+        ? 'Free browser push is configured. Each device must still grant notification permission; no SMS fee applies.'
+        : 'No VAPID key pair. Browser alerts are recorded as Web Push Sandbox and never claimed as delivered.',
+    },
+    ready: allLive,
+    // The zero-cost path stands on its own: browser push needs no SMS wallet.
+    freeReady: pushLive,
+    allLive,
+    sandboxOnly: !emailLive && !smsLive && !pushLive,
   };
 }
 
@@ -185,7 +205,7 @@ function evaluateCamp(input = {}) {
       'notifications',
       'Notification delivery',
       'warn',
-      `${simulated} message(s) were recorded in Sandbox. Configure SMTP/Fast2SMS for real delivery.`,
+      `${simulated} message(s) were recorded in Sandbox. Configure SMTP/Fast2SMS or enable free browser alerts.`,
       5,
     ));
   } else {

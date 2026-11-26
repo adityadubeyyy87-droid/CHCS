@@ -7,12 +7,12 @@ Full-stack HealthTech platform for running free community health screening camps
 ## What it does
 
 CHSC connects **patients, camp organizers, doctors/volunteers, and administrators** through one web platform:
-- **Patients:** Browse camps → view live slot availability → book → QR pass with Google Maps directions → SMS/email confirmation → cancel/reschedule
+- **Patients:** Browse camps → view live slot availability → book → QR pass with Google Maps directions → free browser alert or SMS/email confirmation → cancel/reschedule
 - **Organizers:** Create camps → set venue coordinates → auto-generate non-overlapping slots → assign staff → monitor capacity
 - **Doctors/Volunteers:** QR check-in (Maps QR or human token) → live waiting-room TV → attendance recording
 - **Admins:** Analytics → capacity advisor → CSV export → user management → notification delivery audit with retry
 
-Every confirmed booking, reschedule and cancellation writes real EMAIL + SMS rows to `notifications_log`, including booking ID, camp, date/time, full venue/address, ticket reference and a navigation link. The QR encodes a Google Maps directions URL with the opaque ticket token in the fragment, so one scan both navigates and checks in. Email additionally embeds the ticket QR inline. With no SMTP/SMS credentials the rows are honestly marked **Sandbox**; `SENT` is written only when the provider accepts the message.
+Every confirmed booking, reschedule and cancellation writes real EMAIL + SMS rows to `notifications_log`, plus a **PUSH** row when the patient has opted in a browser device. Rows include booking ID, camp, date/time, full venue/address, ticket reference and a navigation link. The QR encodes a Google Maps directions URL with the opaque ticket token in the fragment, so one scan both navigates and checks in. Email additionally embeds the ticket QR inline. Browser alerts use free Web Push/VAPID and never require an SMS wallet. With no provider credentials the rows are honestly marked **Sandbox**; `SENT` is written only when the provider accepts the message.
 
 ## Key engineering guarantee — zero overbooking
 
@@ -82,7 +82,7 @@ node server.js
 
 `setup-production` applies `database/schema-production.sql` (DDL only) plus `database/migrations/*.sql`. It never drops data and never inserts sample records. `bootstrap-production.js` creates only the four real staff accounts from `BOOTSTRAP_*` environment variables; patients self-register. Regenerate the production DDL with `node scripts/generate-production-schema.mjs`.
 
-Required Railway variables (set in the dashboard; never commit values): `NODE_ENV=production`, `JWT_SECRET`, `MYSQL_URL` / `DB_NAME=railway`, `FRONTEND_ORIGIN`, `TRUST_PROXY=2`, `BOOTSTRAP_ADMIN_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_ORGANIZER_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_DOCTOR_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_VOLUNTEER_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_PHONE_SEED`, `PURGE_ON_BOOT=false`. To replace an older seeded database, set `PURGE_ON_BOOT=true` and `ALLOW_PRODUCTION_PURGE=true` for one deployment, then return both to `false`. SMTP/SMS variables are optional; without credentials, delivery is labelled Sandbox and no real delivery is claimed. Full reference: `DEPLOYMENT.md`.
+Required Railway variables (set in the dashboard; never commit values): `NODE_ENV=production`, `JWT_SECRET`, `MYSQL_URL` / `DB_NAME=railway`, `FRONTEND_ORIGIN`, `TRUST_PROXY=2`, `BOOTSTRAP_ADMIN_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_ORGANIZER_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_DOCTOR_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_VOLUNTEER_EMAIL/PASSWORD/NAME`, `BOOTSTRAP_PHONE_SEED`, `PURGE_ON_BOOT=false`. To replace an older seeded database, set `PURGE_ON_BOOT=true` and `ALLOW_PRODUCTION_PURGE=true` for one deployment, then return both to `false`. SMTP/SMS variables are optional; without credentials, delivery is labelled Sandbox and no real delivery is claimed. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and `PUSH_APP_URL` for free browser alerts. Full reference: `DEPLOYMENT.md`.
 
 ## Test suite
 

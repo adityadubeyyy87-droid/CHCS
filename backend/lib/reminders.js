@@ -15,6 +15,7 @@
  */
 
 const { buildMapsUrl, buildShortNavigationUrl, publicBaseUrl } = require('./maps');
+const { loadPushSubscriptions, prunePushSubscriptions } = require('./push');
 
 const REMINDER_TYPES = {
   REMINDER_24H: { minutesBefore: 24 * 60, phrase: 'tomorrow' },
@@ -179,6 +180,10 @@ async function deliver(reminder, providers, pool) {
   const message = buildMessage(reminder);
   const subject = `CHSC reminder · ${reminder.title} ${reminder.type === 'REMINDER_24H' ? 'tomorrow' : 'soon'}`;
   const failures = [];
+  const navigate =
+    buildShortNavigationUrl(publicBaseUrl(process.env), reminder.qr_token) ||
+    buildMapsUrl(reminder) ||
+    publicBaseUrl(process.env);
 
   const channels = [
     {
@@ -195,6 +200,22 @@ async function deliver(reminder, providers, pool) {
     },
   ];
 
+  // Free device alerts are only attempted when this patient actually enabled
+  // browser notifications on at least one device. No subscription = no fake row.
+  if (providers.push?.live) {
+    const subscriptions = await loadPushSubscriptions(pool, reminder.patient_id);
+    if (subscriptions.length) {
+      channels.push({
+        channel: 'PUSH',
+        provider: providers.push,
+        recipient: `device:${reminder.patient_id}`,
+        subject,
+        subscriptions,
+        url: navigate,
+      });
+    }
+  }
+
   for (const item of channels) {
     if (!item.recipient) continue;
     try {
@@ -202,7 +223,11 @@ async function deliver(reminder, providers, pool) {
         to: item.recipient,
         subject: item.subject,
         text: message,
+        ...(item.subscriptions
+          ? { subscriptions: item.subscriptions, url: item.url }
+          : {}),
       });
+      if (result.expired?.length) await prunePushSubscriptions(pool, result.expired);
       await logDelivery(pool, {
         reminder,
         channel: item.channel,

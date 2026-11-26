@@ -103,6 +103,9 @@ For classroom demonstrations, role accounts may follow the `role@chcs.app` patte
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`, `MAIL_REPLY_TO` | Real email delivery, including the inline QR ticket |
 | `FAST2SMS_API_KEY`, `SMS_PROVIDER`, `SMS_ROUTE` | Real SMS delivery. `SMS_ROUTE=t` for DLT transactional, `q` for quick route |
 | `SMS_SENDER_ID`, `SMS_DLT_TEMPLATE_ID` | Approved Indian DLT sender + template. Required for transactional route `t`; never invent these values |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | Key pair for **free** browser Web Push. Both are required; the private key is a secret and must never be committed |
+| `VAPID_SUBJECT` | Contact URL for the push service, e.g. the backend HTTPS origin or `mailto:ops@example.com` |
+| `PUSH_APP_URL` | Full app URL used when a device alert is clicked, including the Pages project subpath (e.g. `https://user.github.io/CHCS`). Falls back to the first `FRONTEND_ORIGIN` |
 | `PUBLIC_BASE_URL` | Public backend origin used in SMS short links (`https://api.example.com/n/<token>`). Falls back to `RAILWAY_PUBLIC_DOMAIN`, then `FRONTEND_ORIGIN` |
 | `JWT_EXPIRES` | Token lifetime (default `12h`) |
 | `REMINDER_CRON` | Reminder sweep schedule; `off` disables automatic sweeping |
@@ -110,9 +113,31 @@ For classroom demonstrations, role accounts may follow the `role@chcs.app` patte
 | `RATE_LIMIT_DISABLED` | Test-only; keep unset/false in production |
 | `ALLOW_DESTRUCTIVE_SLOT_REBUILD` | Keep `false`; destructive rebuilds are never a deploy step |
 
-**SMTP/SMS honesty:** all provider credentials are optional. With none configured, notification attempts are recorded in `notifications_log` and labelled **Sandbox**. No real email or SMS delivery is claimed. Delivery is marked `SENT` only when the provider accepts the message; `FAILED` rows store the provider error and can be retried from the Notification Center (`POST /api/admin/notifications/:id/retry`) once credentials are configured.
+**Provider honesty:** all provider credentials are optional. With none configured, notification attempts are recorded in `notifications_log` and labelled **Sandbox**. No real email, SMS or browser delivery is claimed. Delivery is marked `SENT` only when the provider accepts the message; `FAILED` rows store the provider error and can be retried from the Notification Center (`POST /api/admin/notifications/:id/retry`) once credentials are configured.
 
-### Enable real delivery (Gmail + Fast2SMS)
+### Enable free delivery first (browser Web Push)
+
+Browser alerts are the zero-cost channel: the browser vendor operates the push service, so CHSC never needs an SMS wallet or a patient phone number for this route. Each user opts in per device in **Settings → Free browser alerts**; the browser grants notification permission and the API stores the resulting subscription in `push_subscriptions`.
+
+Generate a VAPID key pair once on a trusted machine and set the two variables in Railway. Never paste the private key into a repository, workflow or chat message:
+
+```bash
+cd backend
+node -e "console.log(require('web-push').generateVAPIDKeys())"
+```
+
+Set `VAPID_SUBJECT` to an HTTPS contact URL and `PUSH_APP_URL` to the full hosted app URL, including `/CHCS` for GitHub Pages. Migration `006_web_push.sql` adds the `PUSH` notification channel and the subscription table; `setup-production` applies it on boot without touching existing rows.
+
+Verify without contacting a patient:
+
+1. `GET /api/push/config` → `enabled:true`; the response contains only the public key.
+2. Sign in and open Settings → **Free browser alerts** → **Enable this device**. The button is disabled until the browser supports PushManager and the backend is configured.
+3. **Send test alert** → `POST /api/push/test` returns `simulated:false`, `delivered:true` and the number of accepted devices. The browser push service, not CHSC, decides acceptance.
+4. `GET /api/admin/ops/readiness` → `providers.push.live === true` and `providers.freeReady === true`. The badge reads **Free browser alerts live** even when paid SMS is unconfigured.
+
+Expired (404/410) subscriptions are pruned from MySQL on the next delivery attempt. Erasing a user through `DELETE /api/users/me/purge` also removes every device subscription. A test refused because VAPID is missing or no device is enabled is recorded as `DELIVERY_TEST_FAILED` — never as delivered.
+
+### Enable optional paid delivery (Gmail + Fast2SMS)
 
 Set these in the Railway service's **Variables** tab (never in the repository, a workflow file or a chat message). Gmail needs **2-Step Verification** enabled and a 16-character **App Password** generated at <https://myaccount.google.com/apppasswords> — the normal Google password is rejected.
 

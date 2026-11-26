@@ -213,7 +213,7 @@ CREATE TABLE notifications_log (
   id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   booking_id  BIGINT UNSIGNED NULL,
   user_id     BIGINT UNSIGNED NULL,
-  channel     ENUM('SMS','EMAIL') NOT NULL,
+  channel     ENUM('SMS','EMAIL','PUSH') NOT NULL,
   type        ENUM('BOOKING_CONFIRMED','WAITLIST_JOINED','WAITLIST_PROMOTED','REMINDER_24H','REMINDER_2H','CANCELLATION','RESCHEDULED','CHECK_IN') NOT NULL,
   recipient   VARCHAR(190) NOT NULL,
   subject     VARCHAR(190) NULL,
@@ -238,6 +238,28 @@ CREATE TABLE notifications_log (
     ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT fk_notify_user FOREIGN KEY (user_id) REFERENCES users (id)
     ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 8. BROWSER PUSH SUBSCRIPTIONS
+-- Free device alerts via the Web Push protocol (VAPID). One row per browser
+-- device; the endpoint is the primary identity and is never shown in full.
+-- ----------------------------------------------------------------------------
+CREATE TABLE push_subscriptions (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  endpoint    VARCHAR(2048) NOT NULL,
+  p256dh      VARCHAR(255) NOT NULL,
+  auth        VARCHAR(255) NOT NULL,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  -- 768 utf8mb4 characters = 3072 bytes, the InnoDB single-column index limit.
+  -- Real FCM/APNs/Mozilla endpoints are far shorter; the prefix is sufficient.
+  UNIQUE KEY uq_push_endpoint (endpoint(768)),
+  KEY idx_push_user (user_id, id),
+  CONSTRAINT fk_push_user FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
