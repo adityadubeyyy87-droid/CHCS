@@ -35,7 +35,7 @@ The CHSC platform is a **strict live / real-data** product. No demo engine, no o
 | Production schema + migrations (001–005) | **PASS**, idempotent re-run on scratch MySQL 8.4, 0 rows |
 | Live E2E | Booking → confirm → QR passport → Maps QR check-in → duplicate protection → `/n/` → notifications |
 
-## 4. Live deployment evidence (final pass, 2026-11-25)
+## 4. Live deployment evidence (final pass, 2026-11-25; readiness re-verified 2026-11-26)
 
 | Check | Result |
 |---|---|
@@ -44,6 +44,8 @@ The CHSC platform is a **strict live / real-data** product. No demo engine, no o
 | `/n/CHSC-BLR-…` | HTTP 302 → Google Maps directions |
 | `/n/CHSC-BLR-NOTAREALTOKEN` | HTTP 404 JSON `NAV_NOT_FOUND` (never open redirect) |
 | Live booking E2E | `POST /api/slots/:id/book` → 201; `POST /api/bookings/:id/confirm` → 200 `CONFIRMED`; token `CHSC-BLR-TUQUZK5CEN3R`, Maps payload with `#chsc=` → check-in via Maps QR → `CHECKED_IN` (`A-716420`); duplicate → `ALREADY_CHECKED_IN`, queue unchanged |
+| Readiness API (2026-11-26) | Admin login → `GET /api/admin/ops/readiness` 200 with 3 published camps, scores `95/95/95` (`READY`), `email=SANDBOX`, `sms=SANDBOX`, `providers.ready=false`; `POST /api/admin/ops/delivery-test` → `simulated:true, delivered:false, live:false`, recipient `a***@chcs.app`; `audit_log` row `DELIVERY_TEST` present |
+| Readiness UI + login (2026-11-26) | Hosted Pages: real login → `#/overview`; `#/readiness` rendered 3 scored camp meters, honest sandbox provider cards, and the sandbox test result; 0 console errors |
 
 ## 5. Notification delivery evidence
 
@@ -71,8 +73,8 @@ The CHSC platform is a **strict live / real-data** product. No demo engine, no o
 ## 8. Commit
 
 - Previous deployed source HEAD: `6cef421d904d534579e813e8cfd9b1fab1d50262` (`docs: record Maps ticket and delivery verification pass`) — clean working tree, pushed normally to `master` and `main`.
-- This pass adds the Ops Readiness Console, sign-in polish and the motion-latch fix; its commit is recorded in `git log` on both branches after push.
-- Final Railway deployment (backend, via Railway CLI from local source): deploy id `4ebfdb5c-7226-421e-8377-ddd678c29bf6`; build → start command (`cd backend && npm ci --omit=dev && node scripts/db.js setup-production && node scripts/bootstrap-production.js && node server.js`) → healthcheck **PASS**.
+- Current source HEAD: `fa71e5a11a3d53f6c9fcf0f608b0387715fea79c` (`feat: ops readiness console and smoother sign-in`) — pushed to `master` and `main`; GH Pages workflow #73 and its Pages deployment succeeded.
+- Final Railway deployment (backend, via Railway CLI from current source): deploy id `ab8a98ce-3785-4987-8bc3-6220f287ae97`; build → start command (`cd backend && npm ci --omit=dev && node scripts/db.js setup-production && node scripts/bootstrap-production.js && node server.js`) → healthcheck **PASS**. Previous deploy: `4ebfdb5c-7226-421e-8377-ddd678c29bf6`.
 
 ## 9. Blockers / honest limitations
 
