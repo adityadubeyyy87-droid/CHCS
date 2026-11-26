@@ -19,6 +19,7 @@ const LiveQueuePage = lazy(() =>
 );
 const Manage = lazy(() => import('./pages/Manage.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
+const Readiness = lazy(() => import('./pages/Readiness.jsx'));
 const ConcurrencyProof = lazy(() => import('./pages/ConcurrencyProof.jsx'));
 const ControlRoom = lazy(() => import('./pages/ControlRoom.jsx'));
 const AuditLog = lazy(() => import('./pages/AuditLog.jsx'));
@@ -33,6 +34,7 @@ const PAGES = {
   liveQueue: LiveQueuePage,
   manage: Manage,
   analytics: Analytics,
+  readiness: Readiness,
   concurrencyProof: ConcurrencyProof,
   controlRoom: ControlRoom,
   auditLog: AuditLog,

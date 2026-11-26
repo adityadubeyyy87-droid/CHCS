@@ -173,6 +173,9 @@ export const api = {
     call(`/api/camps/${encodeURIComponent(campId)}/control-room`),
 
   analytics: () => call('/api/admin/analytics'),
+  readiness: () => call('/api/admin/ops/readiness'),
+  testDelivery: (channel) =>
+    call('/api/admin/ops/delivery-test', { method: 'POST', body: { channel } }),
   advisor: (physicalCapacity) =>
     call('/api/admin/capacity-advisor', { qs: { physicalCapacity } }),
   notifications: (limit = 50, page = 1) =>

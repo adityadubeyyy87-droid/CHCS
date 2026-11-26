@@ -113,9 +113,9 @@ export function Field({ label, hint, error, children, className }) {
 export function Select({ className, children, ...rest }) {
   return <select className={cls('input', 'select', className)} {...rest}>{children}</select>;
 }
-export function Input({ className, ...rest }) {
-  return <input className={cls('input', className)} {...rest} />;
-}
+export const Input = React.forwardRef(function Input({ className, ...rest }, ref) {
+  return <input ref={ref} className={cls('input', className)} {...rest} />;
+});
 
 /* ------------------------------- modal ------------------------------- */
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';

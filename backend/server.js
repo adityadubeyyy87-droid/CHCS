@@ -49,6 +49,7 @@ const {
   buildShortNavigationUrl,
 } = require('./lib/maps');
 const { buildMessages } = require('./lib/messages');
+const { providerReadiness, evaluateCamp, isoDate } = require('./lib/readiness');
 const { dbConnectionOptions } = require('./lib/db-config');
 const {
   parseTrustProxy,
@@ -1651,6 +1652,224 @@ async function buildCapacityAdvisor(physicalCapacity = 100, alphaMax = ALPHA_MAX
     expectedDoctorUtilisation,
     interpretation:
       'The advisor only reallocates a bounded safety buffer. Clinical judgement and venue constraints remain authoritative.',
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * Ops readiness — delivery configuration + camp run-readiness
+ *
+ * Every value is derived from live rows or from the presence (never the value)
+ * of an environment variable. No score is estimated; the checks and their
+ * weights are printed next to the result.
+ * ------------------------------------------------------------------------- */
+
+function groupByCamp(rows, build) {
+  const map = new Map();
+  for (const row of rows) map.set(Number(row.camp_id), build(row));
+  return map;
+}
+
+async function buildOpsReadiness() {
+  const [campRows] = await pool.query(
+    `SELECT id, title, status, venue, address, city, latitude, longitude,
+            camp_date, start_time, end_time, total_capacity, physical_capacity
+       FROM camps
+      WHERE status IN ('DRAFT','PUBLISHED')
+      ORDER BY camp_date ASC, id ASC
+      LIMIT 200`,
+  );
+
+  const [slotRows] = await pool.query(
+    `SELECT s.camp_id, COUNT(*) AS slots,
+            COALESCE(SUM(s.capacity), 0) AS capacity,
+            SUM(CASE WHEN TIMESTAMP(c.camp_date, s.end_time) >= NOW() THEN 1 ELSE 0 END) AS future
+       FROM slots s
+       JOIN camps c ON c.id = s.camp_id
+      GROUP BY s.camp_id`,
+  );
+  const slotMap = groupByCamp(slotRows, (row) => ({
+    count: Number(row.slots || 0),
+    capacity: Number(row.capacity || 0),
+    future: Number(row.future || 0),
+  }));
+
+  const [bookingRows] = await pool.query(
+    `SELECT camp_id,
+            SUM(status IN ('HELD','CONFIRMED','CHECKED_IN','COMPLETED')) AS active,
+            SUM(status = 'CHECKED_IN') AS checked_in,
+            SUM(status = 'HELD' AND hold_expires_at IS NOT NULL AND hold_expires_at < NOW()) AS stuck_holds
+       FROM bookings
+      GROUP BY camp_id`,
+  );
+  const bookingMap = groupByCamp(bookingRows, (row) => ({
+    active: Number(row.active || 0),
+    checkedIn: Number(row.checked_in || 0),
+    stuckHolds: Number(row.stuck_holds || 0),
+  }));
+
+  const [waitRows] = await pool.query(
+    `SELECT camp_id, SUM(status = 'WAITING') AS waiting FROM waitlist GROUP BY camp_id`,
+  );
+  const waitMap = groupByCamp(waitRows, (row) => Number(row.waiting || 0));
+
+  const [staffRows] = await pool.query(
+    `SELECT camp_id,
+            SUM(role_at_camp = 'DOCTOR') AS doctors,
+            SUM(role_at_camp = 'VOLUNTEER') AS volunteers,
+            COUNT(*) AS total
+       FROM staff_assignments
+      GROUP BY camp_id`,
+  );
+  const staffMap = groupByCamp(staffRows, (row) => ({
+    doctors: Number(row.doctors || 0),
+    volunteers: Number(row.volunteers || 0),
+    total: Number(row.total || 0),
+  }));
+
+  const [notifRows] = await pool.query(
+    `SELECT b.camp_id,
+            SUM(n.status = 'SENT') AS sent,
+            SUM(n.status = 'SIMULATED') AS simulated,
+            SUM(n.status = 'FAILED') AS failed
+       FROM notifications_log n
+       JOIN bookings b ON b.id = n.booking_id
+      GROUP BY b.camp_id`,
+  );
+  const notifMap = groupByCamp(notifRows, (row) => ({
+    sent: Number(row.sent || 0),
+    simulated: Number(row.simulated || 0),
+    failed: Number(row.failed || 0),
+  }));
+
+  const [overRows] = await pool.query(
+    `SELECT s.camp_id, COUNT(*) AS slots
+       FROM slots s
+       JOIN (
+         SELECT slot_id, COUNT(*) AS booked
+           FROM bookings
+          WHERE status IN ('CONFIRMED','CHECKED_IN','COMPLETED')
+          GROUP BY slot_id
+       ) b ON b.slot_id = s.id
+      WHERE b.booked > s.capacity
+      GROUP BY s.camp_id`,
+  );
+  const overMap = groupByCamp(overRows, (row) => Number(row.slots || 0));
+
+  const [[stuckRow]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM bookings
+      WHERE status = 'HELD' AND hold_expires_at IS NOT NULL AND hold_expires_at < NOW()`,
+  );
+  const [[notifStatusRow]] = await pool.query(
+    `SELECT SUM(status = 'SENT') AS sent,
+            SUM(status = 'SIMULATED') AS simulated,
+            SUM(status = 'FAILED') AS failed
+       FROM notifications_log`,
+  );
+  const [[unnotifiedRow]] = await pool.query(
+    `SELECT COUNT(*) AS total
+       FROM bookings b
+      WHERE b.status IN ('CONFIRMED','CHECKED_IN','COMPLETED')
+        AND NOT EXISTS (
+          SELECT 1 FROM notifications_log n
+           WHERE n.booking_id = b.id AND n.type = 'BOOKING_CONFIRMED'
+        )`,
+  );
+
+  const today = isoDate(new Date());
+  let campsWithoutDoctor = 0;
+  let campsWithoutVolunteer = 0;
+  let campsWithoutSlots = 0;
+  let oversubscribedSlots = 0;
+
+  const camps = campRows.map((row) => {
+    const slots = slotMap.get(Number(row.id)) || { count: 0, capacity: 0, future: 0 };
+    const staff = staffMap.get(Number(row.id)) || { doctors: 0, volunteers: 0, total: 0 };
+    const bookings = bookingMap.get(Number(row.id)) || { active: 0, checkedIn: 0, stuckHolds: 0 };
+    const notifications = notifMap.get(Number(row.id)) || { sent: 0, simulated: 0, failed: 0 };
+    const oversubscribed = overMap.get(Number(row.id)) || 0;
+
+    const evaluation = evaluateCamp({
+      camp: {
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        venue: row.venue,
+        address: row.address,
+        city: row.city,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        campDate: row.camp_date,
+        totalCapacity: row.total_capacity,
+      },
+      slots,
+      staff,
+      bookings,
+      notifications: { ...notifications, failed: notifications.failed },
+      oversubscribedSlots: oversubscribed,
+      today,
+    });
+
+    const isPublished = String(row.status).toUpperCase() === 'PUBLISHED';
+    if (isPublished && staff.doctors === 0) campsWithoutDoctor += 1;
+    if (isPublished && staff.volunteers === 0) campsWithoutVolunteer += 1;
+    if (isPublished && slots.count === 0) campsWithoutSlots += 1;
+    oversubscribedSlots += oversubscribed;
+
+    return {
+      id: Number(row.id),
+      title: row.title,
+      status: row.status,
+      campDate: isoDate(row.camp_date),
+      startTime: row.start_time,
+      endTime: row.end_time,
+      venue: row.venue,
+      address: row.address,
+      city: row.city,
+      hasCoordinates: row.latitude !== null && row.longitude !== null,
+      mapsUrl: buildMapsUrl(row),
+      capacity: Number(row.total_capacity || 0),
+      physicalCapacity: Number(row.physical_capacity || 0),
+      slots,
+      staff,
+      bookings: { ...bookings, waitlisted: waitMap.get(Number(row.id)) || 0 },
+      notifications,
+      score: evaluation.score,
+      band: evaluation.band,
+      headline: evaluation.headline,
+      blockers: evaluation.blockers,
+      warnings: evaluation.warnings,
+      checks: evaluation.checks,
+    };
+  });
+
+  const providers = providerReadiness(process.env);
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    providers,
+    integrity: {
+      stuckHolds: Number(stuckRow.total || 0),
+      sentNotifications: Number(notifStatusRow.sent || 0),
+      simulatedNotifications: Number(notifStatusRow.simulated || 0),
+      failedNotifications: Number(notifStatusRow.failed || 0),
+      unnotifiedConfirmedBookings: Number(unnotifiedRow.total || 0),
+      oversubscribedSlots,
+      campsWithoutDoctor,
+      campsWithoutVolunteer,
+      campsWithoutSlots,
+      publishedCamps: camps.filter((camp) => String(camp.status).toUpperCase() === 'PUBLISHED').length,
+    },
+    camps,
+    meta: {
+      engine: 'Rule-based readiness checks over live MySQL rows',
+      scope: 'DRAFT and PUBLISHED camps only; completed camps are archived history.',
+      weights:
+        'Missing location −25 · no future slots −25 · no doctor −20 · oversubscribed slot −20 · zero capacity −15 · past published date −15 · no volunteer −10 · failed notifications −10 · expired holds −5 · capacity mismatch −5 · sandbox-only delivery −5.',
+      note:
+        'Provider readiness reflects variable presence only; secret values are never returned. Sandbox is an honest audit state, not a delivery.',
+      provenance: 'live-mysql',
+    },
   };
 }
 
@@ -3622,6 +3841,122 @@ app.get(
   asyncHandler(async (req, res) => {
     const { physicalCapacity, alphaMax } = req.query;
     res.json(await buildCapacityAdvisor(physicalCapacity, alphaMax));
+  }),
+);
+
+/* ---------------------------------------------------------------------------
+ * OPS READINESS + PROVIDER SELF-TEST
+ * ------------------------------------------------------------------------- */
+
+app.get(
+  '/api/admin/ops/readiness',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (_req, res) => {
+    res.json(await buildOpsReadiness());
+  }),
+);
+
+/**
+ * Operator-initiated provider check. It sends one real message through the
+ * configured gateway to the signed-in admin's own address. With no gateway the
+ * sandbox reports `simulated: true` — the endpoint never pretends a message
+ * left the server. Every attempt is written to the audit log.
+ */
+app.post(
+  '/api/admin/ops/delivery-test',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const channel = String(req.body?.channel || '').trim().toUpperCase();
+    if (!['EMAIL', 'SMS'].includes(channel)) {
+      throw new ApiError(400, 'channel must be EMAIL or SMS.', 'VALIDATION');
+    }
+
+    const [rows] = await pool.query(
+      'SELECT id, name, email, phone FROM users WHERE id = ? AND is_active = 1',
+      [req.user.id],
+    );
+    if (!rows.length) throw new ApiError(401, 'User no longer active.', 'USER_INACTIVE');
+
+    const recipient = channel === 'EMAIL' ? rows[0].email : rows[0].phone;
+    if (!recipient) {
+      throw new ApiError(
+        409,
+        `No ${channel === 'EMAIL' ? 'email address' : 'mobile number'} is stored on this admin account.`,
+        'NO_RECIPIENT',
+      );
+    }
+
+    const provider = channel === 'EMAIL' ? providers.email : providers.sms;
+    const testedAt = new Date().toISOString();
+    const text = channel === 'SMS'
+      ? `CHSC delivery test: ${channel} gateway check at ${testedAt}. Provider ${provider.name}. No booking or patient data is included.`
+      : [
+        'CHSC delivery configuration test',
+        '',
+        `Sent at: ${testedAt}`,
+        `Channel: ${channel}`,
+        `Provider: ${provider.name}`,
+        `Public base: ${publicBaseUrl(process.env)}`,
+        '',
+        'This is an operator-initiated connectivity test. It contains no booking, patient or clinical data.',
+        'A patient-facing message is only marked SENT when the provider accepts it.',
+      ].join('\n');
+
+    try {
+      const result = await provider.send({
+        to: recipient,
+        subject: `CHSC delivery test · ${channel}`,
+        text,
+        ...(channel === 'EMAIL' ? { replyTo: process.env.MAIL_REPLY_TO || undefined } : {}),
+      });
+      const simulated = Boolean(result.simulated);
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'DELIVERY_TEST',
+        targetType: 'provider',
+        targetId: null,
+        after: {
+          channel,
+          provider: provider.name,
+          simulated,
+          reference: result.reference || null,
+          testedAt,
+        },
+      });
+      res.json({
+        ok: true,
+        channel,
+        provider: provider.name,
+        live: Boolean(provider.live),
+        simulated,
+        delivered: !simulated,
+        reference: result.reference || null,
+        recipient: redactRecipient(recipient),
+        testedAt,
+        message: simulated
+          ? 'No live provider is configured. Nothing left the server — this attempt is labelled Sandbox.'
+          : 'The provider accepted the test message. Final delivery depends on the mailbox or carrier.',
+      });
+    } catch (error) {
+      const reason = String(error?.message || error || 'Provider rejected the message.').slice(0, 300);
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'DELIVERY_TEST_FAILED',
+        targetType: 'provider',
+        targetId: null,
+        after: { channel, provider: provider.name, error: reason, testedAt },
+      });
+      throw new ApiError(
+        502,
+        `${provider.name} rejected the test message: ${reason}`,
+        'PROVIDER_ERROR',
+        { channel, provider: provider.name },
+      );
+    }
   }),
 );
 

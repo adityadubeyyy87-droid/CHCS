@@ -1,6 +1,6 @@
 # CHSC — Final Evidence & Deployment Report
 
-_Last updated 2026-11-25 · status as of the final verification pass on the hosted stack._
+_Last updated 2026-11-26 · status as of the final verification pass on the hosted stack._
 
 ## 1. Scope and runtime policy
 
@@ -16,14 +16,22 @@ The CHSC platform is a **strict live / real-data** product. No demo engine, no o
 | Booking logistics | Confirmation/reschedule/cancel/waitlist/reminder messages carry booking ID, token, camp, date, time, full venue/address, Maps URL, short nav link; email embeds inline QR CID | **PASS** (live rows for booking #2022) |
 | Delivery audit | Dedupe key, attempts/last error/provider message ID, retry endpoint (`409 PROVIDER_NOT_CONFIGURED` while sandbox) | **PASS** |
 | Camp coordinates | `latitude`/`longitude` optional; fallback to encoded venue+address+city; organiser camp edit | **PASS** (live `/api/camps` returns `mapsUrl` + optional coords) |
+| Ops Readiness Console | Admin/organiser page: provider variable **presence only**, rule-based per-camp score (100 minus documented penalties), integrity counters, admin-only real provider self-test with honest sandbox result and `audit_log` entry | **PASS** (live UI and API; RBAC + 16 dedicated automated tests) |
+| Sign-in smoothness | Normalised identifier, password visibility, caps-lock hint, last identifier remembered, actionable 401/429/network messages; fixed `InView(once)` latching so forms can never fade back to `opacity:0` | **PASS** (browser login → `#/overview`, no console errors) |
+
+### Ops Readiness scoring (engineering note)
+
+`GET /api/admin/ops/readiness` reads live MySQL rows for draft/published camps only. Each camp starts at 100 and loses fixed points for named, checkable failures: missing doctor/volunteer, no future slot, bad publication window, missing address or coordinates, capacity disagreement, empty inventory, or overbooking. Bands are `READY` (90–100), `ATTENTION` (60–89) and `BLOCKED` (<60). The engine is arithmetic over recorded facts — not a model, prediction or "AI". No provider secret value ever leaves the backend; the UI receives booleans and a redacted recipient.
+
+`POST /api/admin/ops/delivery-test` sends through the **real** provider when configured and records `DELIVERY_TEST` / `DELIVERY_TEST_FAILED` in `audit_log`. With no credentials it records a sandbox attempt, returns `simulated:true, delivered:false` and explicitly states that nothing left the server. It never writes a `notifications_log` row and never claims delivery.
 
 ## 3. Test evidence
 
 | Suite | Result |
 |---|---|
-| Backend (`backend && npm test`) | **24 files / 139 tests passed** (auth, RBAC, booking, capacity, duplicates, cancel/reschedule, concurrency, notifications, QR/Maps, check-in, dashboards) |
+| Backend (`backend && npm test`) | **26 files / 155 tests passed** (auth, RBAC, booking, capacity, duplicates, cancel/reschedule, concurrency, notifications, QR/Maps, check-in, dashboards, readiness + delivery self-test) |
 | Frontend (`frontend && npm test`) | **8 tests passed** |
-| Frontend production build | **PASS** (`index-BzYKdfw_.js` + `index-Dkl_y5ih.css` served on Pages) |
+| Frontend production build | **PASS** (Vite 5 output served on Pages; no compile errors) |
 | Production schema + migrations (001–005) | **PASS**, idempotent re-run on scratch MySQL 8.4, 0 rows |
 | Live E2E | Booking → confirm → QR passport → Maps QR check-in → duplicate protection → `/n/` → notifications |
 
@@ -62,7 +70,8 @@ The CHSC platform is a **strict live / real-data** product. No demo engine, no o
 
 ## 8. Commit
 
-- Deployed source HEAD: `6cef421d904d534579e813e8cfd9b1fab1d50262` (`docs: record Maps ticket and delivery verification pass`) — clean working tree, pushed normally to `master` and `main`.
+- Previous deployed source HEAD: `6cef421d904d534579e813e8cfd9b1fab1d50262` (`docs: record Maps ticket and delivery verification pass`) — clean working tree, pushed normally to `master` and `main`.
+- This pass adds the Ops Readiness Console, sign-in polish and the motion-latch fix; its commit is recorded in `git log` on both branches after push.
 - Final Railway deployment (backend, via Railway CLI from local source): deploy id `4ebfdb5c-7226-421e-8377-ddd678c29bf6`; build → start command (`cd backend && npm ci --omit=dev && node scripts/db.js setup-production && node scripts/bootstrap-production.js && node server.js`) → healthcheck **PASS**.
 
 ## 9. Blockers / honest limitations

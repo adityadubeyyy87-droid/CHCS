@@ -1,6 +1,21 @@
 # CHSC — Test & Verification Report
 
-_Historical evidence record from the 2026-11-22 hardening pass. The application is now strict-live; re-run the commands below after any code change before treating these results as current._
+_Historical evidence record from the 2026-11-22 hardening pass, with a current 2026-11-26 section below. The application is strict-live; re-run the commands here after any code change before treating results as current._
+
+## Current pass — 2026-11-26
+
+| Check | Result |
+|---|---|
+| `cd backend && npm test` | **26 files / 155 tests passed** on local MySQL 8.4.9 |
+| `cd frontend && npm test` | **8 tests passed** |
+| `cd frontend && npm run build` | **PASS** — Vite build completed (only the pre-existing large-chunk advisory) |
+| New readiness unit tests | 11 passed — provider booleans, DLT route, healthy camp, blockers, overbooking/past date, sandbox warning, capacity mismatch, date helper |
+| New readiness integration tests | 5 passed — patient/doctor 403, organizer report shape, organizer self-test 403, invalid channel 400, sandbox test + `audit_log` row, redacted SMS recipient |
+| Test isolation | `backend/tests/setup.js` deletes SMTP/Fast2SMS env values so no test can send a real message |
+| Browser smoke | Login with a real local MySQL account → `#/overview`; Ops Readiness page rendered scored camps, empty provider state, and a sandbox self-test result; zero console errors |
+| Motion regression | `InView(once)` now latches after first intersection, so auth forms cannot become invisible when scrolled out of view |
+
+The live data used by the browser smoke came from the local development database. No seed command was run against MySQL 8.4.13 on Railway.
 
 This report records the reproducible test approach for Phase 1 (Engineering Completion) and the security, reliability, accessibility and deployment hardening pass. Production contains no seeded sample data and no simulated database results.
 

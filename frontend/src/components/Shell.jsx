@@ -15,6 +15,7 @@ export const NAV = [
   { id: 'liveQueue', icon: 'radio', labelKey: 'nav.liveQueue', label: 'Live Queue', roles: ['DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'] },
   { id: 'manage', icon: 'clipboard', labelKey: 'nav.manage', label: 'Camp Management', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'analytics', icon: 'chart', labelKey: 'nav.analytics', label: 'Analytics', roles: ['ORGANIZER', 'ADMIN'] },
+  { id: 'readiness', icon: 'flask', labelKey: 'nav.readiness', label: 'Ops Readiness', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'concurrencyProof', icon: 'zap', labelKey: 'nav.concurrencyProof', label: 'Concurrency Proof', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'controlRoom', icon: 'radio', labelKey: 'nav.controlRoom', label: 'Control Room', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'auditLog', icon: 'clipboard', labelKey: 'nav.auditLog', label: 'Audit Log', roles: ['ORGANIZER', 'ADMIN'] },
@@ -28,6 +29,7 @@ const PAGE_TITLES = {
   overview: 'Overview', discover: 'Find Health Camps', myBookings: 'My Appointments',
   staffDay: 'Camp Day', liveQueue: 'Live Queue TV', manage: 'Camp Management',
   analytics: 'Executive Analytics', concurrencyProof: 'Concurrency Proof',
+  readiness: 'Ops Readiness',
   controlRoom: 'Control Room', auditLog: 'Audit Log', notifications: 'Notification Center',
   settings: 'Settings',
 };

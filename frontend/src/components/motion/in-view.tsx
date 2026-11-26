@@ -40,7 +40,7 @@ export function InView({
 }: InViewProps) {
   const ref = useRef(null);
   const isInView = useInView(ref, viewOptions);
-  const [isViewed, setIsViewed] = useState(false);
+  const [hasEntered, setHasEntered] = useState(false);
 
   const MotionComponent = motion[as as keyof typeof motion];
 
@@ -50,11 +50,14 @@ export function InView({
       className={className}
       style={style}
       initial='hidden'
-      animate={(isInView || (!once && isViewed)) ? 'visible' : 'hidden'}
+      // ``once`` must latch: a form that scrolls out of view must not become
+      // invisible again (otherwise its controls leave the accessibility tree
+      // and appear unclickable). Record the first intersection and keep it.
+      animate={(isInView || (once && hasEntered)) ? 'visible' : 'hidden'}
       variants={variants}
       transition={transition}
       onAnimationComplete={() => {
-        if (once && isInView) setIsViewed(true);
+        if (isInView) setHasEntered(true);
       }}
     >
       {children}

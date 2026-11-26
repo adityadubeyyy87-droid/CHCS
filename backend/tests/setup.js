@@ -15,3 +15,10 @@ process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.REMINDER_CRON = 'off';
 process.env.HOLD_EXPIRY_CRON = 'off';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'chsc-test-secret';
+
+// Delivery tests must never leave the machine. Force the honest sandbox even if
+// a developer's local .env carries real gateway credentials.
+delete process.env.SMTP_HOST;
+delete process.env.SMTP_USER;
+delete process.env.SMTP_PASS;
+delete process.env.FAST2SMS_API_KEY;
