@@ -1009,7 +1009,8 @@ function providerMeta(channel) {
   return {
     name: provider.name,
     live: Boolean(provider.live),
-    status: provider.live ? 'PENDING' : 'SIMULATED',
+    // notifications_log.status ENUM starts live attempts at QUEUED, not PENDING.
+    status: provider.live ? 'QUEUED' : 'SIMULATED',
     simulated: !provider.live,
   };
 }
@@ -1037,7 +1038,7 @@ async function insertNotification(conn, data) {
   const meta = providerMeta(data.channel);
   // A configured real provider starts PENDING and is updated to SENT/FAILED by
   // the delivery attempt. With no credentials it stays honestly SIMULATED.
-  const status = meta.live ? 'PENDING' : 'SIMULATED';
+  const status = meta.live ? 'QUEUED' : 'SIMULATED';
   const dedupeKey = notificationDedupeKey(data);
   const [result] = await conn.query(
     `INSERT INTO notifications_log
@@ -4901,6 +4902,8 @@ app.use((error, _req, res, _next) => {
       code: error.code,
       status: error.status,
       message: String(error.message || '').slice(0, 300),
+      method: _req.method,
+      path: _req.path,
       requestId: _req.id,
     });
   }
@@ -4997,4 +5000,6 @@ module.exports = {
   limiters,
   queueDevicePush,
   pushTargetUrl,
+  providerMeta,
+  insertNotification,
 };

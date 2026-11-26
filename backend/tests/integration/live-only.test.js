@@ -9,6 +9,9 @@ const {
   app,
   request,
   pool,
+  providers,
+  providerMeta,
+  insertNotification,
   insertUser,
   createCampFixture,
   countRows,
@@ -95,6 +98,29 @@ describe('strict live / real data only', () => {
       expect(row.simulated).toBe(row.status === 'SIMULATED');
       if (row.simulated) expect(row.provider).toMatch(/Sandbox/i);
       else expect(row.provider).not.toMatch(/Sandbox/i);
+    }
+  });
+
+  it('starts live-provider audit rows with the schema-valid QUEUED status', async () => {
+    const previousLive = providers.sms.live;
+    providers.sms.live = true;
+    try {
+      expect(providerMeta('SMS').status).toBe('QUEUED');
+      const row = await insertNotification(pool, {
+        channel: 'SMS',
+        type: 'BOOKING_CONFIRMED',
+        recipient: '9999999999',
+        subject: 'CHSC test',
+        message: 'Regression: live status must match the ENUM.',
+        dedupeKey: `live-status-${Date.now()}`,
+      });
+      expect(row.status).toBe('QUEUED');
+      const [[stored]] = await pool.query('SELECT status FROM notifications_log WHERE id = ?', [
+        row.id,
+      ]);
+      expect(stored.status).toBe('QUEUED');
+    } finally {
+      providers.sms.live = previousLive;
     }
   });
 

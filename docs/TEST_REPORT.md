@@ -6,13 +6,14 @@ _Historical evidence record from the 2026-11-22 hardening pass, with a current 2
 
 | Check | Result |
 |---|---|
-| `cd backend && npm test` | **28 files / 169 tests passed** on local MySQL 8.4.x |
+| `cd backend && npm test` | **28 files / 170 tests passed** on local MySQL 8.4.x |
 | `cd frontend && npm test` | **8 tests passed** |
 | `cd frontend && npm run build` | **PASS** — Vite build completed (only the pre-existing large-chunk advisory) |
 | Readiness unit tests | 12 passed — provider booleans including VAPID/free path, DLT route, healthy camp, blockers, overbooking/past date, sandbox warning, capacity mismatch, date helper |
 | Readiness integration tests | 5 passed — patient/doctor 403, organizer report shape, organizer self-test 403, invalid channel 400, sandbox test + `audit_log` row, redacted SMS recipient |
 | Browser push unit tests | 5 passed — endpoint/key validation, redacted device view, honest sandbox, encrypted payload with expired-subscription pruning |
 | Browser push integration tests | 8 passed — public config, auth, unique subscription storage, invalid endpoints, removal, refused self-test audit, `PUSH` audit channel, erasure |
+| Notification status regression | 1 passed — live-provider rows start at schema-valid `QUEUED`, never the rejected `PENDING` value |
 | Test isolation | `backend/tests/setup.js` deletes SMTP/Fast2SMS/VAPID env values so no test can send a real email, SMS or browser push |
 | Browser smoke | Login with a real local MySQL account → `#/overview`; Ops Readiness page rendered scored camps and provider cards; zero console errors |
 | Motion regression | `InView(once)` now latches after first intersection, so auth forms cannot become invisible when scrolled out of view |

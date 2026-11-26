@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const request = require('supertest');
-const { app, pool } = require('../../server');
+const { app, pool, providers, providerMeta, insertNotification } = require('../../server');
 
 // One cheap hash for every test fixture — authentication speed only.
 const TEST_HASH = bcrypt.hashSync('Test@1234', 4);
@@ -214,6 +214,9 @@ async function countRows(sql, params = []) {
 module.exports = {
   app,
   pool,
+  providers,
+  providerMeta,
+  insertNotification,
   request,
   insertUser,
   createPatient,
