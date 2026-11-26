@@ -168,6 +168,27 @@ describe('booking integrity', () => {
       .patch(`/api/bookings/${booked.body.booking.id}/cancel`)
       .set('Authorization', `Bearer ${patient.token}`)
       .expect(409);
+    expect(await countRows('SELECT booked_count FROM slots WHERE id = ?', [fixture.slotId])).toBe(0);
+  });
+
+  it('releases a held seat safely when the unsigned counter has drifted to zero', async () => {
+    const patient = await insertUser({ role: 'PATIENT' });
+    const fixture = await createCampFixture({ capacity: 3, startsInHours: 96 });
+
+    const held = await hold({ token: patient.token, slotId: fixture.slotId }).expect(201);
+    expect(await countRows('SELECT booked_count FROM slots WHERE id = ?', [fixture.slotId])).toBe(1);
+
+    // Simulate the live drift that produced ER_DATA_OUT_OF_RANGE: a live HELD
+    // booking whose denormalised counter was already zero.
+    await pool.query('UPDATE slots SET booked_count = 0 WHERE id = ?', [fixture.slotId]);
+
+    const cancelled = await request(app)
+      .patch(`/api/bookings/${held.body.booking.id}/cancel`)
+      .set('Authorization', `Bearer ${patient.token}`)
+      .expect(200);
+
+    expect(cancelled.body.status).toBe('CANCELLED');
+    expect(await countRows('SELECT booked_count FROM slots WHERE id = ?', [fixture.slotId])).toBe(0);
   });
 
   it('offers the FIFO waitlist when the slot is full', async () => {

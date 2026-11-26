@@ -51,6 +51,7 @@ const {
 const { buildMessages } = require('./lib/messages');
 const { providerReadiness, evaluateCamp, isoDate } = require('./lib/readiness');
 const { dbConnectionOptions } = require('./lib/db-config');
+const { decrementBookedCount } = require('./lib/seat-counts');
 const {
   parseTrustProxy,
   buildCsp,
@@ -744,16 +745,18 @@ async function releaseReservedSeat(
   const slot = slotRows[0];
   const patient = await fetchPatientRow(conn, booking.patient_id);
 
-  await conn.query(
+  const [released] = await conn.query(
     `UPDATE bookings SET status = ?, cancelled_at = NOW()
      WHERE id = ? AND status = 'HELD'`,
     [finalStatus, booking.id],
   );
+  if (released.affectedRows !== 1) {
+    throw new ApiError(409, 'This reservation is no longer active.', 'NOT_HELD', {
+      status: booking.status,
+    });
+  }
   await remindersEngine.cancelForBooking(conn, booking.id);
-  await conn.query(
-    'UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?',
-    [booking.slot_id],
-  );
+  await decrementBookedCount(conn, booking.slot_id);
   await conn.query(
     `UPDATE waitlist SET status = 'EXPIRED', promotion_expires_at = NULL
      WHERE slot_id = ? AND patient_id = ? AND status = 'PROMOTED'`,
@@ -3166,15 +3169,18 @@ app.patch(
       }
 
       const beforeStatus = booking.status;
-      await conn.query(
-        `UPDATE bookings SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = ?`,
+      const [cancelled] = await conn.query(
+        `UPDATE bookings SET status = 'CANCELLED', cancelled_at = NOW()
+         WHERE id = ? AND status IN ('CONFIRMED','CHECKED_IN')`,
         [bookingId],
       );
+      if (cancelled.affectedRows !== 1) {
+        throw new ApiError(409, 'This booking is no longer active.', 'NOT_ACTIVE', {
+          status: booking.status,
+        });
+      }
       await remindersEngine.cancelForBooking(conn, bookingId);
-      await conn.query(
-        `UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?`,
-        [booking.slot_id],
-      );
+      await decrementBookedCount(conn, booking.slot_id);
 
       const promoted = await promoteNextWaiter(conn, {
         slotId: booking.slot_id,
@@ -3330,9 +3336,7 @@ app.patch(
         });
       }
 
-      await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [
-        booking.slot_id,
-      ]);
+      await decrementBookedCount(conn, booking.slot_id);
       const [moved] = await conn.query(
         `UPDATE slots SET booked_count = booked_count + 1
          WHERE id = ? AND booked_count < capacity`,
@@ -4511,9 +4515,7 @@ app.delete(
       );
 
       for (const booking of active) {
-        await conn.query('UPDATE slots SET booked_count = GREATEST(0, booked_count - 1) WHERE id = ?', [
-          booking.slot_id,
-        ]);
+        await decrementBookedCount(conn, booking.slot_id);
       }
       await conn.query('UPDATE waitlist SET status = "CANCELLED" WHERE patient_id = ?', [
         req.user.id,
