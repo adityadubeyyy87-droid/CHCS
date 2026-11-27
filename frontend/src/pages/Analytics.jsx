@@ -8,7 +8,7 @@ import {
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import {
-  Badge, Button, Card, CardHead, Counter, ErrorNote, Icon, Sci, Skeleton, Slider,
+  Badge, Button, Card, CardHead, Counter, EmptyState, ErrorNote, Icon, Sci, Skeleton, Slider,
 } from '../components/ui.jsx';
 import { AnimatedNumber, InView, Spotlight } from '../components/motion';
 
@@ -56,6 +56,7 @@ export default function Analytics() {
 
   const kpis = data.data?.kpis;
   const charts = data.data || {};
+  const provenance = data.data?.meta?.provenance || 'live-mysql';
 
   const [exportBusy, setExportBusy] = useState(false);
 
@@ -101,12 +102,18 @@ export default function Analytics() {
 
       {kpis && (
         <>
+          <div className="analytics-provenance" role="note">
+            <Badge tone="ok">{provenance}</Badge>
+            <span className="muted">Generated {data.data?.meta?.generatedAt ? new Date(data.data.meta.generatedAt).toLocaleString() : 'from live rows'} · {data.data?.meta?.engine || 'MySQL aggregate queries'}</span>
+          </div>
+
           <div className="bento kpi-bento">
             <InView once className="kpi-slot">
               <Card className="kpi-card">
                 <small className="kpi-label">Total registered</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.totalRegistered} /></strong>
                 <span className="muted">community members on the platform</span>
+                <small className="kpi-provenance"><Badge tone="ok">{provenance}</Badge></small>
               </Card>
             </InView>
             <InView once delay={80} className="kpi-slot">
@@ -114,6 +121,7 @@ export default function Analytics() {
                 <small className="kpi-label">Attendance rate</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.attendanceRate} decimals={1} format={(v) => v.toFixed(1)} /></strong>%
                 <span className="muted">of completed screenings attended</span>
+                <small className="kpi-provenance"><Badge tone="ok">{provenance}</Badge></small>
               </Card>
             </InView>
             <InView once delay={160} className="kpi-slot">
@@ -121,6 +129,7 @@ export default function Analytics() {
                 <small className="kpi-label">Waitlist auto-promotions</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.waitlistPromotions} /></strong>
                 <span className="muted">seats rescued by FIFO fairness</span>
+                <small className="kpi-provenance"><Badge tone="ok">{provenance}</Badge></small>
               </Card>
             </InView>
             <InView once delay={240} className="kpi-slot">
@@ -128,6 +137,23 @@ export default function Analytics() {
                 <small className="kpi-label">No-show rate</small>
                 <strong className="kpi-value"><AnimatedNumber value={kpis.noShowRate} decimals={1} format={(v) => v.toFixed(1)} /></strong>%
                 <span className="muted">across completed camps</span>
+                <small className="kpi-provenance"><Badge tone="ok">{provenance}</Badge></small>
+              </Card>
+            </InView>
+            <InView once delay={80} className="kpi-slot">
+              <Card className="kpi-card">
+                <small className="kpi-label">Feedback responses</small>
+                <strong className="kpi-value"><AnimatedNumber value={kpis.feedbackResponses} /></strong>
+                <span className="muted">average {Number(kpis.averageFeedbackRating || 0).toFixed(1)} / 5 post-camp</span>
+                <small className="kpi-provenance"><Badge tone="ok">{provenance}</Badge></small>
+              </Card>
+            </InView>
+            <InView once delay={160} className="kpi-slot">
+              <Card className="kpi-card">
+                <small className="kpi-label">Service records</small>
+                <strong className="kpi-value"><AnimatedNumber value={kpis.serviceRecords} /></strong>
+                <span className="muted">completed service entries from camp days</span>
+                <small className="kpi-provenance"><Badge tone="ok">{provenance}</Badge></small>
               </Card>
             </InView>
           </div>
@@ -137,8 +163,10 @@ export default function Analytics() {
               <Card className="bento-2">
                 <CardHead icon="chart" title="Bookings vs physical capacity" sub="Every camp, past and upcoming" actions={<Badge tone="ok">Live MySQL</Badge>} />
                 <div className="chart-box">
-                  <ResponsiveContainer width="100%" height={280}>
-                    <BarChart data={charts.bookingsVsCapacity || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                  {(charts.bookingsVsCapacity || []).length === 0 ? (
+                    <EmptyState icon="chart" title="No camps to chart yet">Create a real camp to see capacity evidence here.</EmptyState>
+                  ) : <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={charts.bookingsVsCapacity} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
                       <CartesianGrid stroke={chart.grid} vertical={false} />
                       <XAxis dataKey="short" tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
@@ -147,7 +175,7 @@ export default function Analytics() {
                       <Bar dataKey="capacity" name="Slot capacity" fill={chart.capacity} radius={[6, 6, 0, 0]} />
                       <Bar dataKey="bookings" name="Bookings" fill={chart.ok} radius={[6, 6, 0, 0]} />
                     </BarChart>
-                  </ResponsiveContainer>
+                  </ResponsiveContainer>}
                 </div>
               </Card>
             </InView>
@@ -155,8 +183,10 @@ export default function Analytics() {
               <Card className="bento-2">
                 <CardHead icon="users" title="Attendance vs no-shows" sub="Completed camps only" actions={<Badge tone="ok">Live MySQL</Badge>} />
                 <div className="chart-box">
-                  <ResponsiveContainer width="100%" height={280}>
-                    <BarChart data={charts.attendanceVsNoShow || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                  {(charts.attendanceVsNoShow || []).length === 0 ? (
+                    <EmptyState icon="users" title="No completed camps yet">Attendance evidence appears after a camp closes.</EmptyState>
+                  ) : <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={charts.attendanceVsNoShow} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
                       <CartesianGrid stroke={chart.grid} vertical={false} />
                       <XAxis dataKey="camp" tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
@@ -165,7 +195,7 @@ export default function Analytics() {
                       <Bar dataKey="attended" name="Attended" stackId="a" fill={chart.ok} radius={[0, 0, 0, 0]} />
                       <Bar dataKey="noShow" name="No-shows" stackId="a" fill={chart.red} radius={[6, 6, 0, 0]} />
                     </BarChart>
-                  </ResponsiveContainer>
+                  </ResponsiveContainer>}
                 </div>
               </Card>
             </InView>
@@ -173,8 +203,10 @@ export default function Analytics() {
               <Card>
                 <CardHead icon="clock" title="Hourly slot utilisation" sub="Where the day is quiet — evidence for slot re-timing" actions={<Badge tone="ok">Live MySQL</Badge>} />
                 <div className="chart-box">
-                  <ResponsiveContainer width="100%" height={260}>
-                    <AreaChart data={charts.hourlyUtilisation || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                  {(charts.hourlyUtilisation || []).length === 0 ? (
+                    <EmptyState icon="clock" title="No slot activity yet">Utilisation is derived from real bookings once slots exist.</EmptyState>
+                  ) : <ResponsiveContainer width="100%" height={260}>
+                    <AreaChart data={charts.hourlyUtilisation} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
                       <defs>
                         <linearGradient id="utilGrad" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor={chart.ok2} stopOpacity={0.5} />
@@ -188,7 +220,7 @@ export default function Analytics() {
                       <ReferenceLine y={90} stroke={chart.amber} strokeDasharray="5 4" label={{ value: 'Target 90%', fill: chart.amber, fontSize: 11, position: 'insideTopRight' }} />
                       <Area type="monotone" dataKey="utilisation" name="Utilisation" stroke={chart.ok} strokeWidth={2.4} fill="url(#utilGrad)" />
                     </AreaChart>
-                  </ResponsiveContainer>
+                  </ResponsiveContainer>}
                 </div>
               </Card>
             </InView>

@@ -173,7 +173,7 @@ describe('attendance — check-in, no-show and close-out', () => {
     const doctor = await insertUser({ role: 'DOCTOR' });
     const attended = await insertUser({ role: 'PATIENT' });
     const absent = await insertUser({ role: 'PATIENT' });
-    const fixture = await createCampFixture({ capacity: 4 });
+    const fixture = await createCampFixture({ organizerId: organizer.id, capacity: 4 });
 
     const attendedBooking = await bookSeat(attended, fixture.slotId);
     const absentBooking = await bookSeat(absent, fixture.slotId);

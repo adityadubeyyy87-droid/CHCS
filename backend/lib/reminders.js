@@ -256,39 +256,53 @@ async function deliver(reminder, providers, pool) {
   return { delivered: channels.filter((c) => c.recipient).length };
 }
 
+/**
+ * Recycle reminders abandoned by a crashed worker. This runs in its own
+ * autocommit statements: mixing it with the claim transaction locks `reminders`
+ * through two different indexes, which lets two concurrent sweeps deadlock.
+ * Updating by primary key makes repeated recovery idempotent.
+ */
+async function recycleStaleSending(pool, now) {
+  const [stale] = await pool.query(
+    `SELECT id FROM reminders
+     WHERE status = 'SENDING' AND updated_at < DATE_SUB(?, INTERVAL ? MINUTE)`,
+    [formatSqlDate(now), STALE_SENDING_MINUTES],
+  );
+  if (!stale.length) return;
+
+  await pool.query(
+    `UPDATE reminders SET status = 'PENDING'
+     WHERE id IN (?) AND status = 'SENDING'
+       AND updated_at < DATE_SUB(?, INTERVAL ? MINUTE)`,
+    [stale.map((row) => row.id), formatSqlDate(now), STALE_SENDING_MINUTES],
+  );
+}
+
 async function claimDueReminders(pool, { now, limit }) {
+  await recycleStaleSending(pool, now);
+
   const conn = await pool.getConnection();
+  let claimed = [];
   try {
     await conn.beginTransaction();
 
-    await conn.query(
-      `UPDATE reminders SET status = 'PENDING'
-       WHERE status = 'SENDING' AND updated_at < DATE_SUB(?, INTERVAL ? MINUTE)`,
-      [formatSqlDate(now), STALE_SENDING_MINUTES],
-    );
-
-    const [rows] = await conn.query(
-      `SELECT r.id AS reminder_id, r.booking_id, r.type, r.attempts,
-              b.patient_id, b.qr_token, u.name, u.phone, u.email,
-              c.id AS camp_id, c.title, c.venue, c.address, c.city,
-              c.latitude, c.longitude, c.camp_date,
-              s.start_time
-       FROM reminders r
-       JOIN bookings b ON b.id = r.booking_id
-       JOIN users u ON u.id = b.patient_id
-       JOIN camps c ON c.id = b.camp_id
-       JOIN slots s ON s.id = b.slot_id
-       WHERE r.status = 'PENDING'
-         AND r.send_at <= ?
-         AND b.status = 'CONFIRMED'
-         AND c.status = 'PUBLISHED'
-       ORDER BY r.send_at ASC, r.id ASC
+    // Lock only `reminders`. Locking the joined booking/user/camp/slot rows in
+    // the same transaction gives two sweeps different lock orders and can
+    // deadlock even with SKIP LOCKED. The status change is the real claim, so
+    // the joined details can be read safely after the commit.
+    const [claimedRows] = await conn.query(
+      `SELECT id AS reminder_id, booking_id, type
+       FROM reminders
+       WHERE status = 'PENDING'
+         AND send_at <= ?
+       ORDER BY send_at ASC, id ASC
        LIMIT ? FOR UPDATE SKIP LOCKED`,
       [formatSqlDate(now), limit],
     );
+    claimed = claimedRows;
 
-    if (rows.length) {
-      const ids = rows.map((row) => row.reminder_id);
+    if (claimed.length) {
+      const ids = claimed.map((row) => row.reminder_id);
       await conn.query(
         `UPDATE reminders SET status = 'SENDING', attempts = attempts + 1 WHERE id IN (?)`,
         [ids],
@@ -296,13 +310,41 @@ async function claimDueReminders(pool, { now, limit }) {
     }
 
     await conn.commit();
-    return rows.map((row) => ({ ...row, attempts: Number(row.attempts) + 1 }));
   } catch (error) {
     await conn.rollback().catch(() => {});
     throw error;
   } finally {
     conn.release();
   }
+
+  if (!claimed.length) return [];
+
+  const ids = claimed.map((row) => row.reminder_id);
+  const [rows] = await pool.query(
+    `SELECT r.id AS reminder_id, r.booking_id, r.type, r.attempts,
+            b.patient_id, b.qr_token, u.name, u.phone, u.email,
+            c.id AS camp_id, c.title, c.venue, c.address, c.city,
+            c.latitude, c.longitude, c.camp_date,
+            s.start_time
+     FROM reminders r
+     JOIN bookings b ON b.id = r.booking_id
+     JOIN users u ON u.id = b.patient_id
+     JOIN camps c ON c.id = b.camp_id
+     JOIN slots s ON s.id = b.slot_id
+     WHERE r.id IN (?)
+       AND r.status = 'SENDING'
+       AND b.status = 'CONFIRMED'
+       AND c.status = 'PUBLISHED'`,
+    [ids],
+  );
+
+  // A booking can be cancelled between the claim commit and this read. Do not
+  // deliver a reminder whose booking or camp is no longer eligible.
+  const byId = new Map(rows.map((row) => [row.reminder_id, row]));
+  return claimed
+    .map((item) => byId.get(item.reminder_id))
+    .filter(Boolean)
+    .map((row) => ({ ...row, attempts: Number(row.attempts) }));
 }
 
 async function markSent(pool, reminder, now) {

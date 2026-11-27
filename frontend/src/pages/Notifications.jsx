@@ -30,9 +30,8 @@ export default function Notifications() {
       const count = res.sent ?? res.remindersSent ?? res.count ?? 0;
       toast(`Reminder sweep finished — ${count} new reminder(s).`, 'ok', res.note || 'De-duplicated per booking and type.');
       pushGateway({
-        channel: 'SYSTEM', type: 'REMINDER_SWEEP', recipient: 'all booked patients',
-        message: `Manual reminder sweep sent ${count} message(s).`,
-        status: 'SENT', provider: 'Gateway Interceptor',
+        channel: 'SYSTEM', type: 'REMINDER_SWEEP', localActivity: true,
+        message: `Manual reminder sweep finished with ${count} new reminder(s).`,
       });
       if (canSeeLog) await log.reload();
     } catch (err) { toast(err.message, 'bad'); }
@@ -89,9 +88,9 @@ export default function Notifications() {
                     <Badge status={n.channel} tone={n.channel === 'SMS' || n.channel === 'PUSH' ? 'info' : n.channel === 'SYSTEM' ? 'muted' : 'warn'}>{n.channel}</Badge>
                     <Badge
                       status={n.status || 'PENDING'}
-                      tone={String(n.status || '').toUpperCase() === 'SENT' ? 'ok' : String(n.status || '').toUpperCase() === 'FAILED' ? 'bad' : String(n.status || '').toUpperCase() === 'SIMULATED' ? 'sim' : 'info'}
+                      tone={String(n.status || '').toUpperCase() === 'SENT' ? 'ok' : String(n.status || '').toUpperCase() === 'FAILED' ? 'bad' : String(n.status || '').toUpperCase() === 'SIMULATED' ? 'sim' : n.localActivity ? 'muted' : 'info'}
                     >
-                      {String(n.status || 'PENDING').toUpperCase()}
+                      {n.localActivity ? 'LOCAL ACTIVITY' : String(n.status || 'PENDING').toUpperCase()}
                     </Badge>
                     {n.type && <Badge tone="muted">{String(n.type).replaceAll('_', ' ')}</Badge>}
                     <time className="muted">{relTime(n.sentAt || n.at)}</time>
@@ -105,11 +104,12 @@ export default function Notifications() {
                     {n.subject && <strong>{n.subject} — </strong>}{n.message}
                   </p>
                   <p className="gw-meta muted">
-                    → {n.recipient} · {n.provider || 'Gateway Interceptor'}
+                    {n.localActivity ? 'No outbound delivery claimed · captured in this session'
+                      : <>→ {n.recipient} · {n.provider || 'Gateway Interceptor'}</>}
                     {n.bookingId ? ` · booking reference ${n.bookingId}` : ''}
                     {n.attempts ? ` · ${n.attempts} attempt${n.attempts === 1 ? '' : 's'}` : ''}
                     {n.lastError ? ` · ${n.lastError}` : ''}
-                    {n.local && ' · captured live in this session'}
+                    {n.local && !n.localActivity && ' · captured live in this session'}
                   </p>
                 </article>
               </InView>

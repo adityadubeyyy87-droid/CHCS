@@ -12,10 +12,6 @@ const SOCKET_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/api\/?$/, '
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
-// Real Express events. They only bump the unread badge; notification content
-// arrives through `notification:new` / `gateway:message`.
-const LIVE_SOCKET_EVENTS = ['booking:confirmed', 'waitlist:joined', 'waitlist:promoted', 'checkin:new', 'queue:updated'];
-
 export function AppProvider({ children }) {
   const [mode, setMode] = useState('connecting'); // 'connecting' | 'live' | 'error'
   const [connectionError, setConnectionError] = useState(null);
@@ -34,10 +30,13 @@ export function AppProvider({ children }) {
   const [gateway, setGateway] = useState([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [unread, setUnread] = useState(0);
+  const [inbox, setInbox] = useState([]);
+  const [inboxUnread, setInboxUnread] = useState(0);
   const [screenshotMode, setScreenshotMode] = useState(false);
   const socketRef = useRef(null);
   const [socketOnline, setSocketOnline] = useState(false);
   const localNotifId = useRef(1);
+  const seenNotificationIds = useRef(new Set());
   const bootedRef = useRef(false);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('chsc_theme', theme); }, [theme]);
@@ -51,14 +50,44 @@ export function AppProvider({ children }) {
     setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 4600);
   }, []);
 
-  /** Live activity feed: only real API results and real Socket.io events. */
+  /** Bell inbox: the MySQL-backed notification row list, never a local fake. */
+  const refreshInbox = useCallback(async () => {
+    if (!localStorage.getItem('chsc_token')) {
+      setInbox([]);
+      setInboxUnread(0);
+      return;
+    }
+    try {
+      const data = await api.inbox({ page: 1, pageSize: 20 });
+      setInbox(data?.notifications || []);
+      setInboxUnread(Number(data?.unread || 0));
+    } catch {
+      setInbox([]);
+      setInboxUnread(0);
+    }
+  }, []);
+
+  useEffect(() => { refreshInbox(); }, [user, refreshInbox]);
+
+  /** Live activity feed: real notification rows plus explicitly local activity. */
   const pushGateway = useCallback((event) => {
+    const notificationId = event?.id === undefined || event?.id === null ? null : String(event.id);
+    if (notificationId) {
+      if (seenNotificationIds.current.has(notificationId)) return;
+      seenNotificationIds.current.add(notificationId);
+    }
+    const isLocalActivity = Boolean(event?.localActivity);
     const row = {
       ...event,
       _id: localNotifId.current++,
-      at: new Date().toISOString(),
-      status: event.status || 'SENT',
+      at: event?.at || new Date().toISOString(),
+      status: isLocalActivity ? 'LOCAL' : (event?.status || 'PENDING'),
+      localActivity: isLocalActivity,
     };
+    if (isLocalActivity) {
+      delete row.recipient;
+      delete row.provider;
+    }
     setGateway((current) => [row, ...current].slice(0, 80));
     setUnread((count) => count + 1);
   }, []);
@@ -81,15 +110,15 @@ export function AppProvider({ children }) {
           console.warn('[CHSC] realtime connection:', error.message);
         }
       });
+      // Both events carry the same redacted notification id; pushGateway
+      // de-duplicates by id so one notification cannot be counted twice.
       socket.on('gateway:message', (event) => pushGateway(event));
       socket.on('notification:new', (event) => pushGateway(event));
-      LIVE_SOCKET_EVENTS.forEach((eventName) => {
-        socket.on(eventName, () => setUnread((count) => count + 1));
-      });
+      socket.on('inapp:changed', () => refreshInbox());
     } catch (error) {
       console.warn('[CHSC] realtime connection:', error.message);
     }
-  }, [pushGateway]);
+  }, [pushGateway, refreshInbox]);
 
   const refreshConnection = useCallback(async () => {
     setMode('connecting');
@@ -135,18 +164,21 @@ export function AppProvider({ children }) {
     setUser(result.user);
     setLocalUser(result.user);
     localStorage.setItem('chsc_user', JSON.stringify(result.user));
+    await refreshInbox();
     // A successful auth call is not a substitute for the health probe.
     const connected = await refreshConnection();
     // A successful sign-in is a navigation, not just a state change.
     navigate('overview');
     if (!connected) toast('Signed in, but the backend health check did not pass.', 'warn');
     return result.user;
-  }, [navigate, refreshConnection, toast]);
+  }, [navigate, refreshConnection, refreshInbox, toast]);
 
   const signOut = useCallback(() => {
     setToken(null);
     setUser(null);
     setLocalUser(null);
+    setInbox([]);
+    setInboxUnread(0);
     localStorage.removeItem('chsc_user');
     if (socketRef.current) {
       socketRef.current.disconnect();
@@ -168,16 +200,17 @@ export function AppProvider({ children }) {
 
   const value = useMemo(() => ({
     mode, connectionError, user, theme, lang, science, page, toasts, gateway,
-    drawerOpen, unread, screenshotMode,
+    drawerOpen, unread, screenshotMode, inbox, inboxUnread,
     setTheme, setLang, setScience, setPage: navigate, setDrawerOpen, setUnread, setScreenshotMode,
-    toast, pushGateway, t, signIn, signOut, refreshConnection,
+    toast, pushGateway, t, signIn, signOut, refreshConnection, refreshInbox,
     socketOnline,
     isStaff: Boolean(user && ['DOCTOR', 'VOLUNTEER'].includes(user.role)),
     isOrganizer: Boolean(user && ['ORGANIZER', 'ADMIN'].includes(user.role)),
     isAdmin: Boolean(user && user.role === 'ADMIN'),
     socket: socketRef.current,
   }), [mode, connectionError, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread,
-    screenshotMode, toast, pushGateway, t, signIn, signOut, refreshConnection, navigate, socketOnline]);
+    screenshotMode, inbox, inboxUnread, toast, pushGateway, t, signIn, signOut, refreshConnection,
+    refreshInbox, navigate, socketOnline]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

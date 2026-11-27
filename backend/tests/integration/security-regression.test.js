@@ -44,7 +44,7 @@ describe('P0/P1 security and correctness regressions', () => {
   it('never exposes staff email or phone on the public staff endpoint', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR', name: 'Dr Private' });
-    const fixture = await createCampFixture();
+    const fixture = await createCampFixture({ organizerId: organizer.id });
 
     await request(app)
       .post(`/api/camps/${fixture.campId}/staff`)
@@ -90,7 +90,11 @@ describe('P0/P1 security and correctness regressions', () => {
   it('refuses a destructive slot rebuild even with force=true', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const patient = await insertUser({ role: 'PATIENT' });
-    const fixture = await createCampFixture({ capacity: 4, startsInHours: 96 });
+    const fixture = await createCampFixture({
+      organizerId: organizer.id,
+      capacity: 4,
+      startsInHours: 96,
+    });
     const booked = await book({ token: patient.token, slotId: fixture.slotId }).expect(201);
     const bookingId = booked.body.booking.id;
 

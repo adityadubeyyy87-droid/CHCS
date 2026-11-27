@@ -18,11 +18,16 @@ function assign({ token, campId, userId, shiftStart, shiftEnd, roleAtCamp = 'DOC
     .send({ userId, roleAtCamp, shiftStart, shiftEnd, ...body });
 }
 
+// The new camp-scope guard requires the acting organizer to own the fixture.
+function createStaffCamp(organizer, options) {
+  return createCampAt({ ...options, organizerId: organizer.id });
+}
+
 describe('staff assignment — overlap protection', () => {
   it('assigns a doctor to a shift', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR', name: 'Dr Overlap' });
-    const camp = await createCampAt({
+    const camp = await createStaffCamp(organizer, {
       campDate: DAY,
       startTime: '09:00:00',
       endTime: '13:00:00',
@@ -44,7 +49,7 @@ describe('staff assignment — overlap protection', () => {
   it('blocks the same person twice in one camp', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const nurse = await insertUser({ role: 'VOLUNTEER' });
-    const camp = await createCampAt({
+    const camp = await createStaffCamp(organizer, {
       campDate: DAY,
       startTime: '09:00:00',
       endTime: '13:00:00',
@@ -72,12 +77,12 @@ describe('staff assignment — overlap protection', () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR' });
 
-    const morning = await createCampAt({
+    const morning = await createStaffCamp(organizer, {
       campDate: DAY,
       startTime: '09:00:00',
       endTime: '12:00:00',
     });
-    const midday = await createCampAt({
+    const midday = await createStaffCamp(organizer, {
       campDate: DAY,
       startTime: '11:00:00',
       endTime: '15:00:00',
@@ -109,13 +114,13 @@ describe('staff assignment — overlap protection', () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR' });
 
-    const morning = await createCampAt({ campDate: DAY, startTime: '09:00:00', endTime: '12:00:00' });
-    const afternoon = await createCampAt({
+    const morning = await createStaffCamp(organizer, { campDate: DAY, startTime: '09:00:00', endTime: '12:00:00' });
+    const afternoon = await createStaffCamp(organizer, {
       campDate: DAY,
       startTime: '12:00:00',
       endTime: '16:00:00',
     });
-    const nextDay = await createCampAt({
+    const nextDay = await createStaffCamp(organizer, {
       campDate: '2099-08-15',
       startTime: '09:00:00',
       endTime: '17:00:00',
@@ -154,8 +159,8 @@ describe('staff assignment — overlap protection', () => {
   it('lets one simultaneous request win when two organizers race the same doctor', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR' });
-    const first = await createCampAt({ campDate: DAY, startTime: '09:00:00', endTime: '13:00:00' });
-    const second = await createCampAt({ campDate: DAY, startTime: '10:00:00', endTime: '14:00:00' });
+    const first = await createStaffCamp(organizer, { campDate: DAY, startTime: '09:00:00', endTime: '13:00:00' });
+    const second = await createStaffCamp(organizer, { campDate: DAY, startTime: '10:00:00', endTime: '14:00:00' });
 
     const results = await Promise.all([
       assign({
@@ -184,7 +189,7 @@ describe('staff assignment — overlap protection', () => {
   it('rejects inverted shifts, unknown users and patient tokens', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR' });
-    const camp = await createCampAt({ campDate: DAY, startTime: '09:00:00', endTime: '13:00:00' });
+    const camp = await createStaffCamp(organizer, { campDate: DAY, startTime: '09:00:00', endTime: '13:00:00' });
 
     const inverted = await assign({
       token: organizer.token,
@@ -217,7 +222,7 @@ describe('staff assignment — overlap protection', () => {
   it('reports a clinical load warning without blocking the assignment', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
     const doctor = await insertUser({ role: 'DOCTOR' });
-    const camp = await createCampAt({ campDate: DAY, startTime: '09:00:00', endTime: '13:00:00' });
+    const camp = await createStaffCamp(organizer, { campDate: DAY, startTime: '09:00:00', endTime: '13:00:00' });
 
     const response = await assign({
       token: organizer.token,

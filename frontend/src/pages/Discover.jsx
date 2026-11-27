@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Input, Sci, Skeleton } from '../components/ui.jsx';
+import { FamilyMembersCard, PreScreeningFields, EMPTY_PRESCREENING, prescreeningComplete } from '../components/PatientWorkflows.jsx';
 import { Passport } from '../components/Passport.jsx';
 import Confetti from '../components/Confetti.jsx';
 import { cls, fmtDate, fmtTime12, dayTone, slotTone, holdSecondsLeft, fmtCountdown } from '../lib/format.js';
@@ -21,7 +22,19 @@ const TRAVEL = [
 export default function Discover() {
   const { user, toast, setPage } = useApp();
   const { click, success, error: soundError } = useSound();
-  const camps = useFetch(() => api.camps(), []);
+  const [filters, setFilters] = useState({ q: '', type: 'ALL', from: '', to: '', openOnly: false, sort: 'date' });
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const camps = useFetch(() => api.camps({
+    q: filters.q,
+    type: filters.type,
+    from: filters.from,
+    to: filters.to,
+    openOnly: filters.openOnly,
+    sort: filters.sort,
+  }), [filters.q, filters.type, filters.from, filters.to, filters.openOnly, filters.sort]);
+  const [familyMemberId, setFamilyMemberId] = useState(null);
+  const [addPrescreening, setAddPrescreening] = useState(false);
+  const [prescreening, setPrescreening] = useState(EMPTY_PRESCREENING);
   const [selected, setSelected] = useState(null);
   const [step, setStep] = useState(0); // 0 grid, 1 details, 2 slots, 3 confirm
   const [travel, setTravel] = useState('AUTO_BUS');
@@ -99,9 +112,18 @@ export default function Discover() {
   }
 
   async function confirm() {
+    if (addPrescreening && !prescreeningComplete(prescreening)) {
+      setError('Complete the pre-screening details (including a 10-digit emergency contact) or turn it off.');
+      return;
+    }
     setBusy(true); setError(null); setWaitlisted(null);
     try {
-      const res = await api.book(slot.id, { travelMode: travel, pledge });
+      const res = await api.book(slot.id, {
+        travelMode: travel,
+        pledge,
+        familyMemberId,
+        ...(addPrescreening ? { prescreening } : {}),
+      });
       if (res.status === 'HELD') {
         click();
         setBooking(res.booking || res);
@@ -251,7 +273,47 @@ export default function Discover() {
 
       <div className="discover-grid">
         <aside className="discover-list">
-          <CardHead icon="compass" title="Find health camps" sub="Free screening across Bengaluru" />
+          <CardHead icon="compass" title="Find health camps" sub="Free screening across Bengaluru"
+            actions={<Button size="sm" variant="ghost" icon="search" onClick={() => setFiltersOpen(!filtersOpen)} aria-expanded={filtersOpen}>Filters</Button>} />
+          <div className="discover-search-row">
+            <label className="inline-field discover-search-input">
+              <span>Search camps</span>
+              <Input type="search" placeholder="Search camps, venues, areas…"
+                value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
+            </label>
+          </div>
+          {filtersOpen && (
+            <div className="discover-filters">
+              <label className="filter-field">
+                <span>Screening type</span>
+                <select className="input select" aria-label="Filter by camp type" value={filters.type}
+                  onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
+                  {['ALL', 'GENERAL', 'EYE', 'DENTAL', 'BLOOD_DONATION', 'MATERNAL'].map((type) => (
+                    <option key={type} value={type}>{type === 'ALL' ? 'All types' : type.replace('_', ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase())}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="filter-dates">
+                <label className="filter-field"><span>From</span>
+                  <Input type="date" aria-label="Camps from date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
+                </label>
+                <label className="filter-field"><span>To</span>
+                  <Input type="date" aria-label="Camps to date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
+                </label>
+              </div>
+              <label className="pledge"><input type="checkbox" checked={filters.openOnly}
+                onChange={(e) => setFilters({ ...filters, openOnly: e.target.checked })} /><span>Only camps with free seats</span></label>
+              <label className="filter-field">
+                <span>Sort by</span>
+                <select className="input select" aria-label="Sort camps" value={filters.sort}
+                  onChange={(e) => setFilters({ ...filters, sort: e.target.value })}>
+                  <option value="date">Soonest date</option>
+                  <option value="spots">Most free seats</option>
+                </select>
+              </label>
+              <Button size="sm" variant="ghost" onClick={() => setFilters({ q: '', type: 'ALL', from: '', to: '', openOnly: false, sort: 'date' })}>Clear filters</Button>
+            </div>
+          )}
           {camps.loading && <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={92} />)}</div>}
           {camps.error && <ErrorNote onRetry={camps.reload}>{camps.error}</ErrorNote>}
           {camps.data && (
@@ -269,6 +331,7 @@ export default function Discover() {
                         <strong className="camp-card-title">{c.title}</strong>
                         <small className="muted"><Icon name="pin" size={12} /> {c.venue}</small>
                         <div className="camp-card-meta">
+                          {c.campType && c.campType !== 'GENERAL' && <Badge tone="info">{c.campType.replace('_', ' ')}</Badge>}
                           <Badge tone={remaining > 0 ? 'ok' : 'bad'}>{remaining > 0 ? `${remaining} seats free` : 'Waitlist open'}</Badge>
                           <small className="muted">{fmtTime12(c.startTime)}–{fmtTime12(c.endTime)}</small>
                         </div>
@@ -277,6 +340,11 @@ export default function Discover() {
                   </Tilt>
                 );
               })}
+              {camps.data.camps.filter((c) => c.status === 'PUBLISHED' && dayTone(c.campDate) !== 'past').length === 0 && (
+                <EmptyState icon="compass" title="No camps match these filters">
+                  Try a different type, date range or search term. All camps shown here are real published records.
+                </EmptyState>
+              )}
             </div>
           )}
         </aside>
@@ -374,7 +442,28 @@ export default function Discover() {
                       <input type="checkbox" checked={pledge} onChange={(e) => setPledge(e.target.checked)} />
                       <span>I pledge to arrive 10 minutes early by {TRAVEL.find((t) => t.id === travel).label.toLowerCase()} {arrival && `by ${arrival}`}.</span>
                     </label>
-                    <Input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} aria-label="Planned arrival time" className="arrival-input" />
+                    <label className="inline-field arrival-field">
+                      <span>Planned arrival</span>
+                      <Input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} className="arrival-input" />
+                    </label>
+
+                    <details className="booking-extras" open={Boolean(familyMemberId || addPrescreening)}>
+                      <summary>Book for a family member or add pre-screening</summary>
+                      <FamilyMembersCard compact selectedId={familyMemberId} onSelect={setFamilyMemberId} />
+                      <label className="pledge prescreen-toggle">
+                        <input type="checkbox" checked={addPrescreening} onChange={(e) => setAddPrescreening(e.target.checked)} />
+                        <span>Add pre-screening details for this visit now</span>
+                      </label>
+                      {addPrescreening && (
+                        <>
+                          <PreScreeningFields value={prescreening} onChange={setPrescreening} idPrefix="booking-pre" />
+                          {!prescreeningComplete(prescreening) && (
+                            <p className="field-error" role="alert">Add an emergency contact name and a valid 10-digit phone number.</p>
+                          )}
+                        </>
+                      )}
+                    </details>
+
                     {error && <div className="error-note compact" role="alert"><Icon name="alert" size={14} /><p>{error}</p></div>}
                     <div className="slot-actions">
                       {slotTone(slot.remaining, slot.capacity) === 'full' ? (

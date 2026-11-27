@@ -5,14 +5,16 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Modal, Skeleton } from '../components/ui.jsx';
+import { AppointmentCardButton, FeedbackButton, PreScreeningCard } from '../components/PatientWorkflows.jsx';
 import { Passport, downloadIcs } from '../components/Passport.jsx';
 import { fmtDate, fmtTime12, cls, slotTone, holdSecondsLeft, fmtCountdown } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 export default function MyBookings() {
-  const { toast, pushGateway, setPage } = useApp();
+  const { toast, setPage } = useApp();
   const bookings = useFetch(() => api.myBookings(), []);
   const [pass, setPass] = useState(null);
+  const [screeningTarget, setScreeningTarget] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [rescheduleTarget, setRescheduleTarget] = useState(null);
   const [slots, setSlots] = useState([]);
@@ -34,13 +36,6 @@ export default function MyBookings() {
     try {
       const res = await api.confirmBooking(b.id);
       toast(res.message || 'Seat confirmed — your pass is ready.', 'ok');
-      pushGateway({
-        channel: 'SYSTEM', type: 'BOOKING_CONFIRMED', recipient: 'you',
-        message: res.message || 'Hold confirmed.',
-        status: 'SENT',
-        provider: 'MySQL + Socket.io',
-        bookingId: b.id,
-      });
       await bookings.reload();
     } catch (err) { toast(err.message, 'bad'); }
     finally { setBusy(false); }
@@ -56,7 +51,6 @@ export default function MyBookings() {
     try {
       const res = await api.cancelBooking(cancelTarget.id);
       toast(res.message, 'ok', res.autoPromoted ? `Promoted: ${res.promotedPatient?.name || 'first waiting patient'}` : 'No waiting patients on that slot.');
-      pushGateway({ channel: 'SYSTEM', type: 'CANCELLATION', recipient: 'you', message: res.message, status: 'SENT', provider: 'MySQL + Socket.io', bookingId: cancelTarget.id });
       setCancelTarget(null);
       await bookings.reload();
     } catch (err) { toast(err.message, 'bad'); }
@@ -86,13 +80,6 @@ export default function MyBookings() {
       const res = await api.rescheduleBooking(rescheduleTarget.id, newSlotId);
       if (res.status !== 'RESCHEDULED') throw new Error('The booking could not be moved.');
       toast(res.message || 'Booking moved to the new slot.', 'ok');
-      pushGateway({
-        channel: 'SYSTEM', type: 'RESCHEDULE', recipient: 'you',
-        message: res.message || 'Booking moved to the new slot.',
-        status: 'SENT',
-        provider: 'MySQL + Socket.io',
-        bookingId: rescheduleTarget.id,
-      });
       setRescheduleTarget(null);
       setNewSlotId(null);
       setSlots([]);
@@ -128,6 +115,8 @@ export default function MyBookings() {
                       )}
                       {b.status === 'WAITLISTED' && b.waitlistPosition && <span className="qr-hint">Position {b.waitlistPosition}</span>}
                       {b.status === 'CONFIRMED' && <span className="qr-hint">QR: {b.qrToken}</span>}
+                      {b.familyMemberName && <Badge tone="info">For {b.familyMemberName}</Badge>}
+                      {b.prescreened && <Badge tone="ok">Screened</Badge>}
                     </div>
                   </div>
                   <div className="booking-actions">
@@ -140,6 +129,17 @@ export default function MyBookings() {
                       <Magnetic intensity={0.3}>
                         <Button size="sm" variant="ghost" icon="qr" onClick={() => setPass(b)}>Pass</Button>
                       </Magnetic>
+                    )}
+                    {['HELD', 'CONFIRMED', 'CHECKED_IN'].includes(b.status) && (
+                      <Magnetic intensity={0.3}>
+                        <Button size="sm" variant="ghost" icon="clipboard" onClick={() => setScreeningTarget(b)}>
+                          {b.prescreened ? 'Edit screening' : 'Pre-screen'}
+                        </Button>
+                      </Magnetic>
+                    )}
+                    {b.status === 'CONFIRMED' && <AppointmentCardButton booking={b} />}
+                    {['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(b.status) && (
+                      <FeedbackButton booking={b} onSubmitted={bookings.reload} />
                     )}
                     <Magnetic intensity={0.3}>
                       <Button size="sm" variant="ghost" icon="download" onClick={() => downloadIcs(b)}>Calendar</Button>
@@ -164,6 +164,12 @@ export default function MyBookings() {
 
       <Modal open={pass !== null} onClose={() => setPass(null)} title="Digital Health Passport" wide>
         {pass && <Spotlight color="rgba(16, 185, 129, 0.1)" size={500}><Passport booking={pass} embedded /></Spotlight>}
+      </Modal>
+
+      <Modal open={screeningTarget !== null} onClose={() => setScreeningTarget(null)} title="Pre-screening details" wide>
+        {screeningTarget && (
+          <PreScreeningCard booking={screeningTarget} onSaved={bookings.reload} />
+        )}
       </Modal>
 
       <Modal open={cancelTarget !== null} onClose={() => setCancelTarget(null)} title="Release your seat">

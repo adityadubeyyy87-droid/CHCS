@@ -5,13 +5,15 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, Counter, EmptyState, ErrorNote, Icon, Input, Skeleton } from '../components/ui.jsx';
+import { ManualLookupCard, ServiceQueueCard, WalkinCard } from '../components/StaffWorkflows.jsx';
+import { useCampRoom } from '../components/useCampRoom.js';
 import { fmtDate, fmtTime12 } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 const NativeBarcodeDetector = typeof window !== 'undefined' ? window.BarcodeDetector : null;
 
 export default function StaffDay() {
-  const { toast, pushGateway } = useApp();
+  const { toast, pushGateway, socket } = useApp();
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -22,6 +24,7 @@ export default function StaffDay() {
   const [cameraError, setCameraError] = useState(null);
   const assignments = useFetch(() => api.staffMe(), []);
   const [campId, setCampId] = useState(null);
+  const campJoined = useCampRoom(campId);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const detectorRef = useRef(null);
@@ -114,9 +117,9 @@ export default function StaffDay() {
       const res = await api.checkin(entered);
       setResult(res);
       pushGateway({
-        channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'camp staff',
+        channel: 'SYSTEM', type: 'CHECK_IN', localActivity: true,
         message: `Token ${res.booking?.tokenNumber || entered} checked in.`,
-        status: 'SENT', provider: 'Socket.io', bookingId: res.booking?.id,
+        bookingId: res.booking?.id,
       });
       await loadQueue();
       toast(res.message || 'Check-in recorded.', 'ok', `Token ${res.booking?.tokenNumber || entered} checked in.`);
@@ -135,6 +138,19 @@ export default function StaffDay() {
   }, [assignments.data, campId]);
 
   useEffect(() => { loadQueue(); }, [loadQueue]);
+
+  useEffect(() => {
+    if (!socket || !campJoined) return undefined;
+    const reload = () => loadQueue();
+    socket.on('queue:updated', reload);
+    socket.on('checkin:new', reload);
+    socket.on('service:queue:updated', reload);
+    return () => {
+      socket.off('queue:updated', reload);
+      socket.off('checkin:new', reload);
+      socket.off('service:queue:updated', reload);
+    };
+  }, [socket, campJoined, loadQueue]);
 
   const duty = assignments.data?.assignments || [];
   const currentCamp = duty.find((a) => Number(a.campId) === Number(campId));
@@ -209,7 +225,10 @@ export default function StaffDay() {
             <form className="checkin-form" onSubmit={(e) => { e.preventDefault(); doCheckin(); }}>
               <div className="checkin-input">
                 <Icon name="qr" size={14} />
-                <Input aria-label="Booking QR token" value={token} onChange={(e) => setToken(e.target.value.toUpperCase())} placeholder="CHSC-BLR-104999" autoComplete="off" />
+                <label className="inline-field qr-token-field">
+                  <span>Ticket reference</span>
+                  <Input value={token} onChange={(e) => setToken(e.target.value.toUpperCase())} placeholder="CHSC-BLR-104999" autoComplete="off" />
+                </label>
                 <Magnetic intensity={0.5}>
                   <Button type="submit" icon="check" loading={busy} disabled={!token.trim()}>Verify & check in</Button>
                 </Magnetic>
@@ -227,6 +246,8 @@ export default function StaffDay() {
             <p className="muted checkin-note">Scan a patient's QR pass at the registration desk. The Live Queue TV updates in real time.</p>
           </Card>
         </Spotlight>
+
+        <ManualLookupCard campId={campId} onCheckedIn={() => { loadQueue(); }} />
       </div>
 
       <div className="split-right stack-lg">
@@ -250,6 +271,9 @@ export default function StaffDay() {
           )}
           {!queue && !queueBusy && !queueError && <EmptyState icon="radio" title="No queue data" />}
         </Card>
+
+        <ServiceQueueCard campId={campId} />
+        <WalkinCard campId={campId} onRegistered={() => { loadQueue(); }} />
 
         <Card className="tips-card">
           <CardHead icon="users" title="FIFO Fairness" sub="Waitlist promotions follow strict first-in-first-out order under a row lock" />

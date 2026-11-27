@@ -35,10 +35,8 @@ export default function LiveQueueTV({ campId, compact = false }) {
           flashTimer = setTimeout(() => setFlash(null), 2400);
         }
         pushGateway({
-          channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'Waiting room display',
+          channel: 'SYSTEM', type: 'CHECK_IN', localActivity: true,
           message: `Token ${token || 'unknown'} checked in at the desk.`,
-          status: 'SENT',
-          provider: 'Socket.io',
         });
         onUpdate(e?.queue);
       };

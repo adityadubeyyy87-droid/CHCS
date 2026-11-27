@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { cls, relTime } from '../lib/format.js';
-import { Badge, Button, Icon } from './ui.jsx';
+import { Badge, Button, EmptyState, Icon } from './ui.jsx';
 
 export const NAV = [
   { id: 'overview', icon: 'home', labelKey: 'nav.overview', label: 'Overview', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
@@ -18,7 +18,7 @@ export const NAV = [
   { id: 'readiness', icon: 'flask', labelKey: 'nav.readiness', label: 'Ops Readiness', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'concurrencyProof', icon: 'zap', labelKey: 'nav.concurrencyProof', label: 'Concurrency Proof', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'controlRoom', icon: 'radio', labelKey: 'nav.controlRoom', label: 'Control Room', roles: ['ORGANIZER', 'ADMIN'] },
-  { id: 'auditLog', icon: 'clipboard', labelKey: 'nav.auditLog', label: 'Audit Log', roles: ['ORGANIZER', 'ADMIN'] },
+  { id: 'auditLog', icon: 'clipboard', labelKey: 'nav.auditLog', label: 'Audit Log', roles: ['ADMIN'] },
   { id: 'notifications', icon: 'bell', labelKey: 'nav.notifications', label: 'Notifications', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
   { id: 'settings', icon: 'gear', labelKey: 'nav.settings', label: 'Settings', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
 ];
@@ -39,14 +39,39 @@ export default function Shell({ children }) {
   const { user, page, setPage: navigate, t, lang, setLang, theme, setTheme, science, setScience, mode, connectionError, refreshConnection, unread, setUnread, gateway, drawerOpen, setDrawerOpen, screenshotMode, setScreenshotMode } = app;
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [markingAll, setMarkingAll] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
   const [searchError, setSearchError] = useState(null);
   const searchRef = useRef(null);
   const navRef = useRef(null);
   const profileRef = useRef(null);
+  const bellRef = useRef(null);
 
   const items = NAV.filter((n) => user && n.roles.includes(user.role));
+
+  async function markInboxRead(id) {
+    try {
+      await api.markNotificationRead(id);
+      await app.refreshInbox();
+    } catch (error) {
+      app.toast(error.message, 'bad');
+    }
+  }
+
+  async function markInboxAll() {
+    setMarkingAll(true);
+    try {
+      const result = await api.markAllNotificationsRead();
+      await app.refreshInbox();
+      app.toast(result.updated ? `${result.updated} notification${result.updated === 1 ? '' : 's'} marked read.` : 'Inbox already clear.');
+    } catch (error) {
+      app.toast(error.message, 'bad');
+    } finally {
+      setMarkingAll(false);
+    }
+  }
 
   useEffect(() => {
     const onKey = (e) => {
@@ -54,25 +79,47 @@ export default function Shell({ children }) {
         e.preventDefault();
         searchRef.current?.focus();
       }
-      if (e.key === 'Escape') { setMenuOpen(false); setDrawerOpen(false); setResults(null); }
+      if (e.key === 'Escape') {
+        if (inboxOpen) {
+          setInboxOpen(false);
+          bellRef.current?.querySelector('button')?.focus();
+        }
+        if (menuOpen) {
+          setMenuOpen(false);
+          profileRef.current?.querySelector('button')?.focus();
+        }
+        setDrawerOpen(false);
+        setResults(null);
+      }
       if (e.key === 'x' && e.altKey) setCollapsed((c) => !c);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [inboxOpen, menuOpen, setDrawerOpen]);
 
   useEffect(() => {
     if (!query) { setResults(null); setSearchError(null); }
   }, [query]);
 
   useEffect(() => {
-    if (!menuOpen) return undefined;
+    if (!menuOpen && !inboxOpen) return undefined;
     const onPointerDown = (e) => {
-      if (!profileRef.current?.contains(e.target)) setMenuOpen(false);
+      if (!profileRef.current?.contains(e.target)) {
+        if (profileRef.current?.contains(document.activeElement)) {
+          profileRef.current.querySelector('button')?.focus();
+        }
+        setMenuOpen(false);
+      }
+      if (!bellRef.current?.contains(e.target)) {
+        if (bellRef.current?.contains(document.activeElement)) {
+          bellRef.current.querySelector('button')?.focus();
+        }
+        setInboxOpen(false);
+      }
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [menuOpen]);
+  }, [menuOpen, inboxOpen]);
 
   async function runSearch(e) {
     e.preventDefault();
@@ -157,7 +204,10 @@ export default function Shell({ children }) {
             <button type="button" className="search-toggle" aria-label="Open global search" onClick={() => searchRef.current?.focus()}>
               <Icon name="search" size={16} />
             </button>
-            <input ref={searchRef} placeholder={t('label.search')} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Global search" />
+            <label className="search-field">
+              <span>Search</span>
+              <input ref={searchRef} placeholder={t('label.search')} value={query} onChange={(e) => setQuery(e.target.value)} />
+            </label>
             <kbd>/</kbd>
             {results && (
               <div className="search-results">
@@ -195,13 +245,60 @@ export default function Shell({ children }) {
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
             </button>
 
-            <button className="icon-btn bell" onClick={() => { setDrawerOpen(true); setUnread(0); }} aria-label="Gateway Interceptor">
-              <Icon name="bell" />
-              {unread > 0 && <span className="bell-dot">{unread > 9 ? '9+' : unread}</span>}
-            </button>
+            <div className="bell-wrap" ref={bellRef}>
+              <button
+                className="icon-btn bell"
+                onClick={() => { setInboxOpen((open) => !open); setMenuOpen(false); }}
+                aria-label={`Notifications${app.inboxUnread ? `, ${app.inboxUnread} unread` : ''}`}
+                aria-expanded={inboxOpen}
+                aria-controls="notification-inbox"
+              >
+                <Icon name="bell" />
+                {app.inboxUnread > 0 && <span className="bell-dot">{app.inboxUnread > 9 ? '9+' : app.inboxUnread}</span>}
+              </button>
+              {inboxOpen && (
+                <div id="notification-inbox" className="inbox-pop" aria-label="Notification inbox">
+                  <div className="inbox-pop-head">
+                    <strong>Inbox</strong>
+                    <span className="muted">{app.inboxUnread} unread · live MySQL</span>
+                  </div>
+                  {app.inbox.length === 0 ? (
+                    <EmptyState icon="bell" title="No notifications yet">
+                      Real camp updates will appear here once they are queued.
+                    </EmptyState>
+                  ) : (
+                    <div className="inbox-pop-list">
+                      {app.inbox.slice(0, 6).map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={cls('inbox-pop-row', !item.isRead && 'unread')}
+                          onClick={() => markInboxRead(item.id)}
+                          disabled={item.isRead}
+                        >
+                          <span>{item.message}</span>
+                          <small>{relTime(item.createdAt)}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="inbox-pop-foot">
+                    <button type="button" onClick={() => { navigate('notifications'); setInboxOpen(false); }}>
+                      Open notification center
+                    </button>
+                    <button type="button" disabled={markingAll || !app.inboxUnread} onClick={markInboxAll}>
+                      {markingAll ? 'Marking…' : 'Mark all read'}
+                    </button>
+                  </div>
+                  <button type="button" className="inbox-gateway-link" onClick={() => { setDrawerOpen(true); setInboxOpen(false); }}>
+                    <Icon name="radio" size={14} /> Gateway interceptor feed ({unread} new)
+                  </button>
+                </div>
+              )}
+            </div>
 
             <div className="profile" ref={profileRef}>
-              <button className="profile-btn" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-haspopup="menu" aria-label={`Account menu for ${user?.name || 'guest'}`}>
+              <button className="profile-btn" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-controls="account-menu" aria-label={`Account menu for ${user?.name || 'guest'}`}>
                 <span className="avatar">{(user?.name || 'G')[0]}</span>
                 <span className="profile-meta">
                   <strong>{user?.name?.split(' ')[0]}</strong>
@@ -210,10 +307,10 @@ export default function Shell({ children }) {
                 <Icon name="chevronD" size={14} />
               </button>
               {menuOpen && (
-                <div className="profile-menu" role="menu">
+                <div id="account-menu" className="profile-menu" aria-label="Account menu">
                   <p className="muted profile-mail">{user?.email}</p>
-                  <button role="menuitem" onClick={() => { navigate('settings'); setMenuOpen(false); }}><Icon name="gear" size={15} /> Settings & privacy</button>
-                  <button role="menuitem" onClick={() => { app.signOut(); }}><Icon name="logout" size={15} /> Sign out</button>
+                  <button onClick={() => { navigate('settings'); setMenuOpen(false); }}><Icon name="gear" size={15} /> Settings & privacy</button>
+                  <button onClick={() => { app.signOut(); }}><Icon name="logout" size={15} /> Sign out</button>
                 </div>
               )}
             </div>

@@ -36,7 +36,7 @@ try {
   QRCode = null;
 }
 
-const { schemas, validateBody, validateQuery } = require('./lib/validation');
+const { schemas, validateBody, validateQuery, issuesOf } = require('./lib/validation');
 const { parsePagination, buildPagination } = require('./lib/pagination');
 const { createLimiters } = require('./lib/limits');
 const { createProviders } = require('./lib/providers');
@@ -92,6 +92,45 @@ const PROMOTION_HOLD_MINUTES = boundedIntEnv('PROMOTION_HOLD_MINUTES', 15, 1, 14
 const HOLD_EXPIRY_BATCH_SIZE = boundedIntEnv('HOLD_EXPIRY_BATCH_SIZE', 100, 1, 1000);
 const HOLD_EXPIRY_CRON = String(process.env.HOLD_EXPIRY_CRON || '* * * * *');
 const ACTIVE_BOOKING_STATUSES = ['HELD', 'CONFIRMED', 'CHECKED_IN', 'COMPLETED'];
+
+/**
+ * Camp service catalogue. Service options are derived from the camp's type;
+ * nothing here is a clinical diagnosis, just the checklist of tests delivered.
+ */
+const CAMP_TYPES = ['GENERAL', 'EYE', 'DENTAL', 'BLOOD_DONATION', 'MATERNAL'];
+const SERVICES_BY_TYPE = {
+  GENERAL: ['BP', 'Blood Sugar', 'BMI', 'ECG'],
+  EYE: ['Vision Test', 'Refraction', 'Fundus Exam'],
+  DENTAL: ['Dental Check-up', 'Scaling', 'Oral Hygiene Advice'],
+  BLOOD_DONATION: ['Registration', 'Haemoglobin Check', 'BP Screening', 'Donation'],
+  MATERNAL: ['BP', 'Blood Sugar', 'Weight Check', 'Counselling'],
+};
+const DEFAULT_CHECKLIST = [
+  'Confirm doctor availability',
+  'Arrange transport',
+  'Print registers',
+  'Verify venue and permissions',
+  'Prepare consumables',
+];
+const CAMP_TEMPLATES = [
+  { id: 'general', type: 'GENERAL', title: 'General Health Camp', slotDurationMins: 30, totalCapacity: 96, physicalCapacity: 80, services: SERVICES_BY_TYPE.GENERAL, checklist: DEFAULT_CHECKLIST, descriptionEn: 'Free BP, blood sugar, BMI and ECG screening.' },
+  { id: 'eye', type: 'EYE', title: 'Eye Screening Camp', slotDurationMins: 20, totalCapacity: 120, physicalCapacity: 100, services: SERVICES_BY_TYPE.EYE, checklist: ['Confirm eye doctor availability', 'Arrange vision charts', 'Print registers', 'Prepare trial lens set'], descriptionEn: 'Vision testing, refraction and fundus examination.' },
+  { id: 'blood', type: 'BLOOD_DONATION', title: 'Blood Donation Drive', slotDurationMins: 15, totalCapacity: 160, physicalCapacity: 120, services: SERVICES_BY_TYPE.BLOOD_DONATION, checklist: ['Confirm phlebotomy team', 'Arrange transport', 'Print donor registers', 'Verify refreshment supply'], descriptionEn: 'Donor registration, haemoglobin check and safe donation.' },
+  { id: 'dental', type: 'DENTAL', title: 'Dental Camp', slotDurationMins: 20, totalCapacity: 100, physicalCapacity: 80, services: SERVICES_BY_TYPE.DENTAL, checklist: ['Confirm dentist availability', 'Arrange dental chair', 'Print registers', 'Sterilise instruments'], descriptionEn: 'Dental examination, scaling and oral hygiene guidance.' },
+  { id: 'maternal', type: 'MATERNAL', title: 'Maternal & Child Health', slotDurationMins: 30, totalCapacity: 80, physicalCapacity: 60, services: SERVICES_BY_TYPE.MATERNAL, checklist: ['Confirm doctor availability', 'Arrange transport', 'Print registers', 'Prepare counselling leaflets'], descriptionEn: 'Maternal health screening and counselling.' },
+];
+
+const DEFAULT_ORG_SETTINGS = {
+  organizationName: 'CHSC Community Health Initiative',
+  logoUrl: null,
+  contactEmail: 'contact@chsc.local',
+  defaultSlotDuration: 30,
+  bookingHoldMinutes: BOOKING_HOLD_MINUTES,
+  requireCampApproval: false,
+  supportedLanguages: ['en', 'kn'],
+  emailProviderMode: 'SANDBOX',
+  smsProviderMode: 'SANDBOX',
+};
 
 /**
  * Clicking a device alert returns to the hosted app, not the raw API host.
@@ -257,6 +296,7 @@ function safeUser(row) {
     ageGroup: row.age_group,
     preferredLanguage: row.preferred_language,
     isActive: Boolean(row.is_active),
+    lastLoginAt: row.last_login_at ? toIso(row.last_login_at) : null,
     createdAt: row.created_at,
   };
 }
@@ -281,6 +321,16 @@ function publicCamp(row) {
     totalCapacity: Number(row.total_capacity),
     physicalCapacity: Number(row.physical_capacity),
     status: row.status,
+    campType: row.camp_type || 'GENERAL',
+    serviceChecklist: servicesForCamp(row),
+    avgServiceTimeMins: Number(row.avg_service_time_mins || 12),
+    approvalStatus: row.approval_status || 'APPROVED',
+    rejectionReason: row.rejection_reason || null,
+    approvedBy: row.approved_by || null,
+    approvedAt: row.approved_at || null,
+    avgFeedbackRating: row.avg_feedback_rating === null || row.avg_feedback_rating === undefined
+      ? null
+      : Number(row.avg_feedback_rating),
     createdBy: row.created_by,
     creatorName: row.creator_name || null,
     slotCapacity: Number(row.slot_capacity || 0),
@@ -342,8 +392,18 @@ function publicBooking(row) {
     status: row.status,
     travelMode: row.travel_mode,
     pledgeOnTime: Boolean(row.pledge_on_time),
+    familyMemberId: row.family_member_id || null,
+    familyMemberName: row.family_member_name || null,
+    source: row.source || 'ONLINE',
+    feedback: row.feedback_rating !== undefined && row.feedback_rating !== null
+      ? { rating: Number(row.feedback_rating), comment: row.feedback_comment || '', submittedAt: row.feedback_submitted_at }
+      : null,
+    prescreened: Boolean(row.prescreened),
     bookedAt: row.booked_at,
     holdExpiresAt: toIso(row.hold_expires_at),
+    holdSeconds: row.booked_at && row.hold_expires_at
+      ? Math.max(0, Math.round((new Date(row.hold_expires_at).getTime() - new Date(row.booked_at).getTime()) / 1000))
+      : undefined,
     checkedInAt: row.checked_in_at,
     cancelledAt: row.cancelled_at,
     waitlistPosition: row.waitlist_position !== undefined ? Number(row.waitlist_position) : undefined,
@@ -442,6 +502,201 @@ function decodeJsonColumn(value) {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Extended workflow projections and shared helpers
+ * ------------------------------------------------------------------------- */
+
+async function loadOrgSettings(conn = pool) {
+  const [rows] = await conn.query('SELECT * FROM org_settings WHERE id = 1');
+  const row = rows[0];
+  return {
+    ...DEFAULT_ORG_SETTINGS,
+    ...(row || {}),
+    organizationName: row?.organization_name || DEFAULT_ORG_SETTINGS.organizationName,
+    contactEmail: row?.contact_email || DEFAULT_ORG_SETTINGS.contactEmail,
+    supportedLanguages: decodeJsonColumn(row?.supported_languages) || DEFAULT_ORG_SETTINGS.supportedLanguages,
+    requireCampApproval: Boolean(row?.require_camp_approval),
+    defaultSlotDuration: Number(row?.default_slot_duration || DEFAULT_ORG_SETTINGS.defaultSlotDuration),
+    bookingHoldMinutes: Number(row?.booking_hold_minutes || DEFAULT_ORG_SETTINGS.bookingHoldMinutes),
+    emailProviderMode: row?.email_provider_mode || DEFAULT_ORG_SETTINGS.emailProviderMode,
+    smsProviderMode: row?.sms_provider_mode || DEFAULT_ORG_SETTINGS.smsProviderMode,
+    logoUrl: row?.logo_url || null,
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+function publicOrgSettings(s) {
+  return {
+    organizationName: s.organizationName,
+    logoUrl: s.logoUrl,
+    contactEmail: s.contactEmail,
+    defaultSlotDuration: s.defaultSlotDuration,
+    bookingHoldMinutes: s.bookingHoldMinutes,
+    requireCampApproval: s.requireCampApproval,
+    supportedLanguages: s.supportedLanguages,
+    emailProviderMode: s.emailProviderMode,
+    smsProviderMode: s.smsProviderMode,
+    // Masked by design: keys live in environment variables, never in the API.
+    emailApiKeyConfigured: Boolean(process.env.MAIL_PASS || process.env.SMTP_PASS),
+    smsApiKeyConfigured: Boolean(
+      process.env.FAST2SMS_API_KEY || process.env.SMS_API_KEY || process.env.FAST2SMS_KEY,
+    ),
+    updatedAt: s.updatedAt,
+    provenance: 'live-mysql',
+  };
+}
+
+function publicFamilyMember(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    name: row.name,
+    age: row.age === null || row.age === undefined ? null : Number(row.age),
+    relationship: row.relationship,
+    createdAt: row.created_at,
+  };
+}
+
+function publicChecklistItem(row) {
+  return {
+    id: row.id,
+    campId: row.camp_id,
+    item: row.item,
+    isDone: Boolean(row.is_done),
+    doneBy: row.done_by,
+    doneByName: row.done_by_name || null,
+    doneAt: row.done_at,
+  };
+}
+
+function publicInApp(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    type: row.type,
+    message: row.message,
+    isRead: Boolean(row.is_read),
+    createdAt: row.created_at,
+  };
+}
+
+function servicesForCamp(camp) {
+  const explicit = decodeJsonColumn(camp?.service_checklist || camp?.serviceChecklist);
+  if (Array.isArray(explicit) && explicit.length) return explicit.map(String);
+  return SERVICES_BY_TYPE[camp?.camp_type || camp?.campType || 'GENERAL'] || SERVICES_BY_TYPE.GENERAL;
+}
+
+/**
+ * In-app inbox rows are the source of truth. Socket.io only tells the browser
+ * that a row exists; the client re-fetches the real MySQL-backed list.
+ */
+async function insertInAppNotification(conn, { userId, type, message }) {
+  if (!userId) return null;
+  const [result] = await conn.query(
+    'INSERT INTO in_app_notifications (user_id, type, message) VALUES (?, ?, ?)',
+    [userId, String(type).slice(0, 50), String(message).slice(0, 1000)],
+  );
+  const rows = await conn.query('SELECT * FROM in_app_notifications WHERE id = ?', [result.insertId]);
+  const row = rows[0][0];
+  const safe = publicInApp(row);
+  emitBounded(io.to(`user:${userId}`), 'notification:new', {
+    ...safe,
+    recipient: `user:${userId}`,
+    channel: 'IN_APP',
+  });
+  emitBounded(io.to(`user:${userId}`), 'inapp:changed', { userId: Number(userId), id: safe.id });
+  return safe;
+}
+
+/**
+ * Extended staff queue: check-in order, per-patient queue number, derived
+ * service list, status and a simple position × average-service-time estimate.
+ */
+async function getServiceQueueSnapshot(campId) {
+  const id = Number(campId);
+  const [campRows] = await pool.query(
+    'SELECT id, title, camp_type, service_checklist, avg_service_time_mins FROM camps WHERE id = ?',
+    [id],
+  );
+  if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+  const camp = campRows[0];
+  const services = servicesForCamp(camp);
+  const avgMinutes = Math.max(1, Number(camp.avg_service_time_mins) || 12);
+
+  const [rows] = await pool.query(
+    `SELECT b.id, b.token_number, b.status, b.checked_in_at, b.family_member_id, b.source,
+            u.name AS patient_name, fm.name AS family_name, s.start_time, s.end_time
+       FROM bookings b
+       JOIN users u ON u.id = b.patient_id
+       JOIN slots s ON s.id = b.slot_id
+       LEFT JOIN family_members fm ON fm.id = b.family_member_id
+      WHERE b.camp_id = ? AND b.status IN ('CHECKED_IN','COMPLETED','NO_SHOW')
+      ORDER BY b.checked_in_at ASC, b.id ASC`,
+    [id],
+  );
+
+  const [recordRows] = await pool.query(
+    `SELECT sr.booking_id, sr.service_name, sr.outcome
+       FROM service_records sr JOIN bookings b ON b.id = sr.booking_id
+      WHERE b.camp_id = ? ORDER BY sr.id ASC`,
+    [id],
+  );
+  const [noteRows] = await pool.query(
+    `SELECT vn.booking_id, vn.note FROM visit_notes vn
+       JOIN bookings b ON b.id = vn.booking_id WHERE b.camp_id = ? ORDER BY vn.id ASC`,
+    [id],
+  );
+  const byBooking = (rowsList, key) => {
+    const map = new Map();
+    for (const row of rowsList) {
+      if (!map.has(row.booking_id)) map.set(row.booking_id, []);
+      map.get(row.booking_id).push(row[key]);
+    }
+    return map;
+  };
+  const records = byBooking(recordRows, 'service_name');
+  const notes = byBooking(noteRows, 'note');
+
+  let position = 0;
+  const patients = rows.map((row) => {
+    const active = row.status === 'CHECKED_IN';
+    if (active) position += 1;
+    const completedServices = records.get(row.id) || [];
+    return {
+      id: row.id,
+      tokenNumber: row.token_number,
+      patientName: row.family_name || maskName(row.patient_name),
+      accountHolder: row.family_name ? maskName(row.patient_name) : undefined,
+      familyMemberId: row.family_member_id,
+      source: row.source,
+      slot: `${formatTime12(row.start_time)} – ${formatTime12(row.end_time)}`,
+      startTime: row.start_time,
+      checkedInAt: row.checked_in_at,
+      queueNumber: active ? position : null,
+      status: row.status === 'COMPLETED' ? 'DONE' : row.status === 'NO_SHOW' ? 'NO_SHOW' : 'WAITING',
+      services: services.map((name) => ({
+        name,
+        completed: completedServices.includes(name),
+      })),
+      estimatedWaitMinutes: active ? (position - 1) * avgMinutes : 0,
+      notes: notes.get(row.id) || [],
+    };
+  });
+
+  return {
+    campId: id,
+    campTitle: camp.title,
+    services,
+    avgServiceTimeMinutes: avgMinutes,
+    patients,
+    waiting: patients.filter((p) => p.status === 'WAITING').length,
+    done: patients.filter((p) => p.status === 'DONE').length,
+    updatedAt: new Date().toISOString(),
+    provenance: 'live-mysql',
+  };
+}
+
 async function auditLog({ actorId, actorName, action, targetType, targetId, before, after }) {
   try {
     await pool.query(
@@ -516,7 +771,7 @@ async function fetchPatientRow(conn, patientId) {
 /** Create (or reuse a cancelled/expired row for) a timed seat reservation. */
 async function createHoldBooking(
   conn,
-  { slot, camp, patient, travelMode = null, pledge = false, minutes = BOOKING_HOLD_MINUTES, existing = null },
+  { slot, camp, patient, travelMode = null, pledge = false, minutes = BOOKING_HOLD_MINUTES, existing = null, familyMemberId = null },
 ) {
   const qrToken = makeQrToken();
   const tokenNumber = makeTokenNumber();
@@ -525,19 +780,30 @@ async function createHoldBooking(
     await conn.query(
       `UPDATE bookings
        SET status = 'HELD', qr_token = ?, token_number = ?, travel_mode = ?, pledge_on_time = ?,
+           family_member_id = ?, source = 'ONLINE',
            hold_expires_at = DATE_ADD(NOW(), INTERVAL ? MINUTE),
            booked_at = NOW(), checked_in_at = NULL, cancelled_at = NULL
        WHERE id = ?`,
-      [qrToken, tokenNumber, travelMode, pledge ? 1 : 0, minutes, existing.id],
+      [qrToken, tokenNumber, travelMode, pledge ? 1 : 0, familyMemberId, minutes, existing.id],
     );
     bookingId = existing.id;
   } else {
     const [insert] = await conn.query(
       `INSERT INTO bookings
          (slot_id, camp_id, patient_id, qr_token, token_number, status,
-          travel_mode, pledge_on_time, hold_expires_at)
-       VALUES (?, ?, ?, ?, ?, 'HELD', ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
-      [slot.id, camp.id || camp.camp_id, patient.id, qrToken, tokenNumber, travelMode, pledge ? 1 : 0, minutes],
+          travel_mode, pledge_on_time, family_member_id, source, hold_expires_at)
+       VALUES (?, ?, ?, ?, ?, 'HELD', ?, ?, ?, 'ONLINE', DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+      [
+        slot.id,
+        camp.id || camp.camp_id,
+        patient.id,
+        qrToken,
+        tokenNumber,
+        travelMode,
+        pledge ? 1 : 0,
+        familyMemberId,
+        minutes,
+      ],
     );
     bookingId = insert.insertId;
   }
@@ -585,7 +851,7 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
       eventKey: 'confirmed',
       payload,
     }),
-    await insertNotification(conn, {
+    ...(await emailNotifications(conn, {
       bookingId: booking.id,
       userId: patient.id,
       channel: 'EMAIL',
@@ -597,7 +863,7 @@ async function confirmHeldBooking(conn, booking, { slot, camp, patient }) {
       status: 'PENDING',
       eventKey: 'confirmed',
       payload,
-    }),
+    })),
   ];
 
   return {
@@ -697,7 +963,7 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
       eventKey: `promotion-${waiter.id}`,
       payload,
     }),
-    await insertNotification(conn, {
+    ...(await emailNotifications(conn, {
       bookingId: booking.id,
       userId: waiter.patient_id,
       channel: 'EMAIL',
@@ -709,7 +975,7 @@ async function promoteNextWaiter(conn, { slotId, campId, source = 'release' }) {
       status: 'PENDING',
       eventKey: `promotion-${waiter.id}`,
       payload,
-    }),
+    })),
   ];
 
   return {
@@ -786,7 +1052,7 @@ async function releaseReservedSeat(
         eventKey: `release-${finalStatus}`,
         payload,
       }),
-      await insertNotification(conn, {
+      ...(await emailNotifications(conn, {
         bookingId: booking.id,
         userId: patient.id,
         channel: 'EMAIL',
@@ -798,7 +1064,7 @@ async function releaseReservedSeat(
         status: 'PENDING',
         eventKey: `release-${finalStatus}`,
         payload,
-      }),
+      })),
     );
   }
 
@@ -1086,6 +1352,17 @@ async function insertNotification(conn, data) {
   };
 }
 
+/**
+ * EMAIL rows require a real recipient. Phone-only walk-ins are legitimate
+ * users with no email address, so skip the channel instead of inserting an
+ * empty/fabricated address. Returns an array so callers can spread it into a
+ * notification list without leaving null entries behind.
+ */
+async function emailNotifications(conn, data) {
+  if (!data.recipient || !String(data.recipient).trim()) return [];
+  return [await insertNotification(conn, data)];
+}
+
 async function updateNotificationStatus(id, status, extra = {}) {
   try {
     const columns = ['status = ?'];
@@ -1337,6 +1614,18 @@ function publishNotifications(notifications = []) {
     queueDevicePush(notification).catch((error) => {
       console.warn('[device push mirror]', String(error.message || error).slice(0, 200));
     });
+    // The inbox is source of truth. Every real outbound message gets one
+    // matching live row so the bell can never show an event that was not sent.
+    const recipientUserId = notification.userId || notification.user_id;
+    if (recipientUserId) {
+      insertInAppNotification(pool, {
+        userId: recipientUserId,
+        type: notification.type,
+        message: notification.message,
+      }).catch((error) => {
+        console.warn('[in-app mirror]', String(error.message || error).slice(0, 200));
+      });
+    }
   }
 }
 
@@ -1383,6 +1672,26 @@ async function canJoinCampRoom(user, campId, conn = pool) {
     return rows.length > 0;
   }
   return false;
+}
+
+/**
+ * Organizer-scoped camp management. Unlike the socket room helper, an
+ * ORGANIZER role alone is not authority over every camp: they must own the
+ * camp or carry an explicit staff assignment for it.
+ */
+async function canManageCamp(user, campId, conn = pool) {
+  if (!user || !user.id || !user.role) return false;
+  if (user.role === 'ADMIN') return true;
+  if (user.role !== 'ORGANIZER') return canJoinCampRoom(user, campId, conn);
+  const id = Number(campId);
+  if (!Number.isInteger(id) || id <= 0) return false;
+  const [rows] = await conn.query(
+    `SELECT 1 FROM camps WHERE id = ? AND created_by = ?
+     UNION
+     SELECT 1 FROM staff_assignments WHERE camp_id = ? AND user_id = ? LIMIT 1`,
+    [id, user.id, id, user.id],
+  );
+  return rows.length > 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1488,7 +1797,7 @@ async function loadAllCampBundles() {
  * Paginated camp collection in exactly three queries (camps + slots + staff)
  * regardless of page size — no N+1 round trips.
  */
-async function loadCampCollection({ where = `c.status IN ('PUBLISHED','COMPLETED')`, params = [], limit = null, offset = 0 } = {}) {
+async function loadCampCollection({ where = `c.status IN ('PUBLISHED','COMPLETED')`, params = [], limit = null, offset = 0, orderBy = 'c.camp_date ASC, c.start_time ASC, c.id ASC' } = {}) {
   const paged = Number.isFinite(limit);
   const [campRows] = await pool.query(
     `SELECT c.*, u.name AS creator_name,
@@ -1499,7 +1808,7 @@ async function loadCampCollection({ where = `c.status IN ('PUBLISHED','COMPLETED
      FROM camps c
      LEFT JOIN users u ON u.id = c.created_by
      WHERE ${where}
-     ORDER BY c.camp_date ASC, c.start_time ASC, c.id ASC
+     ORDER BY ${orderBy}
      ${paged ? 'LIMIT ? OFFSET ?' : ''}`,
     paged ? [...params, limit, offset] : params,
   );
@@ -1601,12 +1910,36 @@ async function getQueueSnapshot(campId) {
   };
 }
 
+/**
+ * Emit both queue shapes: the original compact queue for existing screens and
+ * the extended service queue (ETA, per-service progress, notes) for Camp Day.
+ */
+async function emitQueueUpdate(campId) {
+  const legacy = await getQueueSnapshot(campId);
+  emitBounded(io.to(`camp:${campId}`), 'queue:updated', legacy);
+  try {
+    const service = await getServiceQueueSnapshot(campId);
+    emitBounded(io.to(`camp:${campId}`), 'service:queue:updated', service);
+  } catch (error) {
+    console.warn('[service queue emit]', String(error.message || error).slice(0, 200));
+  }
+  return legacy;
+}
+
 async function buildAnalytics() {
   const [[patientCount]] = await pool.query(
     `SELECT COUNT(*) AS total FROM users WHERE role = 'PATIENT' AND is_active = 1`,
   );
   const [[promotedCount]] = await pool.query(
     `SELECT COUNT(*) AS total FROM waitlist WHERE status = 'PROMOTED'`,
+  );
+  const [[feedbackSummary]] = await pool.query(
+    `SELECT COUNT(*) AS responses,
+            COALESCE(ROUND(AVG(rating), 2), 0) AS averageRating
+       FROM feedback`,
+  );
+  const [[serviceSummary]] = await pool.query(
+    `SELECT COUNT(*) AS records FROM service_records`,
   );
   const [campRows] = await pool.query(
     `SELECT c.id, c.title, c.venue, c.camp_date, c.status, c.total_capacity, c.physical_capacity,
@@ -1692,6 +2025,9 @@ async function buildAnalytics() {
       waitlistPromotions: Number(promotedCount.total),
       totalBookings: statusRows.reduce((sum, row) => sum + Number(row.total), 0),
       noShowRate: Number(noShowRate.toFixed(1)),
+      feedbackResponses: Number(feedbackSummary.responses || 0),
+      averageFeedbackRating: Number(feedbackSummary.averageRating || 0),
+      serviceRecords: Number(serviceSummary.records || 0),
     },
     bookingsVsCapacity,
     attendanceVsNoShow,
@@ -2284,7 +2620,8 @@ app.post(
     if (!rows.length || !(await bcrypt.compare(String(password), rows[0].password_hash))) {
       throw new ApiError(401, 'Invalid credentials.', 'INVALID_CREDENTIALS');
     }
-    const user = safeUser(rows[0]);
+    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = ?', [rows[0].id]);
+    const user = safeUser({ ...rows[0], last_login_at: new Date() });
     res.json({ user, token: signToken(user) });
   }),
 );
@@ -2323,9 +2660,43 @@ app.get(
     if (manageScope && (!req.user || !['ORGANIZER', 'ADMIN'].includes(req.user.role))) {
       throw new ApiError(403, 'You cannot view unpublished camps.', 'MANAGE_SCOPE_FORBIDDEN');
     }
-    const options = manageScope
-      ? { where: `c.status IN ('DRAFT','PUBLISHED','COMPLETED')` }
-      : {};
+    const filters = schemas.campFilterSchema.safeParse(req.query);
+    if (!filters.success) {
+      throw new ApiError(400, 'Invalid camp filters.', 'VALIDATION_FAILED', {
+        issues: issuesOf(filters.error),
+      });
+    }
+    const f = filters.data;
+    const clauses = [
+      manageScope
+        ? `c.status IN ('DRAFT','PUBLISHED','COMPLETED')`
+        : `c.status IN ('PUBLISHED','COMPLETED')`,
+    ];
+    const params = [];
+    if (f.q) {
+      clauses.push('(c.title LIKE ? OR c.venue LIKE ? OR c.address LIKE ? OR c.city LIKE ?)');
+      const term = `%${f.q}%`;
+      params.push(term, term, term, term);
+    }
+    if (f.type !== 'ALL') {
+      clauses.push('c.camp_type = ?');
+      params.push(f.type);
+    }
+    if (f.from) {
+      clauses.push('c.camp_date >= ?');
+      params.push(f.from);
+    }
+    if (f.to) {
+      clauses.push('c.camp_date <= ?');
+      params.push(f.to);
+    }
+    if (['true', '1'].includes(f.openOnly)) {
+      clauses.push(`(SELECT COALESCE(SUM(s.capacity - s.booked_count), 0) FROM slots s WHERE s.camp_id = c.id) > 0`);
+    }
+    const options = { where: clauses.join(' AND '), params };
+    if (f.sort === 'spots') {
+      options.orderBy = '(SELECT COALESCE(SUM(s2.capacity - s2.booked_count), 0) FROM slots s2 WHERE s2.camp_id = c.id) DESC, c.camp_date ASC, c.id ASC';
+    }
     if (paging.requested) {
       options.limit = paging.limit;
       options.offset = paging.offset;
@@ -2391,6 +2762,10 @@ app.post(
       totalCapacity,
       physicalCapacity,
       status = 'PUBLISHED',
+      campType = 'GENERAL',
+      serviceChecklist = [],
+      avgServiceTimeMins = 12,
+      checklist = [],
     } = req.body || {};
 
     if (!title || !venue || !address || !campDate || !startTime || !endTime) {
@@ -2409,14 +2784,23 @@ app.post(
 
     const plan = buildSlotPlan(startTime, endTime, slotDurationMins, totalCapacity);
     const physical = Number(physicalCapacity || totalCapacity);
+    const settings = await loadOrgSettings();
+    const needsApproval = settings.requireCampApproval && req.user.role !== 'ADMIN';
+    const effectiveStatus = needsApproval ? 'DRAFT' : status;
+    const approvalStatus = needsApproval ? 'PENDING' : 'APPROVED';
+    const services = serviceChecklist.length
+      ? serviceChecklist
+      : SERVICES_BY_TYPE[campType] || SERVICES_BY_TYPE.GENERAL;
+    const checklistItems = checklist.length ? checklist : DEFAULT_CHECKLIST;
 
     const result = await withTransaction(async (conn) => {
       const [campInsert] = await conn.query(
         `INSERT INTO camps
           (title, description_en, description_kn, venue, address, city, latitude, longitude,
            camp_date, start_time, end_time, slot_duration_mins, total_capacity,
-           physical_capacity, status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           physical_capacity, status, camp_type, service_checklist, avg_service_time_mins,
+           approval_status, created_by, approved_by, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           String(title).trim(),
           String(descriptionEn || ''),
@@ -2432,8 +2816,14 @@ app.post(
           Number(slotDurationMins),
           Number(totalCapacity),
           physical,
-          status,
+          effectiveStatus,
+          campType,
+          JSON.stringify(services),
+          Number(avgServiceTimeMins),
+          approvalStatus,
           req.user.id,
+          !needsApproval && req.user.role === 'ADMIN' ? req.user.id : null,
+          !needsApproval && req.user.role === 'ADMIN' ? new Date() : null,
         ],
       );
 
@@ -2444,6 +2834,9 @@ app.post(
            VALUES (?, ?, ?, ?, ?, 0)`,
           [campId, slot.slotIndex, slot.startTime, slot.endTime, slot.capacity],
         );
+      }
+      for (const item of checklistItems) {
+        await conn.query('INSERT INTO camp_checklist (camp_id, item) VALUES (?, ?)', [campId, item]);
       }
       return campId;
     });
@@ -2478,6 +2871,9 @@ app.post(
   validateBody(schemas.generateSlotsSchema),
   asyncHandler(async (req, res) => {
     const campId = Number(req.params.id);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
     const {
       startTime,
       endTime,
@@ -2630,13 +3026,26 @@ app.patch(
   requireRole('ORGANIZER', 'ADMIN'),
   validateBody(schemas.campStatusSchema),
   asyncHandler(async (req, res) => {
+    const campId = Number(req.params.id);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
     const status = String(req.body?.status || '').toUpperCase();
     if (!['DRAFT', 'PUBLISHED', 'COMPLETED', 'CANCELLED'].includes(status)) {
       throw new ApiError(400, 'Invalid camp status.', 'INVALID_STATUS');
     }
-    const [beforeRows] = await pool.query('SELECT status FROM camps WHERE id = ?', [req.params.id]);
+    const [beforeRows] = await pool.query(
+      'SELECT status, approval_status FROM camps WHERE id = ?',
+      [req.params.id],
+    );
     if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
     const previousStatus = beforeRows[0].status;
+    if (status === 'PUBLISHED' && req.user.role !== 'ADMIN') {
+      const settings = await loadOrgSettings();
+      if (settings.requireCampApproval && beforeRows[0].approval_status !== 'APPROVED') {
+        throw new ApiError(403, 'This camp needs administrator approval before publishing.', 'CAMP_APPROVAL_REQUIRED');
+      }
+    }
     const [result] = await pool.query('UPDATE camps SET status = ? WHERE id = ?', [
       status,
       req.params.id,
@@ -2666,6 +3075,9 @@ app.patch(
   validateBody(schemas.campUpdateSchema),
   asyncHandler(async (req, res) => {
     const campId = Number(req.params.id);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
     const fields = req.body;
     const columns = {
       title: 'title',
@@ -2727,6 +3139,9 @@ app.delete(
   requireRole('ORGANIZER', 'ADMIN'),
   asyncHandler(async (req, res) => {
     const campId = Number(req.params.id);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
     const [[{ total }]] = await pool.query(
       'SELECT COUNT(*) AS total FROM bookings WHERE camp_id = ?',
       [campId],
@@ -2771,6 +3186,10 @@ app.post(
     const slotId = Number(req.params.slotId);
     const travelMode = req.body?.travelMode || null;
     const pledge = Boolean(req.body?.pledge);
+    const familyMemberId = req.body?.familyMemberId || null;
+    const prescreening = req.body?.prescreening || null;
+    const settings = await loadOrgSettings();
+    const holdMinutes = settings.bookingHoldMinutes;
     if (
       travelMode &&
       !['WALK', 'AUTO_BUS', 'TWO_WHEELER', 'WITH_FAMILY'].includes(travelMode)
@@ -2805,6 +3224,16 @@ app.post(
       );
       if (!userRows.length) throw new ApiError(401, 'Patient account inactive.', 'USER_INACTIVE');
       const patient = userRows[0];
+
+      if (familyMemberId) {
+        const [memberRows] = await conn.query(
+          'SELECT id FROM family_members WHERE id = ? AND patient_id = ? LIMIT 1',
+          [familyMemberId, patient.id],
+        );
+        if (!memberRows.length) {
+          throw new ApiError(403, 'That family member does not belong to your account.', 'FAMILY_MEMBER_FORBIDDEN');
+        }
+      }
 
       const [existingRows] = await conn.query(
         `SELECT * FROM bookings WHERE slot_id = ? AND patient_id = ? FOR UPDATE`,
@@ -2892,7 +3321,7 @@ app.post(
           eventKey: `slot-${slotId}`,
           payload,
         });
-        const email = await insertNotification(conn, {
+        const emails = await emailNotifications(conn, {
           bookingId: null,
           userId: patient.id,
           channel: 'EMAIL',
@@ -2915,7 +3344,7 @@ app.post(
             position: waitRow.position,
             status: 'WAITING',
           },
-          notifications: [sms, email],
+          notifications: [sms, ...emails],
           slot,
           camp,
         };
@@ -2940,9 +3369,33 @@ app.post(
         patient,
         travelMode,
         pledge,
-        minutes: BOOKING_HOLD_MINUTES,
+        minutes: holdMinutes,
         existing: existingRows[0] || null,
+        familyMemberId,
       });
+
+      if (prescreening) {
+        await conn.query(
+          `INSERT INTO prescreening
+             (booking_id, age_group, conditions, mobility_needs, preferred_language,
+              emergency_contact_name, emergency_contact_phone)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             age_group = VALUES(age_group), conditions = VALUES(conditions),
+             mobility_needs = VALUES(mobility_needs), preferred_language = VALUES(preferred_language),
+             emergency_contact_name = VALUES(emergency_contact_name),
+             emergency_contact_phone = VALUES(emergency_contact_phone)`,
+          [
+            booking.id,
+            prescreening.ageGroup,
+            JSON.stringify(prescreening.conditions),
+            prescreening.mobilityNeeds ? 1 : 0,
+            prescreening.preferredLanguage,
+            prescreening.emergencyContactName,
+            prescreening.emergencyContactPhone,
+          ],
+        );
+      }
 
       await conn.query(
         `UPDATE waitlist SET status = 'CANCELLED'
@@ -2962,7 +3415,12 @@ app.post(
           'booking',
           booking.id,
           existingRows.length ? { status: existingRows[0].status } : null,
-          { status: 'HELD', holdExpiresAt: toIso(booking.hold_expires_at) },
+          {
+            status: 'HELD',
+            holdExpiresAt: toIso(booking.hold_expires_at),
+            familyMemberId,
+            prescreened: Boolean(prescreening),
+          },
         ),
       };
     });
@@ -3005,7 +3463,7 @@ app.post(
     emitBounded(io, 'booking:held', { booking: safeSocketBooking(outcome.booking), at: new Date().toISOString() });
     return res.status(201).json({
       status: 'HELD',
-      message: `Seat reserved for ${BOOKING_HOLD_MINUTES} minutes. Confirm before ${payload.holdExpiresAt} to finalise it.`,
+      message: `Seat reserved for ${holdMinutes} minutes. Confirm before ${payload.holdExpiresAt} to finalise it.`,
       holdExpiresAt: payload.holdExpiresAt,
       booking: payload,
     });
@@ -3214,7 +3672,7 @@ app.patch(
           eventKey: 'cancelled',
           payload,
         }),
-        await insertNotification(conn, {
+        ...(await emailNotifications(conn, {
           bookingId: booking.id,
           userId: booking.patient_id,
           channel: 'EMAIL',
@@ -3226,7 +3684,7 @@ app.patch(
           status: 'PENDING',
           eventKey: 'cancelled',
           payload,
-        }),
+        })),
       );
       if (promoted) notifications.push(...promoted.notifications);
 
@@ -3386,7 +3844,7 @@ app.patch(
           eventKey,
           payload,
         }),
-        await insertNotification(conn, {
+        ...(await emailNotifications(conn, {
           bookingId,
           userId: booking.patient_id,
           channel: 'EMAIL',
@@ -3398,7 +3856,7 @@ app.patch(
           status: 'PENDING',
           eventKey,
           payload,
-        }),
+        })),
       ];
 
       return {
@@ -3443,11 +3901,16 @@ app.get(
     const [rows] = await pool.query(
       `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
               c.city, c.latitude, c.longitude,
-              s.start_time, s.end_time, w.position AS waitlist_position
+              s.start_time, s.end_time, w.position AS waitlist_position,
+              fm.name AS family_member_name, f.rating AS feedback_rating,
+              f.comment AS feedback_comment, f.submitted_at AS feedback_submitted_at,
+              EXISTS(SELECT 1 FROM prescreening p WHERE p.booking_id = b.id) AS prescreened
        FROM bookings b
        JOIN camps c ON c.id = b.camp_id
        JOIN slots s ON s.id = b.slot_id
        LEFT JOIN waitlist w ON w.slot_id = b.slot_id AND w.patient_id = b.patient_id AND w.status = 'WAITING'
+       LEFT JOIN family_members fm ON fm.id = b.family_member_id
+       LEFT JOIN feedback f ON f.booking_id = b.id
        WHERE b.patient_id = ?
        ORDER BY b.booked_at DESC`,
       [req.user.id],
@@ -3463,10 +3926,15 @@ app.get(
     const [rows] = await pool.query(
       `SELECT b.*, c.title AS camp_title, c.camp_date, c.venue, c.address,
               c.city, c.latitude, c.longitude,
-              s.start_time, s.end_time
+              s.start_time, s.end_time,
+              fm.name AS family_member_name, f.rating AS feedback_rating,
+              f.comment AS feedback_comment, f.submitted_at AS feedback_submitted_at,
+              EXISTS(SELECT 1 FROM prescreening p WHERE p.booking_id = b.id) AS prescreened
        FROM bookings b
        JOIN camps c ON c.id = b.camp_id
        JOIN slots s ON s.id = b.slot_id
+       LEFT JOIN family_members fm ON fm.id = b.family_member_id
+       LEFT JOIN feedback f ON f.booking_id = b.id
        WHERE b.id = ?`,
       [req.params.id],
     );
@@ -3579,7 +4047,7 @@ app.post(
       };
     });
 
-    const queue = await getQueueSnapshot(outcome.booking.camp_id);
+    const queue = await emitQueueUpdate(outcome.booking.camp_id);
     const payload = {
       ...publicBooking(outcome.booking),
       patientName: outcome.booking.patient_name,
@@ -3592,7 +4060,6 @@ app.post(
     // Only the authenticated caller receives the full booking details. Global
     // and room broadcasts carry a PII-free token summary.
     const safeBooking = safeSocketBooking(outcome.booking);
-    emitBounded(io.to(`camp:${outcome.booking.camp_id}`), 'queue:updated', queue);
     if (!outcome.alreadyCheckedIn) {
       await auditLog({
         actorId: req.user.id,
@@ -3725,6 +4192,9 @@ app.post(
         campId,
       ]);
       if (!camps.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+      if (!(await canManageCamp(req.user, campId, conn))) {
+        throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
 
       const [noShows] = await conn.query(
         `UPDATE bookings SET status = 'NO_SHOW'
@@ -3799,6 +4269,9 @@ app.get(
   requireRole('ORGANIZER', 'ADMIN'),
   asyncHandler(async (req, res) => {
     const campId = Number(req.params.campId);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
 
     const [camps] = await pool.query(
       'SELECT id, title, venue, camp_date, start_time, end_time, status FROM camps WHERE id = ?',
@@ -4000,6 +4473,9 @@ app.post(
 
       const [campRows] = await conn.query('SELECT id, camp_date FROM camps WHERE id = ?', [campId]);
       if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+      if (!(await canManageCamp(req.user, campId, conn))) {
+        throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
       const campDate = campRows[0].camp_date;
 
       const [sameCamp] = await conn.query(
@@ -4091,6 +4567,9 @@ app.delete(
     const staffId = Number(req.params.id);
     const [beforeRows] = await pool.query('SELECT * FROM staff_assignments WHERE id = ?', [staffId]);
     if (!beforeRows.length) throw new ApiError(404, 'Assignment not found.', 'STAFF_NOT_FOUND');
+    if (!(await canManageCamp(req.user, beforeRows[0].camp_id))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
     const [result] = await pool.query('DELETE FROM staff_assignments WHERE id = ?', [staffId]);
     if (!result.affectedRows) throw new ApiError(404, 'Assignment not found.', 'STAFF_NOT_FOUND');
     await auditLog({
@@ -4319,16 +4798,25 @@ app.get(
   asyncHandler(async (req, res) => {
     const paging = parsePagination(req.query);
     if (!paging) throw new ApiError(400, 'Invalid pagination.', 'INVALID_PAGINATION');
+    const parsedQuery = schemas.adminUserQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw new ApiError(400, 'Invalid user query.', 'VALIDATION_FAILED', {
+        issues: issuesOf(parsedQuery.error),
+      });
+    }
+    const q = parsedQuery.data.q.trim();
+    const where = q ? 'WHERE name LIKE ? OR email LIKE ? OR phone LIKE ?' : '';
+    const params = q ? [`%${q}%`, `%${q}%`, `%${q}%`] : [];
     const isAdmin = req.user.role === 'ADMIN';
     const columns = isAdmin
-      ? 'id, name, email, phone, role, age_group, preferred_language, is_active, created_at'
+      ? 'id, name, email, phone, role, age_group, preferred_language, is_active, last_login_at, created_at'
       : 'id, name, role, is_active';
     const [rows] = await pool.query(
       `SELECT ${columns}
-       FROM users ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
-      [paging.limit, paging.offset],
+       FROM users ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      [...params, paging.limit, paging.offset],
     );
-    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM users');
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM users ${where}`, params);
     res.json({
       users: rows.map((row) => (isAdmin ? safeUser(row) : {
         id: row.id,
@@ -4337,6 +4825,7 @@ app.get(
         isActive: Boolean(row.is_active),
       })),
       pagination: buildPagination(Number(total), paging),
+      provenance: 'live-mysql',
     });
   }),
 );
@@ -4345,11 +4834,9 @@ app.patch(
   '/api/admin/users/:id/role',
   authenticate,
   requireRole('ADMIN'),
+  validateBody(schemas.adminRoleSchema),
   asyncHandler(async (req, res) => {
-    const role = String(req.body?.role || '').toUpperCase();
-    if (!['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'].includes(role)) {
-      throw new ApiError(400, 'Invalid role.', 'INVALID_ROLE');
-    }
+    const role = req.body.role;
     if (Number(req.params.id) === req.user.id && role !== 'ADMIN') {
       throw new ApiError(409, 'You cannot remove your own admin role.', 'SELF_DEMOTION');
     }
@@ -4384,8 +4871,9 @@ app.patch(
   '/api/admin/users/:id/status',
   authenticate,
   requireRole('ADMIN'),
+  validateBody(schemas.adminStatusSchema),
   asyncHandler(async (req, res) => {
-    const active = req.body?.isActive ? 1 : 0;
+    const active = req.body.isActive ? 1 : 0;
     if (Number(req.params.id) === req.user.id && !active) {
       throw new ApiError(409, 'You cannot deactivate your own account.', 'SELF_DEACTIVATION');
     }
@@ -4577,8 +5065,9 @@ app.delete(
 );
 
 /* ---------------------------------------------------------------------------
- * LIVE CONCURRENCY PROOF — 50 simultaneous transactions vs one capacity-10 slot
- * Uses real InnoDB SELECT ... FOR UPDATE row locks. The temporary identities and
+ * LIVE CONCURRENCY PROOF — 50 concurrent transactions vs one capacity-10 slot
+ * Ten bounded workers keep the race simultaneous without waiting out InnoDB's
+ * lock-wait timeout. Uses real SELECT ... FOR UPDATE row locks. The temporary identities and
  * rows created for the race are removed before the response is returned, so the
  * result is real evidence without leaving seeded/demo data in the database.
  * ------------------------------------------------------------------------- */
@@ -4640,50 +5129,65 @@ app.post(
         patients.push(result.insertId);
       }
 
-      const results = await Promise.all(
-        patients.map((patientId) =>
-          withTransaction(async (conn) => {
-            const [rows] = await conn.query(
-              'SELECT id, camp_id, capacity, booked_count FROM slots WHERE id = ? FOR UPDATE',
-              [slotId],
-            );
-            if (!rows.length) return { status: 404, patientId };
-            const slot = rows[0];
-            if (Number(slot.booked_count) >= Number(slot.capacity)) {
-              const [w] = await conn.query(
-                `SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+      // Bounded workers keep the race genuinely concurrent without leaving 40
+      // transactions queued behind one InnoDB row lock long enough to hit the
+      // server's lock-wait timeout. Every request is still a real transaction.
+      const results = [];
+      let cursor = 0;
+      const workerCount = Math.min(10, patients.length);
+      async function proofWorker() {
+        while (cursor < patients.length) {
+          const patientId = patients[cursor];
+          cursor += 1;
+          try {
+            const result = await withTransaction(async (conn) => {
+              const [rows] = await conn.query(
+                'SELECT id, camp_id, capacity, booked_count FROM slots WHERE id = ? FOR UPDATE',
                 [slotId],
               );
-              const position = Number(w[0].n) + 1;
-              await conn.query(
-                `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
-                 VALUES (?, ?, ?, ?, 'WAITING')`,
-                [slotId, campId, patientId, position],
+              if (!rows.length) return { status: 404, patientId };
+              const slot = rows[0];
+              if (Number(slot.booked_count) >= Number(slot.capacity)) {
+                const [w] = await conn.query(
+                  `SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+                  [slotId],
+                );
+                const position = Number(w[0].n) + 1;
+                await conn.query(
+                  `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
+                   VALUES (?, ?, ?, ?, 'WAITING')`,
+                  [slotId, campId, patientId, position],
+                );
+                return { status: 202, patientId, position };
+              }
+              await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?', [slotId]);
+              const [bookingInsert] = await conn.query(
+                `INSERT INTO bookings
+                   (slot_id, camp_id, patient_id, qr_token, token_number, status, hold_expires_at)
+                 VALUES (?, ?, ?, ?, ?, 'HELD', DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+                [
+                  slotId,
+                  campId,
+                  patientId,
+                  `CHSC-PROOF-${crypto.randomInt(100000, 999999)}-${patientId}`,
+                  `P-${crypto.randomInt(100000, 999999)}`,
+                  BOOKING_HOLD_MINUTES,
+                ],
               );
-              return { status: 202, patientId, position };
-            }
-            await conn.query('UPDATE slots SET booked_count = booked_count + 1 WHERE id = ?', [slotId]);
-            const [bookingInsert] = await conn.query(
-              `INSERT INTO bookings
-                 (slot_id, camp_id, patient_id, qr_token, token_number, status, hold_expires_at)
-               VALUES (?, ?, ?, ?, ?, 'HELD', DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
-              [
-                slotId,
-                campId,
-                patientId,
-                `CHSC-PROOF-${crypto.randomInt(100000, 999999)}-${patientId}`,
-                `P-${crypto.randomInt(100000, 999999)}`,
-                BOOKING_HOLD_MINUTES,
-              ],
-            );
-            await conn.query(
-              `UPDATE bookings SET status = 'CONFIRMED', hold_expires_at = NULL WHERE id = ?`,
-              [bookingInsert.insertId],
-            );
-            return { status: 201, patientId, bookingId: bookingInsert.insertId };
-          }),
-        ),
-      );
+              await conn.query(
+                `UPDATE bookings SET status = 'CONFIRMED', hold_expires_at = NULL WHERE id = ?`,
+                [bookingInsert.insertId],
+              );
+              return { status: 201, patientId, bookingId: bookingInsert.insertId };
+            });
+            results.push(result);
+          } catch (error) {
+            console.warn('[concurrency proof]', String(error.message || error).slice(0, 200));
+            results.push({ status: 500, patientId });
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: workerCount }, proofWorker));
 
       const confirmed = results.filter((r) => r.status === 201);
       const waitlisted = results.filter((r) => r.status === 202);
@@ -4759,7 +5263,7 @@ app.post(
 app.get(
   '/api/admin/audit-log',
   authenticate,
-  requireRole('ADMIN', 'ORGANIZER'),
+  requireRole('ADMIN'),
   asyncHandler(async (req, res) => {
     const paging = parsePagination(req.query);
     if (!paging) throw new ApiError(400, 'Invalid pagination.', 'INVALID_PAGINATION');
@@ -4793,6 +5297,1556 @@ app.get(
 );
 
 /* ---------------------------------------------------------------------------
+ * EXTENDED WORKFLOWS — patients, organizers, staff and administrators
+ * ------------------------------------------------------------------------- */
+
+function publicWaitlist(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    campId: row.camp_id,
+    slotId: row.slot_id,
+    patientId: row.patient_id,
+    patientName: row.patient_name || null,
+    position: Number(row.position),
+    status: row.status,
+    createdAt: row.created_at,
+    promotedAt: row.promoted_at,
+    promotionExpiresAt: row.promotion_expires_at,
+  };
+}
+
+function publicFeedback(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    bookingId: row.booking_id,
+    rating: Number(row.rating),
+    comment: row.comment || '',
+    submittedAt: row.submitted_at,
+  };
+}
+
+function publicServiceRecord(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    bookingId: row.booking_id,
+    serviceName: row.service_name,
+    outcome: row.outcome || '',
+    recordedBy: row.recorded_by,
+    recordedAt: row.recorded_at,
+  };
+}
+
+function publicVisitNote(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    bookingId: row.booking_id,
+    note: row.note,
+    recordedBy: row.recorded_by,
+    createdAt: row.created_at,
+  };
+}
+
+function makeTempPassword() {
+  return `CHSC${crypto.randomBytes(9).toString('base64url').slice(0, 12)}9`;
+}
+
+/**
+ * Organizer-initiated FIFO promotion. It uses the same row locks and seat
+ * invariant as automatic promotion, but records an explicit manual_override
+ * audit trail with the organizer's reason.
+ */
+async function manualPromoteWaiter(conn, { waitlistId, campId, reason, actor }) {
+  const [rows] = await conn.query(
+    `SELECT w.*, p.name AS patient_name, p.phone, p.email,
+            s.capacity, s.booked_count, s.start_time, s.end_time,
+            c.title AS camp_title, c.venue, c.address, c.city,
+            c.latitude, c.longitude, c.camp_date, c.status AS camp_status
+       FROM waitlist w
+       JOIN users p ON p.id = w.patient_id
+       JOIN slots s ON s.id = w.slot_id
+       JOIN camps c ON c.id = w.camp_id
+      WHERE w.id = ? AND w.camp_id = ? AND w.status = 'WAITING' FOR UPDATE`,
+    [waitlistId, campId],
+  );
+  if (!rows.length) {
+    throw new ApiError(404, 'That waiting entry was not found.', 'WAITLIST_ENTRY_NOT_FOUND');
+  }
+  const waiter = rows[0];
+  if (waiter.camp_status !== 'PUBLISHED') {
+    throw new ApiError(409, 'This camp is not accepting registrations.', 'CAMP_NOT_OPEN');
+  }
+  if (Number(waiter.booked_count) >= Number(waiter.capacity)) {
+    throw new ApiError(409, 'This slot is full. Free a seat before promoting a waiter.', 'SLOT_FULL');
+  }
+
+  const [existing] = await conn.query(
+    'SELECT * FROM bookings WHERE slot_id = ? AND patient_id = ? FOR UPDATE',
+    [waiter.slot_id, waiter.patient_id],
+  );
+  if (existing.some((row) => ACTIVE_BOOKING_STATUSES.includes(row.status))) {
+    throw new ApiError(409, 'This patient already holds an active seat.', 'ALREADY_ACTIVE');
+  }
+
+  const booking = await createHoldBooking(conn, {
+    slot: { id: waiter.slot_id, start_time: waiter.start_time, end_time: waiter.end_time },
+    camp: { id: campId },
+    patient: { id: waiter.patient_id, name: waiter.patient_name, phone: waiter.phone, email: waiter.email },
+    minutes: PROMOTION_HOLD_MINUTES,
+    existing: existing[0] || null,
+  });
+  const [seatUpdate] = await conn.query(
+    'UPDATE slots SET booked_count = booked_count + 1 WHERE id = ? AND booked_count < capacity',
+    [waiter.slot_id],
+  );
+  if (seatUpdate.affectedRows !== 1) {
+    throw new ApiError(409, 'The seat changed while promoting. Please retry.', 'SEAT_RACE_RETRY');
+  }
+  await conn.query(
+    `UPDATE waitlist SET status = 'PROMOTED', promoted_at = NOW(), promotion_expires_at = ?
+      WHERE id = ?`,
+    [booking.hold_expires_at, waiter.id],
+  );
+
+  const details = bookingMessageDetails({
+    booking,
+    patient: { name: waiter.patient_name },
+    camp: { ...waiter, title: waiter.camp_title },
+    slot: waiter,
+  });
+  const built = buildMessages('WAITLIST_PROMOTED', details);
+  const notifications = [
+    await insertNotification(conn, {
+      bookingId: booking.id,
+      userId: waiter.patient_id,
+      channel: 'SMS',
+      type: 'WAITLIST_PROMOTED',
+      recipient: waiter.phone,
+      message: built.sms,
+      provider: providerFor('SMS'),
+      status: 'PENDING',
+      eventKey: `manual-promotion-${waiter.id}`,
+      payload: details,
+    }),
+    ...(await emailNotifications(conn, {
+      bookingId: booking.id,
+      userId: waiter.patient_id,
+      channel: 'EMAIL',
+      type: 'WAITLIST_PROMOTED',
+      recipient: waiter.email,
+      subject: built.subject,
+      message: built.text,
+      provider: providerFor('EMAIL'),
+      status: 'PENDING',
+      eventKey: `manual-promotion-${waiter.id}`,
+      payload: details,
+    })),
+  ];
+
+  return {
+    booking,
+    waiter,
+    notifications,
+    audit: auditEvent(
+      'MANUAL_PROMOTE_WAITLIST',
+      'booking',
+      booking.id,
+      { waitlistStatus: 'WAITING', position: Number(waiter.position) },
+      {
+        status: 'HELD',
+        waitlistStatus: 'PROMOTED',
+        manual_override: true,
+        reason,
+        actorId: actor.id,
+      },
+    ),
+  };
+}
+
+/* -------------------------------- PATIENT -------------------------------- */
+
+app.get(
+  '/api/family',
+  authenticate,
+  requireRole('PATIENT'),
+  asyncHandler(async (req, res) => {
+    const [rows] = await pool.query(
+      'SELECT * FROM family_members WHERE patient_id = ? ORDER BY id ASC',
+      [req.user.id],
+    );
+    res.json({ members: rows.map(publicFamilyMember), provenance: 'live-mysql' });
+  }),
+);
+
+app.post(
+  '/api/family',
+  authenticate,
+  requireRole('PATIENT'),
+  validateBody(schemas.familyMemberSchema),
+  asyncHandler(async (req, res) => {
+    const { name, age, relationship } = req.body;
+    const [result] = await pool.query(
+      'INSERT INTO family_members (patient_id, name, age, relationship) VALUES (?, ?, ?, ?)',
+      [req.user.id, name, age, relationship],
+    );
+    const [rows] = await pool.query('SELECT * FROM family_members WHERE id = ?', [result.insertId]);
+    const member = publicFamilyMember(rows[0]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'ADD_FAMILY_MEMBER',
+      targetType: 'family_member',
+      targetId: member.id,
+      after: { name: member.name, relationship: member.relationship },
+    });
+    emitBounded(io.to(`user:${req.user.id}`), 'family:changed', { memberId: member.id });
+    res.status(201).json({ member });
+  }),
+);
+
+app.delete(
+  '/api/family/:id',
+  authenticate,
+  requireRole('PATIENT'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const [rows] = await pool.query(
+      'SELECT * FROM family_members WHERE id = ? AND patient_id = ?',
+      [id, req.user.id],
+    );
+    if (!rows.length) throw new ApiError(404, 'Family member not found.', 'FAMILY_MEMBER_NOT_FOUND');
+    await pool.query('DELETE FROM family_members WHERE id = ?', [id]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'DELETE_FAMILY_MEMBER',
+      targetType: 'family_member',
+      targetId: id,
+      before: { name: rows[0].name },
+    });
+    emitBounded(io.to(`user:${req.user.id}`), 'family:changed', { memberId: id, deleted: true });
+    res.json({ deleted: true, id });
+  }),
+);
+
+function assertBookingOwner(req, bookingId) {
+  const id = Number(bookingId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new ApiError(400, 'Invalid booking id.', 'VALIDATION');
+  }
+  return id;
+}
+
+async function loadOwnedBooking(conn, bookingId, userId) {
+  const [rows] = await conn.query(
+    `SELECT b.*, fm.name AS family_member_name, f.id AS feedback_id, f.rating AS feedback_rating,
+            f.comment AS feedback_comment, f.submitted_at AS feedback_submitted_at,
+            EXISTS(SELECT 1 FROM prescreening p WHERE p.booking_id = b.id) AS prescreened
+       FROM bookings b
+       LEFT JOIN family_members fm ON fm.id = b.family_member_id
+       LEFT JOIN feedback f ON f.booking_id = b.id
+      WHERE b.id = ? AND b.patient_id = ?`,
+    [bookingId, userId],
+  );
+  if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+  return rows[0];
+}
+
+app.get(
+  '/api/bookings/:id/prescreening',
+  authenticate,
+  requireRole('PATIENT'),
+  asyncHandler(async (req, res) => {
+    const bookingId = assertBookingOwner(req, req.params.id);
+    await loadOwnedBooking(pool, bookingId, req.user.id);
+    const [rows] = await pool.query('SELECT * FROM prescreening WHERE booking_id = ?', [bookingId]);
+    if (!rows.length) return res.json({ prescreening: null });
+    const row = rows[0];
+    return res.json({
+      prescreening: {
+        ageGroup: row.age_group,
+        conditions: decodeJsonColumn(row.conditions) || [],
+        mobilityNeeds: Boolean(row.mobility_needs),
+        preferredLanguage: row.preferred_language,
+        emergencyContactName: row.emergency_contact_name,
+        emergencyContactPhone: row.emergency_contact_phone,
+        createdAt: row.created_at,
+      },
+      provenance: 'live-mysql',
+    });
+  }),
+);
+
+app.post(
+  '/api/bookings/:id/prescreening',
+  authenticate,
+  requireRole('PATIENT'),
+  validateBody(schemas.prescreeningSchema),
+  asyncHandler(async (req, res) => {
+    const bookingId = assertBookingOwner(req, req.params.id);
+    const before = await loadOwnedBooking(pool, bookingId, req.user.id);
+    if (!['HELD', 'CONFIRMED', 'CHECKED_IN'].includes(before.status)) {
+      throw new ApiError(409, 'Pre-screening can only be completed for an active booking.', 'BOOKING_NOT_ACTIVE');
+    }
+    const p = req.body;
+    await pool.query(
+      `INSERT INTO prescreening
+         (booking_id, age_group, conditions, mobility_needs, preferred_language,
+          emergency_contact_name, emergency_contact_phone)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         age_group = VALUES(age_group), conditions = VALUES(conditions),
+         mobility_needs = VALUES(mobility_needs), preferred_language = VALUES(preferred_language),
+         emergency_contact_name = VALUES(emergency_contact_name),
+         emergency_contact_phone = VALUES(emergency_contact_phone)`,
+      [
+        bookingId,
+        p.ageGroup,
+        JSON.stringify(p.conditions),
+        p.mobilityNeeds ? 1 : 0,
+        p.preferredLanguage,
+        p.emergencyContactName,
+        p.emergencyContactPhone,
+      ],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'SAVE_PRESCREENING',
+      targetType: 'booking',
+      targetId: bookingId,
+      before: { prescreened: Boolean(before.prescreened) },
+      after: { ageGroup: p.ageGroup, conditions: p.conditions },
+    });
+    emitBounded(io.to(`user:${req.user.id}`), 'prescreening:saved', { bookingId });
+    res.status(201).json({ bookingId, prescreening: p, provenance: 'live-mysql' });
+  }),
+);
+
+app.post(
+  '/api/bookings/:id/feedback',
+  authenticate,
+  requireRole('PATIENT'),
+  validateBody(schemas.feedbackSchema),
+  asyncHandler(async (req, res) => {
+    const bookingId = assertBookingOwner(req, req.params.id);
+    const booking = await loadOwnedBooking(pool, bookingId, req.user.id);
+    if (!['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(booking.status)) {
+      throw new ApiError(409, 'Feedback opens after a confirmed visit.', 'FEEDBACK_NOT_ELIGIBLE');
+    }
+    if (booking.feedback_id) {
+      throw new ApiError(409, 'You have already submitted feedback for this appointment.', 'FEEDBACK_EXISTS');
+    }
+    const outcome = await withTransaction(async (conn) => {
+      // Lock the booking so two concurrent submissions cannot both pass the
+      // duplicate check and race into the unique feedback key.
+      const [locked] = await conn.query(
+        'SELECT status FROM bookings WHERE id = ? FOR UPDATE',
+        [bookingId],
+      );
+      if (!locked.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+      if (!['CONFIRMED', 'CHECKED_IN', 'COMPLETED'].includes(locked[0].status)) {
+        throw new ApiError(409, 'Feedback opens after a confirmed visit.', 'FEEDBACK_NOT_ELIGIBLE');
+      }
+      const [existingFeedback] = await conn.query(
+        'SELECT id FROM feedback WHERE booking_id = ? LIMIT 1',
+        [bookingId],
+      );
+      if (existingFeedback.length) {
+        throw new ApiError(409, 'You have already submitted feedback for this appointment.', 'FEEDBACK_EXISTS');
+      }
+      const [result] = await conn.query(
+        'INSERT INTO feedback (booking_id, rating, comment) VALUES (?, ?, ?)',
+        [bookingId, req.body.rating, req.body.comment || ''],
+      );
+      await conn.query(
+        `UPDATE camps
+            SET avg_feedback_rating = (
+              SELECT ROUND(AVG(f.rating), 2) FROM feedback f
+              JOIN bookings b2 ON b2.id = f.booking_id WHERE b2.camp_id = camps.id
+            )
+          WHERE id = ?`,
+        [booking.camp_id],
+      );
+      const [rows] = await conn.query('SELECT * FROM feedback WHERE id = ?', [result.insertId]);
+      return rows[0];
+    });
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'SUBMIT_FEEDBACK',
+      targetType: 'booking',
+      targetId: bookingId,
+      after: { rating: req.body.rating },
+    });
+    emitBounded(io.to(`camp:${booking.camp_id}`), 'feedback:new', {
+      bookingId,
+      rating: req.body.rating,
+    });
+    res.status(201).json({ feedback: publicFeedback(outcome) });
+  }),
+);
+
+app.get(
+  '/api/feedback/organizer',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = req.query.campId ? Number(req.query.campId) : null;
+    if (campId && (!Number.isInteger(campId) || campId <= 0)) {
+      throw new ApiError(400, 'Invalid campId.', 'VALIDATION');
+    }
+    const isAdmin = req.user.role === 'ADMIN';
+    let where = '';
+    const params = [];
+    if (campId) {
+      if (!isAdmin && !(await canManageCamp(req.user, campId))) {
+        throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
+      where = 'WHERE b.camp_id = ?';
+      params.push(campId);
+    } else if (!isAdmin) {
+      // Without an explicit camp, organizers still only see feedback for
+      // camps they own or are assigned to manage.
+      where = `WHERE c.created_by = ? OR EXISTS (
+        SELECT 1 FROM staff_assignments sa WHERE sa.camp_id = c.id AND sa.user_id = ?
+      )`;
+      params.push(req.user.id, req.user.id);
+    }
+    const [rows] = await pool.query(
+      `SELECT f.*, b.camp_id, c.title AS camp_title, u.name AS patient_name
+         FROM feedback f JOIN bookings b ON b.id = f.booking_id
+         JOIN camps c ON c.id = b.camp_id JOIN users u ON u.id = b.patient_id
+         ${where} ORDER BY f.submitted_at DESC, f.id DESC LIMIT 200`,
+      params,
+    );
+    const [[summary]] = await pool.query(
+      `SELECT COUNT(*) AS responses, COALESCE(ROUND(AVG(f.rating), 2), 0) AS averageRating
+         FROM feedback f JOIN bookings b ON b.id = f.booking_id ${where}`,
+      params,
+    );
+    res.json({
+      feedback: rows.map((row) => ({ ...publicFeedback(row), campId: row.camp_id, campTitle: row.camp_title, patientName: row.patient_name })),
+      summary: {
+        responses: Number(summary.responses || 0),
+        averageRating: Number(summary.averageRating || 0),
+      },
+      provenance: 'live-mysql',
+    });
+  }),
+);
+
+/* ------------------------------ ORGANIZER ------------------------------- */
+
+app.get(
+  '/api/camp-templates',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (_req, res) => {
+    res.json({ templates: CAMP_TEMPLATES, provenance: 'catalog' });
+  }),
+);
+
+app.post(
+  '/api/camps/:id/clone',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.campCloneSchema),
+  asyncHandler(async (req, res) => {
+    const sourceId = Number(req.params.id);
+    const [sourceRows] = await pool.query('SELECT * FROM camps WHERE id = ?', [sourceId]);
+    if (!sourceRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    if (!(await canManageCamp(req.user, sourceId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const source = sourceRows[0];
+    const b = req.body;
+    const settings = await loadOrgSettings();
+    const needsApproval = settings.requireCampApproval && req.user.role !== 'ADMIN';
+    const status = b.status === 'PUBLISHED' && !needsApproval ? 'PUBLISHED' : 'DRAFT';
+    const campId = await withTransaction(async (conn) => {
+      const [result] = await conn.query(
+        `INSERT INTO camps
+           (title, description_en, description_kn, venue, address, city, latitude, longitude,
+            camp_date, start_time, end_time, slot_duration_mins, total_capacity, physical_capacity,
+            status, camp_type, service_checklist, avg_service_time_mins, approval_status,
+            created_by, approved_by, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          b.title || `${source.title} — copy`,
+          source.description_en,
+          source.description_kn,
+          b.venue || source.venue,
+          b.address || source.address,
+          source.city,
+          source.latitude,
+          source.longitude,
+          b.campDate,
+          b.startTime,
+          b.endTime,
+          source.slot_duration_mins,
+          source.total_capacity,
+          source.physical_capacity,
+          status,
+          source.camp_type,
+          source.service_checklist,
+          source.avg_service_time_mins,
+          needsApproval ? 'PENDING' : 'APPROVED',
+          req.user.id,
+          !needsApproval && req.user.role === 'ADMIN' ? req.user.id : null,
+          !needsApproval && req.user.role === 'ADMIN' ? new Date() : null,
+        ],
+      );
+      const id = result.insertId;
+      // Regenerate the cloned slots for the requested window; copying the old
+      // slot times verbatim would leave bookings outside the new camp hours.
+      const plan = buildSlotPlan(
+        b.startTime,
+        b.endTime,
+        source.slot_duration_mins,
+        source.total_capacity,
+      );
+      for (const slot of plan) {
+        await conn.query(
+          `INSERT INTO slots (camp_id, slot_index, start_time, end_time, capacity, booked_count)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+          [id, slot.slotIndex, slot.startTime, slot.endTime, slot.capacity],
+        );
+      }
+      const [items] = await conn.query('SELECT item FROM camp_checklist WHERE camp_id = ?', [sourceId]);
+      for (const item of items) {
+        await conn.query('INSERT INTO camp_checklist (camp_id, item) VALUES (?, ?)', [id, item.item]);
+      }
+      return id;
+    });
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'CLONE_CAMP',
+      targetType: 'camp',
+      targetId: campId,
+      after: { sourceCampId: sourceId, status },
+    });
+    const camp = await loadCampBundle(campId);
+    emitBounded(io, 'camp:updated', { campId, clonedFrom: sourceId });
+    res.status(201).json({ camp });
+  }),
+);
+
+app.get(
+  '/api/camps/:campId/checklist',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN', 'DOCTOR', 'VOLUNTEER'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const [rows] = await pool.query(
+      `SELECT cc.*, u.name AS done_by_name FROM camp_checklist cc
+       LEFT JOIN users u ON u.id = cc.done_by
+       WHERE cc.camp_id = ? ORDER BY cc.id ASC`,
+      [campId],
+    );
+    res.json({ items: rows.map(publicChecklistItem), provenance: 'live-mysql' });
+  }),
+);
+
+app.post(
+  '/api/camps/:campId/checklist',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.checklistItemSchema),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+    if (!Number.isInteger(campId) || !(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const [campRows] = await pool.query('SELECT id FROM camps WHERE id = ?', [campId]);
+    if (!campRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const [result] = await pool.query(
+      'INSERT INTO camp_checklist (camp_id, item) VALUES (?, ?)',
+      [campId, req.body.item],
+    );
+    const [rows] = await pool.query('SELECT * FROM camp_checklist WHERE id = ?', [result.insertId]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'ADD_CHECKLIST_ITEM',
+      targetType: 'camp_checklist',
+      targetId: result.insertId,
+      after: { campId, item: req.body.item },
+    });
+    emitBounded(io.to(`camp:${campId}`), 'checklist:changed', { campId, itemId: result.insertId });
+    res.status(201).json({ item: publicChecklistItem(rows[0]) });
+  }),
+);
+
+app.patch(
+  '/api/checklist/:id',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN', 'DOCTOR', 'VOLUNTEER'),
+  validateBody(schemas.checklistUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const [beforeRows] = await pool.query('SELECT * FROM camp_checklist WHERE id = ?', [id]);
+    if (!beforeRows.length) throw new ApiError(404, 'Checklist item not found.', 'CHECKLIST_NOT_FOUND');
+    if (!(await canManageCamp(req.user, beforeRows[0].camp_id))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const done = Boolean(req.body.isDone);
+    await pool.query(
+      'UPDATE camp_checklist SET is_done = ?, done_by = ?, done_at = ? WHERE id = ?',
+      [done ? 1 : 0, done ? req.user.id : null, done ? new Date() : null, id],
+    );
+    const [rows] = await pool.query(
+      `SELECT cc.*, u.name AS done_by_name FROM camp_checklist cc
+       LEFT JOIN users u ON u.id = cc.done_by WHERE cc.id = ?`,
+      [id],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'UPDATE_CHECKLIST_ITEM',
+      targetType: 'camp_checklist',
+      targetId: id,
+      before: { isDone: Boolean(beforeRows[0].is_done) },
+      after: { isDone: done },
+    });
+    emitBounded(io.to(`camp:${beforeRows[0].camp_id}`), 'checklist:changed', { campId: beforeRows[0].camp_id, itemId: id });
+    res.json({ item: publicChecklistItem(rows[0]) });
+  }),
+);
+
+app.delete(
+  '/api/checklist/:id',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const [rows] = await pool.query('SELECT * FROM camp_checklist WHERE id = ?', [id]);
+    if (!rows.length) throw new ApiError(404, 'Checklist item not found.', 'CHECKLIST_NOT_FOUND');
+    if (!(await canManageCamp(req.user, rows[0].camp_id))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    await pool.query('DELETE FROM camp_checklist WHERE id = ?', [id]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'DELETE_CHECKLIST_ITEM',
+      targetType: 'camp_checklist',
+      targetId: id,
+      before: { item: rows[0].item },
+    });
+    emitBounded(io.to(`camp:${rows[0].camp_id}`), 'checklist:changed', { campId: rows[0].camp_id, itemId: id, deleted: true });
+    res.json({ deleted: true, id });
+  }),
+);
+
+app.get(
+  '/api/camps/:campId/waitlist',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN', 'DOCTOR', 'VOLUNTEER'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const [rows] = await pool.query(
+      `SELECT w.*, p.name AS patient_name FROM waitlist w
+       JOIN users p ON p.id = w.patient_id
+       WHERE w.camp_id = ? ORDER BY w.status = 'WAITING' DESC, w.position ASC, w.id ASC LIMIT 200`,
+      [campId],
+    );
+    res.json({ waitlist: rows.map(publicWaitlist), provenance: 'live-mysql' });
+  }),
+);
+
+app.post(
+  '/api/camps/:campId/waitlist/:waitlistId/promote',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.promoteSchema),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+    const waitlistId = Number(req.params.waitlistId);
+    if (!Number.isInteger(campId) || !Number.isInteger(waitlistId)) {
+      throw new ApiError(400, 'Invalid promotion target.', 'VALIDATION');
+    }
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const outcome = await withTransaction((conn) =>
+      manualPromoteWaiter(conn, {
+        waitlistId,
+        campId,
+        reason: req.body.reason,
+        actor: req.user,
+      }),
+    );
+    publishNotifications(outcome.notifications);
+    await auditLog({ actorId: req.user.id, actorName: req.user.name, ...outcome.audit });
+    const queue = await emitQueueUpdate(campId);
+    emitBounded(io.to(`camp:${campId}`), 'waitlist:promoted', {
+      booking: safeSocketBooking(outcome.booking),
+      waitlistId,
+      manualOverride: true,
+    });
+    res.json({
+      status: 'PROMOTED',
+      booking: publicBooking(outcome.booking),
+      patient: publicPromotedPatient({
+        id: outcome.waiter.patient_id,
+        name: outcome.waiter.patient_name,
+      }),
+      manualOverride: true,
+      reason: req.body.reason,
+      queue,
+    });
+  }),
+);
+
+app.post(
+  '/api/announcements',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.broadcastSchema),
+  asyncHandler(async (req, res) => {
+    const { subject, message, audience } = req.body;
+    let roleClause = '';
+    const params = [];
+    if (audience === 'PATIENTS') roleClause = "AND role = 'PATIENT'";
+    if (audience === 'STAFF') roleClause = "AND role IN ('DOCTOR','VOLUNTEER','ADMIN','ORGANIZER')";
+    const [users] = await pool.query(
+      `SELECT id, name, email, phone FROM users
+       WHERE is_active = 1 AND email IS NOT NULL AND TRIM(email) <> '' ${roleClause}
+       ORDER BY id ASC`,
+      params,
+    );
+    const provider = providerFor('EMAIL');
+    const organizationName = (await loadOrgSettings()).organizationName;
+    const announcementText = `${organizationName} announcement — ${subject}\n\n${message}\n\nThis is a camp service update. No payment is requested.`;
+    const eventKeyBase = `announcement-${Date.now()}`;
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'BROADCAST_ANNOUNCEMENT',
+      targetType: 'announcement',
+      targetId: null,
+      after: { audience, subject, recipientCount: users.length },
+    });
+    emitBounded(io, 'announcement:new', { subject, audience, recipientCount: users.length });
+    res.status(202).json({
+      status: 'QUEUED',
+      subject,
+      audience,
+      recipientCount: users.length,
+      message: `${users.length} real account${users.length === 1 ? '' : 's'} queued for this announcement.`,
+    });
+    // Fan-out runs after the response, in bounded chunks, so a large real user
+    // table cannot exhaust the pool or block the request. Every row is a real
+    // MySQL insert; QUEUED never claims delivery that has not happened yet.
+    setImmediate(async () => {
+      const chunkSize = 100;
+      for (let index = 0; index < users.length; index += chunkSize) {
+        try {
+          const results = await Promise.allSettled(
+            users.slice(index, index + chunkSize).map((user) => emailNotifications(pool, {
+              bookingId: null,
+              userId: user.id,
+              channel: 'EMAIL',
+              type: 'ANNOUNCEMENT',
+              recipient: user.email,
+              subject,
+              message: announcementText,
+              provider,
+              eventKey: `${eventKeyBase}-${user.id}`,
+              payload: { subject, message, audience },
+            })),
+          );
+          const batch = results.flatMap((result) => {
+            if (result.status === 'fulfilled') return result.value;
+            console.warn('[announcement fan-out]', String(result.reason?.message || result.reason).slice(0, 200));
+            return [];
+          });
+          publishNotifications(batch);
+        } catch (error) {
+          console.warn('[announcement fan-out]', String(error.message || error).slice(0, 200));
+        }
+      }
+    });
+  }),
+);
+
+/* ------------------------------- STAFF ---------------------------------- */
+
+app.post(
+  '/api/checkin/lookup',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  validateBody(schemas.checkinLookupSchema),
+  asyncHandler(async (req, res) => {
+    const { phone, campId, token } = req.body;
+    const clauses = ['b.status IN (\'CONFIRMED\',\'CHECKED_IN\',\'COMPLETED\')'];
+    const params = [];
+    if (phone) {
+      clauses.push('p.phone = ?');
+      params.push(phone);
+    }
+    if (token) {
+      clauses.push('(b.qr_token = ? OR b.token_number = ?)');
+      params.push(token, token);
+    }
+    if (campId) {
+      clauses.push('b.camp_id = ?');
+      params.push(campId);
+    }
+    const privileged = req.user.role === 'ADMIN';
+    if (!privileged) {
+      // Staff see only assigned camps. Organizers see camps they own or were
+      // explicitly assigned to manage; the ORGANIZER role alone is not a
+      // blanket pass over every patient in the system.
+      if (req.user.role === 'ORGANIZER') {
+        clauses.push(`EXISTS (
+          SELECT 1 FROM camps c2 WHERE c2.id = b.camp_id
+          AND (c2.created_by = ? OR EXISTS (
+            SELECT 1 FROM staff_assignments sa WHERE sa.camp_id = b.camp_id AND sa.user_id = ?
+          ))
+        )`);
+        params.push(req.user.id, req.user.id);
+      } else {
+        clauses.push(`EXISTS (SELECT 1 FROM staff_assignments sa WHERE sa.user_id = ? AND sa.camp_id = b.camp_id)`);
+        params.push(req.user.id);
+      }
+      if (campId && !(await canManageCamp(req.user, campId))) {
+        throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
+    }
+    const [rows] = await pool.query(
+      `SELECT b.id, b.camp_id, b.qr_token, b.token_number, b.status, b.checked_in_at,
+              p.name AS patient_name, p.phone, c.title AS camp_title, c.camp_date,
+              s.start_time, s.end_time
+         FROM bookings b
+         JOIN users p ON p.id = b.patient_id
+         JOIN camps c ON c.id = b.camp_id
+         JOIN slots s ON s.id = b.slot_id
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY c.camp_date DESC, s.start_time ASC LIMIT 20`,
+      params,
+    );
+    res.json({
+      matches: rows.map((row) => ({
+        id: row.id,
+        qrToken: row.qr_token,
+        tokenNumber: row.token_number,
+        status: row.status,
+        checkedInAt: row.checked_in_at,
+        patientName: row.patient_name,
+        phone: row.phone,
+        campId: row.camp_id,
+        campTitle: row.camp_title,
+        campDate: row.camp_date,
+        startTime: row.start_time,
+        endTime: row.end_time,
+      })),
+      provenance: 'live-mysql',
+    });
+  }),
+);
+
+app.get(
+  '/api/camps/:campId/service-queue',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.campId);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    res.json(await getServiceQueueSnapshot(campId));
+  }),
+);
+
+async function assertStaffCampScope(user, bookingId, conn = pool) {
+  const [rows] = await conn.query('SELECT camp_id FROM bookings WHERE id = ?', [bookingId]);
+  if (!rows.length) throw new ApiError(404, 'Booking not found.', 'BOOKING_NOT_FOUND');
+  if (!(await canManageCamp(user, rows[0].camp_id, conn))) {
+    throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+  }
+  return Number(rows[0].camp_id);
+}
+
+app.post(
+  '/api/bookings/:id/service-records',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  validateBody(schemas.serviceRecordSchema),
+  asyncHandler(async (req, res) => {
+    const bookingId = assertBookingOwner(req, req.params.id);
+    let campId;
+    const outcome = await withTransaction(async (conn) => {
+      campId = await assertStaffCampScope(req.user, bookingId, conn);
+      const [bookingRows] = await conn.query('SELECT * FROM bookings WHERE id = ? FOR UPDATE', [bookingId]);
+      const booking = bookingRows[0];
+      if (!['CHECKED_IN', 'COMPLETED'].includes(booking.status)) {
+        throw new ApiError(409, 'The patient must be checked in before recording a service.', 'NOT_CHECKED_IN');
+      }
+      const [previous] = await conn.query(
+        'SELECT * FROM service_records WHERE booking_id = ? AND service_name = ? ORDER BY id DESC LIMIT 1',
+        [bookingId, req.body.serviceName],
+      );
+      await conn.query(
+        'DELETE FROM service_records WHERE booking_id = ? AND service_name = ?',
+        [bookingId, req.body.serviceName],
+      );
+      const [result] = await conn.query(
+        'INSERT INTO service_records (booking_id, service_name, outcome, recorded_by) VALUES (?, ?, ?, ?)',
+        [bookingId, req.body.serviceName, req.body.outcome || '', req.user.id],
+      );
+      if (req.body.complete && booking.status !== 'COMPLETED') {
+        await conn.query("UPDATE bookings SET status = 'COMPLETED' WHERE id = ?", [bookingId]);
+      }
+      const [rows] = await conn.query('SELECT * FROM service_records WHERE id = ?', [result.insertId]);
+      return {
+        record: rows[0],
+        audit: auditEvent(
+          'RECORD_SERVICE',
+          'booking',
+          bookingId,
+          previous.length ? { serviceName: req.body.serviceName, outcome: previous[0].outcome } : null,
+          { serviceName: req.body.serviceName, outcome: req.body.outcome, complete: Boolean(req.body.complete) },
+        ),
+      };
+    });
+    await auditLog({ actorId: req.user.id, actorName: req.user.name, ...outcome.audit });
+    const queue = await emitQueueUpdate(campId);
+    emitBounded(io.to(`camp:${campId}`), 'service:recorded', { bookingId, record: publicServiceRecord(outcome.record) });
+    res.status(201).json({ record: publicServiceRecord(outcome.record), queue });
+  }),
+);
+
+app.post(
+  '/api/bookings/:id/notes',
+  authenticate,
+  requireRole('DOCTOR', 'VOLUNTEER', 'ORGANIZER', 'ADMIN'),
+  validateBody(schemas.noteSchema),
+  asyncHandler(async (req, res) => {
+    const bookingId = assertBookingOwner(req, req.params.id);
+    const campId = await assertStaffCampScope(req.user, bookingId);
+    const [result] = await pool.query(
+      'INSERT INTO visit_notes (booking_id, note, recorded_by) VALUES (?, ?, ?)',
+      [bookingId, req.body.note, req.user.id],
+    );
+    const [rows] = await pool.query('SELECT * FROM visit_notes WHERE id = ?', [result.insertId]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'ADD_VISIT_NOTE',
+      targetType: 'booking',
+      targetId: bookingId,
+      after: { noteLength: req.body.note.length },
+    });
+    emitBounded(io.to(`camp:${campId}`), 'note:added', { bookingId, noteId: result.insertId });
+    res.status(201).json({ note: publicVisitNote(rows[0]) });
+  }),
+);
+
+/* --------------------------- WALK-IN REGISTRATION ------------------------ */
+
+app.post(
+  '/api/walkins',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN', 'DOCTOR', 'VOLUNTEER'),
+  validateBody(schemas.walkinSchema),
+  asyncHandler(async (req, res) => {
+    const slotId = Number(req.body.slotId);
+    const outcome = await withTransaction(async (conn) => {
+      const [slotRows] = await conn.query(
+        `SELECT s.*, c.title, c.venue, c.address, c.city, c.latitude, c.longitude,
+                c.camp_date, c.status AS camp_status
+           FROM slots s JOIN camps c ON c.id = s.camp_id WHERE s.id = ? FOR UPDATE`,
+        [slotId],
+      );
+      if (!slotRows.length) throw new ApiError(404, 'Slot not found.', 'SLOT_NOT_FOUND');
+      const slot = slotRows[0];
+      if (slot.camp_status !== 'PUBLISHED') {
+        throw new ApiError(409, 'This camp is not accepting registrations.', 'CAMP_NOT_OPEN');
+      }
+      if (!(await canManageCamp(req.user, slot.camp_id, conn))) {
+        throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+      }
+
+      const [userRows] = await conn.query('SELECT * FROM users WHERE phone = ? FOR UPDATE', [req.body.phone]);
+      if (userRows.length && (userRows[0].role !== 'PATIENT' || !userRows[0].is_active)) {
+        throw new ApiError(409, 'That phone belongs to a staff or inactive account.', 'PHONE_NOT_PATIENT');
+      }
+      let patient = userRows[0];
+      let temporaryPassword = null;
+      if (!patient) {
+        temporaryPassword = makeTempPassword();
+        const hash = await bcrypt.hash(temporaryPassword, 10);
+        // Walk-in accounts can be phone-only. A synthetic @chsc.local address
+        // would be a fabricated delivery target, so store NULL instead.
+        let insert;
+        try {
+          [insert] = await conn.query(
+            `INSERT INTO users (name, email, phone, password_hash, role, preferred_language)
+             VALUES (?, ?, ?, ?, 'PATIENT', 'en')`,
+            [req.body.name, req.body.email || null, req.body.phone, hash],
+          );
+        } catch (error) {
+          if (error.code === 'ER_DUP_ENTRY') {
+            throw new ApiError(409, 'That email is already registered.', 'USER_EXISTS');
+          }
+          throw error;
+        }
+        const [fresh] = await conn.query('SELECT * FROM users WHERE id = ?', [insert.insertId]);
+        patient = fresh[0];
+      }
+
+      const [existing] = await conn.query(
+        `SELECT * FROM bookings WHERE patient_id = ? AND camp_id = ?
+          AND status IN (${ACTIVE_BOOKING_STATUSES.map(() => '?').join(',')}) FOR UPDATE`,
+        [patient.id, slot.camp_id, ...ACTIVE_BOOKING_STATUSES],
+      );
+      if (existing.length) {
+        throw new ApiError(409, 'This patient already has an active booking at this camp.', 'ALREADY_BOOKED_IN_CAMP');
+      }
+
+      if (Number(slot.booked_count) >= Number(slot.capacity)) {
+        if (!req.body.joinWaitlist) {
+          throw new ApiError(409, 'This slot is full. Join the waitlist instead.', 'SLOT_FULL');
+        }
+        const [waiting] = await conn.query(
+          `SELECT COUNT(*) AS total FROM waitlist WHERE slot_id = ? AND status = 'WAITING'`,
+          [slotId],
+        );
+        const [waitInsert] = await conn.query(
+          `INSERT INTO waitlist (slot_id, camp_id, patient_id, position, status)
+           VALUES (?, ?, ?, ?, 'WAITING')`,
+          [slotId, slot.camp_id, patient.id, Number(waiting[0].total) + 1],
+        );
+        return {
+          kind: 'waitlisted',
+          waitlistId: waitInsert.insertId,
+          waitlistPosition: Number(waiting[0].total) + 1,
+          patient,
+          createdUserId: userRows.length ? null : patient.id,
+          temporaryPassword,
+          notifications: [],
+          campId: slot.camp_id,
+          audit: auditEvent(
+            'WALKIN_REGISTRATION',
+            'waitlist',
+            waitInsert.insertId,
+            null,
+            { source: 'WALKIN', phone: patient.phone, slotId, waitlisted: true },
+          ),
+        };
+      }
+
+      const [seatUpdate] = await conn.query(
+        'UPDATE slots SET booked_count = booked_count + 1 WHERE id = ? AND booked_count < capacity',
+        [slotId],
+      );
+      if (seatUpdate.affectedRows !== 1) {
+        throw new ApiError(409, 'The seat changed while registering. Please retry.', 'SEAT_RACE_RETRY');
+      }
+      const [insert] = await conn.query(
+        `INSERT INTO bookings
+           (slot_id, camp_id, patient_id, qr_token, token_number, status, source, travel_mode)
+         VALUES (?, ?, ?, ?, ?, 'CONFIRMED', 'WALKIN', 'WALK')`,
+        [slotId, slot.camp_id, patient.id, makeQrToken(), makeTokenNumber()],
+      );
+      const [bookingRows] = await conn.query('SELECT * FROM bookings WHERE id = ?', [insert.insertId]);
+      const booking = bookingRows[0];
+      await remindersEngine.scheduleForBooking(conn, {
+        bookingId: booking.id,
+        campDate: slot.camp_date,
+        startTime: slot.start_time,
+      });
+      const details = bookingMessageDetails({ booking, patient, camp: slot, slot });
+      const built = buildMessages('BOOKING_CONFIRMED', details);
+      const notifications = [
+        await insertNotification(conn, {
+          bookingId: booking.id,
+          userId: patient.id,
+          channel: 'SMS',
+          type: 'BOOKING_CONFIRMED',
+          recipient: patient.phone,
+          message: built.sms,
+          provider: providerFor('SMS'),
+          status: 'PENDING',
+          eventKey: `walkin-${booking.id}`,
+          payload: details,
+        }),
+      ];
+      if (patient.email) {
+        notifications.push(await insertNotification(conn, {
+          bookingId: booking.id,
+          userId: patient.id,
+          channel: 'EMAIL',
+          type: 'BOOKING_CONFIRMED',
+          recipient: patient.email,
+          subject: built.subject,
+          message: built.text,
+          provider: providerFor('EMAIL'),
+          status: 'PENDING',
+          eventKey: `walkin-${booking.id}`,
+          payload: details,
+        }));
+      }
+      return {
+        kind: 'confirmed',
+        booking,
+        waitlistId: null,
+        waitlistPosition: null,
+        patient,
+        createdUserId: userRows.length ? null : patient.id,
+        temporaryPassword,
+        notifications,
+        campId: slot.camp_id,
+        audit: auditEvent(
+          'WALKIN_REGISTRATION',
+          'booking',
+          booking.id,
+          null,
+          { source: 'WALKIN', phone: patient.phone, slotId, waitlisted: false },
+        ),
+      };
+    });
+
+    publishNotifications(outcome.notifications);
+    if (outcome.createdUserId) {
+      await auditLog({
+        actorId: req.user.id,
+        actorName: req.user.name,
+        action: 'CREATE_USER',
+        targetType: 'user',
+        targetId: outcome.createdUserId,
+        after: { role: 'PATIENT', source: 'WALKIN' },
+      });
+    }
+    if (outcome.audit) {
+      await auditLog({ actorId: req.user.id, actorName: req.user.name, ...outcome.audit });
+    }
+    if (outcome.kind === 'waitlisted') {
+      // No outbound notifications are queued for a waitlist entry, so mirror
+      // this desk event into the patient's inbox explicitly.
+      await insertInAppNotification(pool, {
+        userId: outcome.patient.id,
+        type: 'WAITLIST_JOINED',
+        message: 'You were added to the camp waitlist at the registration desk.',
+      });
+    }
+    const queue = await emitQueueUpdate(outcome.campId);
+    emitBounded(io, 'walkin:registered', { campId: outcome.campId, kind: outcome.kind });
+    res.status(201).json({
+      status: outcome.kind === 'confirmed' ? 'CONFIRMED' : 'WAITLISTED',
+      kind: outcome.kind,
+      waitlistId: outcome.waitlistId || null,
+      waitlistPosition: outcome.waitlistPosition || null,
+      booking: outcome.booking ? publicBooking(outcome.booking) : null,
+      patient: { id: outcome.patient.id, name: outcome.patient.name, phone: outcome.patient.phone },
+      // Shown once. This is a real generated credential, never a demo value.
+      temporaryPassword: outcome.temporaryPassword,
+      queue,
+    });
+  }),
+);
+
+/* --------------------------- IN-APP INBOX ------------------------------- */
+
+app.get(
+  '/api/notifications/inbox',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const paging = parsePagination(req.query);
+    if (!paging) throw new ApiError(400, 'Invalid pagination.', 'INVALID_PAGINATION');
+    const [rows] = await pool.query(
+      `SELECT * FROM in_app_notifications WHERE user_id = ?
+       ORDER BY is_read ASC, id DESC LIMIT ? OFFSET ?`,
+      [req.user.id, paging.limit, paging.offset],
+    );
+    const [[{ total }]] = await pool.query(
+      'SELECT COUNT(*) AS total FROM in_app_notifications WHERE user_id = ?',
+      [req.user.id],
+    );
+    const [[{ unread }]] = await pool.query(
+      'SELECT COUNT(*) AS unread FROM in_app_notifications WHERE user_id = ? AND is_read = 0',
+      [req.user.id],
+    );
+    res.json({
+      notifications: rows.map(publicInApp),
+      unread: Number(unread),
+      pagination: buildPagination(Number(total), paging),
+      provenance: 'live-mysql',
+    });
+  }),
+);
+
+app.patch(
+  '/api/notifications/inbox/:id/read',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const [rows] = await pool.query(
+      'SELECT * FROM in_app_notifications WHERE id = ? AND user_id = ?',
+      [id, req.user.id],
+    );
+    if (!rows.length) throw new ApiError(404, 'Notification not found.', 'NOTIFICATION_NOT_FOUND');
+    if (rows[0].is_read) return res.json({ notification: publicInApp(rows[0]), unchanged: true });
+    await pool.query('UPDATE in_app_notifications SET is_read = 1 WHERE id = ?', [id]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'READ_IN_APP_NOTIFICATION',
+      targetType: 'in_app_notification',
+      targetId: id,
+    });
+    emitBounded(io.to(`user:${req.user.id}`), 'inapp:changed', { userId: req.user.id, id });
+    return res.json({ notification: { ...publicInApp(rows[0]), isRead: true } });
+  }),
+);
+
+app.post(
+  '/api/notifications/inbox/read-all',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const [result] = await pool.query(
+      'UPDATE in_app_notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0',
+      [req.user.id],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'READ_ALL_IN_APP_NOTIFICATIONS',
+      targetType: 'in_app_notification',
+      targetId: null,
+      after: { updated: result.affectedRows },
+    });
+    emitBounded(io.to(`user:${req.user.id}`), 'inapp:changed', { userId: req.user.id });
+    res.json({ updated: result.affectedRows });
+  }),
+);
+
+/* ------------------------------ ADMIN ----------------------------------- */
+
+app.get(
+  '/api/admin/camps/approvals',
+  authenticate,
+  requireRole('ADMIN', 'ORGANIZER'),
+  asyncHandler(async (req, res) => {
+    const isAdmin = req.user.role === 'ADMIN';
+    const { camps } = await loadCampCollection({
+      where: isAdmin
+        ? `c.approval_status = 'PENDING'`
+        : `c.approval_status = 'PENDING' AND c.created_by = ?`,
+      params: isAdmin ? [] : [req.user.id],
+      orderBy: 'c.camp_date ASC, c.id ASC',
+    });
+    res.json({ camps, provenance: 'live-mysql' });
+  }),
+);
+
+app.post(
+  '/api/admin/camps/:id/approve',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.id);
+    const [beforeRows] = await pool.query(
+      'SELECT approval_status, status FROM camps WHERE id = ?',
+      [campId],
+    );
+    if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    if (beforeRows[0].approval_status !== 'PENDING') {
+      throw new ApiError(409, 'Only camps awaiting approval can be approved.', 'APPROVAL_NOT_ACTIONABLE');
+    }
+    if (!['DRAFT', 'PUBLISHED'].includes(beforeRows[0].status)) {
+      throw new ApiError(409, 'This camp can no longer be approved.', 'CAMP_NOT_APPROVABLE');
+    }
+    await pool.query(
+      `UPDATE camps SET approval_status = 'APPROVED', status = 'PUBLISHED',
+        rejection_reason = NULL, approved_by = ?, approved_at = NOW() WHERE id = ?`,
+      [req.user.id, campId],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'APPROVE_CAMP',
+      targetType: 'camp',
+      targetId: campId,
+      before: beforeRows[0],
+      after: { approvalStatus: 'APPROVED', status: 'PUBLISHED' },
+    });
+    const camp = await loadCampBundle(campId);
+    emitBounded(io, 'camp:approved', { campId });
+    res.json({ camp });
+  }),
+);
+
+app.post(
+  '/api/admin/camps/:id/reject',
+  authenticate,
+  requireRole('ADMIN'),
+  validateBody(schemas.campApprovalSchema),
+  asyncHandler(async (req, res) => {
+    if (!req.body.reason) {
+      throw new ApiError(400, 'A rejection reason is required.', 'VALIDATION');
+    }
+    const campId = Number(req.params.id);
+    const [beforeRows] = await pool.query(
+      'SELECT approval_status, status FROM camps WHERE id = ?',
+      [campId],
+    );
+    if (!beforeRows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    if (beforeRows[0].approval_status !== 'PENDING' || beforeRows[0].status !== 'DRAFT') {
+      throw new ApiError(409, 'Only pending draft camps can be rejected.', 'APPROVAL_NOT_ACTIONABLE');
+    }
+    await pool.query(
+      `UPDATE camps SET approval_status = 'REJECTED', status = 'DRAFT',
+        rejection_reason = ?, approved_by = NULL, approved_at = NULL WHERE id = ?`,
+      [req.body.reason, campId],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'REJECT_CAMP',
+      targetType: 'camp',
+      targetId: campId,
+      before: beforeRows[0],
+      after: { approvalStatus: 'REJECTED', status: 'DRAFT', reason: req.body.reason },
+    });
+    const camp = await loadCampBundle(campId);
+    emitBounded(io, 'camp:rejected', { campId });
+    res.json({ camp });
+  }),
+);
+
+app.post(
+  '/api/camps/:id/submit-approval',
+  authenticate,
+  requireRole('ORGANIZER', 'ADMIN'),
+  validateBody(schemas.resubmitApprovalSchema),
+  asyncHandler(async (req, res) => {
+    const campId = Number(req.params.id);
+    if (!(await canManageCamp(req.user, campId))) {
+      throw new ApiError(403, 'You are not assigned to manage this camp.', 'CAMP_SCOPE_FORBIDDEN');
+    }
+    const [rows] = await pool.query(
+      'SELECT title, status, approval_status FROM camps WHERE id = ?',
+      [campId],
+    );
+    if (!rows.length) throw new ApiError(404, 'Camp not found.', 'CAMP_NOT_FOUND');
+    const before = rows[0];
+    if (before.status !== 'DRAFT') {
+      throw new ApiError(409, 'Only draft camps can be submitted for approval.', 'CAMP_NOT_DRAFT');
+    }
+    if (!['REJECTED', 'PENDING'].includes(before.approval_status)) {
+      throw new ApiError(409, 'This camp is already approved.', 'APPROVAL_NOT_ACTIONABLE');
+    }
+    await pool.query(
+      `UPDATE camps SET approval_status = 'PENDING', rejection_reason = NULL,
+        approved_by = NULL, approved_at = NULL WHERE id = ?`,
+      [campId],
+    );
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'SUBMIT_CAMP_FOR_APPROVAL',
+      targetType: 'camp',
+      targetId: campId,
+      before: { approvalStatus: before.approval_status },
+      after: { approvalStatus: 'PENDING', note: req.body.note || null },
+    });
+    const camp = await loadCampBundle(campId);
+    // Approval decisions are admin-wide, so broadcast globally as well as to
+    // the camp room that the submitting organizer may have joined.
+    emitBounded(io, 'camp:updated', { campId, approvalStatus: 'PENDING' });
+    res.json({ camp });
+  }),
+);
+
+app.post(
+  '/api/admin/users',
+  authenticate,
+  requireRole('ADMIN'),
+  validateBody(schemas.adminUserCreateSchema),
+  asyncHandler(async (req, res) => {
+    const temporaryPassword = makeTempPassword();
+    const hash = await bcrypt.hash(temporaryPassword, 10);
+    let userId;
+    try {
+      const [result] = await pool.query(
+        `INSERT INTO users (name, email, phone, password_hash, role, preferred_language)
+         VALUES (?, ?, ?, ?, ?, 'en')`,
+        [req.body.name, req.body.email, req.body.phone, hash, req.body.role],
+      );
+      userId = Number(result.insertId);
+    } catch (error) {
+      if (error.code === 'ER_DUP_ENTRY') {
+        throw new ApiError(409, 'Email or phone is already registered.', 'USER_EXISTS');
+      }
+      throw error;
+    }
+    const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'CREATE_USER',
+      targetType: 'user',
+      targetId: userId,
+      after: { role: req.body.role },
+    });
+    emitBounded(io, 'admin:users-changed', { reason: 'created', userId });
+    res.status(201).json({
+      user: safeUser(rows[0]),
+      temporaryPassword,
+      message: 'Share this one-time password with the account holder. It is not stored in plain text.',
+    });
+  }),
+);
+
+app.post(
+  '/api/admin/users/:id/reset-password',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const [rows] = await pool.query('SELECT id, name FROM users WHERE id = ?', [id]);
+    if (!rows.length) throw new ApiError(404, 'User not found.', 'USER_NOT_FOUND');
+    const temporaryPassword = makeTempPassword();
+    const hash = await bcrypt.hash(temporaryPassword, 10);
+    await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, id]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'RESET_USER_PASSWORD',
+      targetType: 'user',
+      targetId: id,
+      after: { reset: true },
+    });
+    emitBounded(io, 'admin:users-changed', { reason: 'password-reset', userId: id });
+    res.json({
+      userId: id,
+      temporaryPassword,
+      message: 'Share this one-time password with the account holder. It is not stored in plain text.',
+    });
+  }),
+);
+
+app.delete(
+  '/api/admin/users/:id',
+  authenticate,
+  requireRole('ADMIN'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (id === req.user.id) {
+      throw new ApiError(409, 'You cannot delete your own account.', 'SELF_DELETE');
+    }
+    const [rows] = await pool.query('SELECT id, name, email FROM users WHERE id = ?', [id]);
+    if (!rows.length) throw new ApiError(404, 'User not found.', 'USER_NOT_FOUND');
+    const [[refs]] = await pool.query(
+      `SELECT (SELECT COUNT(*) FROM bookings WHERE patient_id = ?) AS bookings,
+              (SELECT COUNT(*) FROM staff_assignments WHERE user_id = ?) AS assignments,
+              (SELECT COUNT(*) FROM service_records WHERE recorded_by = ?) AS serviceRecords,
+              (SELECT COUNT(*) FROM visit_notes WHERE recorded_by = ?) AS visitNotes,
+              (SELECT COUNT(*) FROM family_members WHERE patient_id = ?) AS familyMembers,
+              (SELECT COUNT(*) FROM in_app_notifications WHERE user_id = ?) AS inbox`,
+      [id, id, id, id, id, id],
+    );
+    if (Object.values(refs).some((count) => Number(count) > 0)) {
+      throw new ApiError(
+        409,
+        'This account has booking, staff or clinical history. Deactivate it instead of deleting its audit trail.',
+        'USER_HAS_HISTORY',
+        refs,
+      );
+    }
+    await pool.query('DELETE FROM users WHERE id = ?', [id]);
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'DELETE_USER',
+      targetType: 'user',
+      targetId: id,
+      before: { email: rows[0].email },
+    });
+    emitBounded(io, 'admin:users-changed', { reason: 'deleted', userId: id });
+    res.json({ deleted: true, id });
+  }),
+);
+
+app.get(
+  '/api/org/settings',
+  authenticate,
+  asyncHandler(async (_req, res) => {
+    res.json(publicOrgSettings(await loadOrgSettings()));
+  }),
+);
+
+app.put(
+  '/api/org/settings',
+  authenticate,
+  requireRole('ADMIN'),
+  validateBody(schemas.orgSettingsSchema),
+  asyncHandler(async (req, res) => {
+    const b = req.body;
+    // A UI toggle must never claim live delivery without real credentials.
+    if (b.emailProviderMode === 'LIVE' && !(process.env.MAIL_PASS || process.env.SMTP_PASS)) {
+      throw new ApiError(400, 'Email LIVE mode needs configured SMTP credentials.', 'SMTP_CREDENTIALS_REQUIRED');
+    }
+    if (b.smsProviderMode === 'LIVE') {
+      throw new ApiError(400, 'Paid SMS delivery is not part of CHSC. Keep SMS in Sandbox.', 'PAID_SMS_DISABLED');
+    }
+    const before = publicOrgSettings(await loadOrgSettings());
+    await pool.query(
+      `INSERT INTO org_settings
+         (id, organization_name, logo_url, contact_email, default_slot_duration,
+          booking_hold_minutes, require_camp_approval, supported_languages,
+          email_provider_mode, sms_provider_mode, updated_by)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         organization_name = VALUES(organization_name), logo_url = VALUES(logo_url),
+         contact_email = VALUES(contact_email), default_slot_duration = VALUES(default_slot_duration),
+         booking_hold_minutes = VALUES(booking_hold_minutes),
+         require_camp_approval = VALUES(require_camp_approval),
+         supported_languages = VALUES(supported_languages),
+         email_provider_mode = VALUES(email_provider_mode),
+         sms_provider_mode = VALUES(sms_provider_mode), updated_by = VALUES(updated_by)`,
+      [
+        b.organizationName,
+        b.logoUrl || null,
+        b.contactEmail,
+        b.defaultSlotDuration,
+        b.bookingHoldMinutes,
+        b.requireCampApproval ? 1 : 0,
+        JSON.stringify(b.supportedLanguages),
+        b.emailProviderMode,
+        b.smsProviderMode,
+        req.user.id,
+      ],
+    );
+    const after = publicOrgSettings(await loadOrgSettings());
+    await auditLog({
+      actorId: req.user.id,
+      actorName: req.user.name,
+      action: 'UPDATE_ORG_SETTINGS',
+      targetType: 'org_settings',
+      targetId: 1,
+      before: { bookingHoldMinutes: before.bookingHoldMinutes, requireCampApproval: before.requireCampApproval },
+      after: { bookingHoldMinutes: after.bookingHoldMinutes, requireCampApproval: after.requireCampApproval },
+    });
+    emitBounded(io, 'org:settings-changed', { bookingHoldMinutes: after.bookingHoldMinutes });
+    res.json(after);
+  }),
+);
+
+/* ---------------------------------------------------------------------------
  * SOCKET.IO
  * ------------------------------------------------------------------------- */
 
@@ -4821,6 +6875,7 @@ function validSocketCampId(campId) {
 
 io.on('connection', (socket) => {
   const user = socket.data.user || anonymousSocketUser();
+  if (user.id) socket.join(`user:${user.id}`);
   emitBounded(socket, 'engine:hello', {
     service: 'CHSC Realtime Engine',
     socketId: socket.id,
@@ -4868,6 +6923,26 @@ io.on('connection', (socket) => {
       emitBounded(socket, 'queue:updated', queue);
       if (typeof callback === 'function') callback({ ok: true, queue });
     } catch (error) {
+      if (typeof callback === 'function') callback({ ok: false, error: 'QUEUE_UNAVAILABLE' });
+    }
+  });
+
+  socket.on('service:queue-ping', async (campId, callback) => {
+    const id = validSocketCampId(campId);
+    if (!id) {
+      if (typeof callback === 'function') callback({ ok: false, error: 'INVALID_CAMP' });
+      return;
+    }
+    try {
+      const allowed = await canJoinCampRoom(user, id);
+      if (!allowed) {
+        if (typeof callback === 'function') callback({ ok: false, error: 'CAMP_FORBIDDEN' });
+        return;
+      }
+      const queue = await getServiceQueueSnapshot(id);
+      emitBounded(socket, 'service:queue:updated', queue);
+      if (typeof callback === 'function') callback({ ok: true, queue });
+    } catch (_) {
       if (typeof callback === 'function') callback({ ok: false, error: 'QUEUE_UNAVAILABLE' });
     }
   });
@@ -5004,4 +7079,5 @@ module.exports = {
   pushTargetUrl,
   providerMeta,
   insertNotification,
+  insertInAppNotification,
 };

@@ -47,10 +47,8 @@ export default function ControlRoom() {
     const onCheckIn = (payload) => {
       if (payload?.queue?.campId !== Number(campId)) return;
       pushGateway({
-        channel: 'SYSTEM', type: 'CHECK_IN', recipient: 'control room',
+        channel: 'SYSTEM', type: 'CHECK_IN', localActivity: true,
         message: payload.queue.current?.patientName || 'Patient checked in',
-        status: 'SENT',
-        provider: 'Socket.io',
       });
       toast(`Patient checked in: ${payload.queue.current?.patientName || 'unknown'}`, 'ok');
       refresh();

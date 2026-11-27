@@ -167,7 +167,7 @@ describe('ticket QR, Google Maps navigation and notifications', () => {
 
   it('lets an organizer set camp coordinates and exposes a precise Maps destination', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
-    const fixture = await createCampFixture({ capacity: 2 });
+    const fixture = await createCampFixture({ organizerId: organizer.id, capacity: 2 });
 
     const updated = await request(app)
       .patch(`/api/camps/${fixture.campId}`)

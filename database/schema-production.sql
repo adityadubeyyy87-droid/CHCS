@@ -21,13 +21,14 @@ SET NAMES utf8mb4;
 CREATE TABLE IF NOT EXISTS users (
   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name            VARCHAR(120) NOT NULL,
-  email           VARCHAR(190) NOT NULL,
+  email           VARCHAR(190) NULL,
   phone           VARCHAR(20) NOT NULL,
   password_hash   VARCHAR(255) NOT NULL,
   role            ENUM('PATIENT','ORGANIZER','DOCTOR','VOLUNTEER','ADMIN') NOT NULL DEFAULT 'PATIENT',
   age_group       ENUM('18-29','30-45','46-60','60+') NULL,
   preferred_language ENUM('en','kn') NOT NULL DEFAULT 'en',
   is_active       TINYINT(1) NOT NULL DEFAULT 1,
+  last_login_at   TIMESTAMP NULL,
   created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -59,13 +60,26 @@ CREATE TABLE IF NOT EXISTS camps (
   total_capacity      INT UNSIGNED NOT NULL,
   physical_capacity   INT UNSIGNED NOT NULL,
   status              ENUM('DRAFT','PUBLISHED','COMPLETED','CANCELLED') NOT NULL DEFAULT 'DRAFT',
+  camp_type           ENUM('GENERAL','EYE','DENTAL','BLOOD_DONATION','MATERNAL') NOT NULL DEFAULT 'GENERAL',
+  service_checklist   JSON NULL,
+  avg_service_time_mins SMALLINT UNSIGNED NOT NULL DEFAULT 12,
+  approval_status     ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'APPROVED',
+  rejection_reason    TEXT NULL,
+  approved_by         BIGINT UNSIGNED NULL,
+  approved_at         DATETIME NULL,
+  avg_feedback_rating DECIMAL(3,2) NULL,
   created_by          BIGINT UNSIGNED NULL,
   created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_camps_date_status (camp_date, status),
+  KEY idx_camps_type_date_status (camp_type, camp_date, status),
+  KEY idx_camps_approval_date (approval_status, camp_date, id),
+  KEY idx_camps_approver (approved_by),
   KEY idx_camps_venue (venue),
   CONSTRAINT fk_camps_creator FOREIGN KEY (created_by) REFERENCES users (id)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT fk_camps_approver FOREIGN KEY (approved_by) REFERENCES users (id)
     ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT chk_camps_time CHECK (end_time > start_time),
   CONSTRAINT chk_camps_duration CHECK (slot_duration_mins >= 5),
@@ -98,6 +112,24 @@ CREATE TABLE IF NOT EXISTS slots (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
+-- 3b. FAMILY MEMBERS
+-- Dependents belong to a patient account. Their bookings stay under that
+-- account but carry family_member_id so each dependent gets a distinct QR pass.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS family_members (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  patient_id  BIGINT UNSIGNED NOT NULL,
+  name        VARCHAR(100) NOT NULL,
+  age         SMALLINT UNSIGNED NULL,
+  relationship VARCHAR(50) NULL,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_family_patient (patient_id, id),
+  CONSTRAINT fk_family_patient FOREIGN KEY (patient_id) REFERENCES users (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
 -- 4. BOOKINGS
 -- uq_slot_patient is the database-level idempotency guard against double booking.
 -- ----------------------------------------------------------------------------
@@ -117,6 +149,8 @@ CREATE TABLE IF NOT EXISTS bookings (
                   ) VIRTUAL,
   travel_mode     ENUM('WALK','AUTO_BUS','TWO_WHEELER','WITH_FAMILY') NULL,
   pledge_on_time  TINYINT(1) NOT NULL DEFAULT 0,
+  family_member_id BIGINT UNSIGNED NULL,
+  source          ENUM('ONLINE','WALKIN') NOT NULL DEFAULT 'ONLINE',
   booked_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   hold_expires_at DATETIME NULL,
   checked_in_at   TIMESTAMP NULL,
@@ -130,12 +164,15 @@ CREATE TABLE IF NOT EXISTS bookings (
   KEY idx_bookings_patient (patient_id, status),
   KEY idx_bookings_hold_expiry (status, hold_expires_at),
   KEY idx_bookings_checked_in (camp_id, checked_in_at),
+  KEY idx_bookings_family_member (family_member_id),
   CONSTRAINT fk_bookings_slot FOREIGN KEY (slot_id) REFERENCES slots (id)
     ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT fk_bookings_camp FOREIGN KEY (camp_id) REFERENCES camps (id)
     ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT fk_bookings_patient FOREIGN KEY (patient_id) REFERENCES users (id)
-    ON DELETE CASCADE ON UPDATE CASCADE
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_bookings_family FOREIGN KEY (family_member_id) REFERENCES family_members (id)
+    ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
@@ -201,7 +238,7 @@ CREATE TABLE IF NOT EXISTS notifications_log (
   booking_id  BIGINT UNSIGNED NULL,
   user_id     BIGINT UNSIGNED NULL,
   channel     ENUM('SMS','EMAIL','PUSH') NOT NULL,
-  type        ENUM('BOOKING_CONFIRMED','WAITLIST_JOINED','WAITLIST_PROMOTED','REMINDER_24H','REMINDER_2H','CANCELLATION','RESCHEDULED','CHECK_IN') NOT NULL,
+  type        ENUM('BOOKING_CONFIRMED','WAITLIST_JOINED','WAITLIST_PROMOTED','REMINDER_24H','REMINDER_2H','CANCELLATION','RESCHEDULED','CHECK_IN','ANNOUNCEMENT','PASSWORD_RESET') NOT NULL,
   recipient   VARCHAR(190) NOT NULL,
   subject     VARCHAR(190) NULL,
   message     TEXT NOT NULL,
@@ -292,9 +329,147 @@ CREATE TABLE IF NOT EXISTS reminders (
   PRIMARY KEY (id),
   UNIQUE KEY uq_reminder_booking_type (booking_id, type),
   KEY idx_reminders_due (status, send_at),
+  KEY idx_reminders_stale (status, updated_at),
   CONSTRAINT fk_reminders_booking FOREIGN KEY (booking_id) REFERENCES bookings (id)
     ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT chk_reminders_attempts CHECK (attempts <= 50)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 10. PRE-SCREENING ANSWERS
+-- Non-diagnostic logistics intake captured before a booking is confirmed.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS prescreening (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  booking_id  BIGINT UNSIGNED NOT NULL,
+  age_group   VARCHAR(20) NULL,
+  conditions  JSON NULL,
+  mobility_needs TINYINT(1) NOT NULL DEFAULT 0,
+  preferred_language VARCHAR(20) NULL,
+  emergency_contact_name VARCHAR(100) NOT NULL DEFAULT '',
+  emergency_contact_phone VARCHAR(20) NOT NULL DEFAULT '',
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_prescreen_booking (booking_id),
+  CONSTRAINT fk_prescreen_booking FOREIGN KEY (booking_id) REFERENCES bookings (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 11. POST-CAMP FEEDBACK
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS feedback (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  booking_id  BIGINT UNSIGNED NOT NULL,
+  rating      TINYINT NOT NULL,
+  comment     TEXT NULL,
+  submitted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_feedback_booking (booking_id),
+  KEY idx_feedback_rating (rating),
+  KEY idx_feedback_submitted (submitted_at),
+  CONSTRAINT fk_feedback_booking FOREIGN KEY (booking_id) REFERENCES bookings (id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT chk_feedback_rating CHECK (rating BETWEEN 1 AND 5)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 12. CAMP CHECKLIST
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS camp_checklist (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  camp_id     BIGINT UNSIGNED NOT NULL,
+  item        TEXT NOT NULL,
+  is_done     TINYINT(1) NOT NULL DEFAULT 0,
+  done_by     BIGINT UNSIGNED NULL,
+  done_at     DATETIME NULL,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_checklist_camp (camp_id, id),
+  CONSTRAINT fk_checklist_camp FOREIGN KEY (camp_id) REFERENCES camps (id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_checklist_user FOREIGN KEY (done_by) REFERENCES users (id)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 13. SERVICE RECORDS
+-- One row per delivered service. The outcome is the clinical-free result text.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS service_records (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  booking_id  BIGINT UNSIGNED NOT NULL,
+  service_name VARCHAR(100) NOT NULL,
+  outcome     TEXT NULL,
+  recorded_by BIGINT UNSIGNED NOT NULL,
+  recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_service_booking (booking_id, id),
+  KEY idx_service_recorded_by (recorded_by, recorded_at),
+  CONSTRAINT fk_service_booking FOREIGN KEY (booking_id) REFERENCES bookings (id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_service_user FOREIGN KEY (recorded_by) REFERENCES users (id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 14. VISIT NOTES
+-- Free-text desk notes, kept separate from structured service outcomes.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS visit_notes (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  booking_id  BIGINT UNSIGNED NOT NULL,
+  note        TEXT NOT NULL,
+  recorded_by BIGINT UNSIGNED NOT NULL,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_notes_booking (booking_id, id),
+  KEY idx_notes_recorded_by (recorded_by, created_at),
+  CONSTRAINT fk_note_booking FOREIGN KEY (booking_id) REFERENCES bookings (id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_note_user FOREIGN KEY (recorded_by) REFERENCES users (id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 15. IN-APP NOTIFICATIONS
+-- The bell's real, per-user inbox. Socket.io only signals that a row exists.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS in_app_notifications (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  type        VARCHAR(50) NOT NULL,
+  message     TEXT NOT NULL,
+  is_read     TINYINT(1) NOT NULL DEFAULT 0,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_inapp_user_unread (user_id, is_read, id),
+  CONSTRAINT fk_inapp_user FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 16. ORG SETTINGS
+-- Single-row configuration. Secrets are never stored here; only provider mode
+-- toggles and non-secret labels. Actual keys remain environment variables.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS org_settings (
+  id                       TINYINT UNSIGNED NOT NULL,
+  organization_name        VARCHAR(120) NOT NULL DEFAULT 'CHSC Community Health Initiative',
+  logo_url                 VARCHAR(500) NULL,
+  contact_email            VARCHAR(190) NOT NULL DEFAULT 'contact@chsc.local',
+  default_slot_duration    SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  booking_hold_minutes     SMALLINT UNSIGNED NOT NULL DEFAULT 10,
+  require_camp_approval    TINYINT(1) NOT NULL DEFAULT 0,
+  supported_languages      JSON NOT NULL,
+  email_provider_mode      ENUM('SANDBOX','LIVE') NOT NULL DEFAULT 'SANDBOX',
+  sms_provider_mode        ENUM('SANDBOX','LIVE') NOT NULL DEFAULT 'SANDBOX',
+  updated_by               BIGINT UNSIGNED NULL,
+  updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  CONSTRAINT chk_org_settings_single CHECK (id = 1),
+  CONSTRAINT fk_org_settings_user FOREIGN KEY (updated_by) REFERENCES users (id)
+    ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================

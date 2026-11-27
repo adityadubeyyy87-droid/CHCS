@@ -45,6 +45,8 @@ const PATHS = {
   eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Zm9.5 2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
   layers: 'M12 3 2 8l10 5 10-5-10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5',
   database: 'M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Zm0 0v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3',
+  note: 'M5 3h10l4 4v14H5V3Zm10 0v5h4M8 12h8M8 16h6',
+  star: 'm12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9L12 3Z',
 };
 
 export function Icon({ name, size = 18, className, strokeWidth = 1.6 }) {
@@ -77,6 +79,8 @@ const TONE_MAP = {
   WAITLISTED: 'warn', WAITING: 'warn', ALMOST: 'warn', REVIEW: 'warn', QUEUED: 'warn', HELD: 'warn',
   CANCELLED: 'bad', NO_SHOW: 'bad', EXPIRED: 'bad', FAILED: 'bad', CRITICAL: 'bad', DRAFT: 'muted',
   CHECKED_IN: 'info', CHECKIN: 'info', SIMULATED: 'sim', DRAFTX: 'muted',
+  PENDING: 'warn', REJECTED: 'bad', ACTIVE: 'ok', INACTIVE: 'muted',
+  SANDBOX: 'sim', WAITLIST: 'warn', DONE: 'ok',
 };
 export function Badge({ status, children, tone: toneProp, className }) {
   const tone = toneProp || TONE_MAP[String(status).toUpperCase()] || 'muted';

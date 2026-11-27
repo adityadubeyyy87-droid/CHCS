@@ -11,8 +11,7 @@ import {
   Modal, Sci, Select, Skeleton,
 } from '../components/ui.jsx';
 import { Magnetic, InView, Spotlight } from '../components/motion';
-
-const ROLES = ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'];
+import { ApprovalsCard, OrgSettingsCard, UserAdminCard } from '../components/AdminWorkflows.jsx';
 
 export default function Settings() {
   const app = useApp();
@@ -120,10 +119,20 @@ export default function Settings() {
         <InView once delay={0.15}>
           <DeviceAlerts />
         </InView>
-        {isAdmin ? (
+        {['ADMIN', 'ORGANIZER'].includes(user?.role) && (
           <InView once>
-            <AdminUsers />
+            <ApprovalsCard />
           </InView>
+        )}
+        {isAdmin ? (
+          <>
+            <InView once>
+              <OrgSettingsCard />
+            </InView>
+            <InView once>
+              <UserAdminCard />
+            </InView>
+          </>
         ) : (
           <Card className="tips-card">
             <CardHead icon="shield" title="Why so little data?" sub="Privacy by Design, not privacy by promise" />
@@ -221,7 +230,7 @@ function DeviceAlerts() {
         icon="bell"
         title="Free browser alerts"
         sub="Web Push to your registered devices — no SMS wallet, no phone number sent to a paid gateway"
-        actions={<Badge tone={enabled ? 'ok' : 'sim'}>{enabled ? 'READY' : 'SANDBOX'}</Badge>}
+        actions={<Badge tone={enabled ? 'ok' : 'muted'}>{enabled ? 'READY' : 'NOT CONFIGURED'}</Badge>}
       />
       <p className="muted small">
         Each device grants its own permission. The browser vendor delivers the encrypted alert for free;
@@ -304,86 +313,6 @@ function DeviceAlerts() {
           {testResult.error || `${testResult.provider} · ${testResult.accepted} device(s) · ${testResult.reference || 'accepted'}`}
         </p>
       )}
-    </Card>
-  );
-}
-
-function AdminUsers() {
-  const { toast, pushGateway, user } = useApp();
-  const users = useFetch(() => api.users(), []);
-  const [busyId, setBusyId] = useState(null);
-
-  async function changeRole(id, role) {
-    setBusyId(id);
-    try {
-      await api.setRole(id, role);
-      toast(`Role updated to ${role}.`, 'ok', 'MySQL');
-      pushGateway({
-        channel: 'SYSTEM', type: 'ADMIN', recipient: 'user table',
-        message: `Account ${users.data?.users?.find((u) => u.id === id)?.name || `ID ${id}`} role set to ${role}.`,
-        status: 'SENT',
-        provider: 'Admin console',
-      });
-      await users.reload();
-    } catch (err) { toast(err.message, 'bad'); await users.reload(); }
-    finally { setBusyId(null); }
-  }
-
-  async function toggleStatus(u) {
-    setBusyId(u.id);
-    try {
-      await api.setUserStatus(u.id, !u.isActive);
-      toast(`${u.name} ${u.isActive ? 'deactivated' : 'reactivated'}.`, u.isActive ? 'warn' : 'ok');
-      await users.reload();
-    } catch (err) { toast(err.message, 'bad'); }
-    finally { setBusyId(null); }
-  }
-
-  return (
-    <Card>
-      <CardHead icon="users" title="User & role management" sub={`${users.data?.users?.length || 0} accounts · ADMIN only`}
-        actions={<Badge tone="ok">Live MySQL table</Badge>} />
-      {users.loading && <Skeleton h={180} />}
-      {users.error && <ErrorNote onRetry={users.reload}>{users.error}</ErrorNote>}
-      {users.data && users.data.users.length === 0 && <EmptyState icon="users" title="No users found" />}
-      {users.data && (
-        <div className="user-table" role="table" aria-label="All accounts">
-          <div className="user-table-head" role="row">
-            <span role="columnheader">Person</span><span role="columnheader">Contact</span>
-            <span role="columnheader">Role</span><span role="columnheader">Status</span>
-          </div>
-          {users.data.users.map((u) => (
-            <InView key={u.id} once>
-              <div className={`user-row ${!u.isActive ? 'row-inactive' : ''}`} role="row">
-                <div role="cell" className="user-cell-person">
-                  <span className="avatar sm">{u.name?.[0]}</span>
-                  <div><strong>{u.name}{u.id === user?.id && <span className="muted"> (you)</span>}</strong><small className="muted">ID {u.id}</small></div>
-                </div>
-                <div role="cell" className="user-cell-contact">
-                  <small>{u.email}</small>
-                  <small className="muted">{u.phone}</small>
-                </div>
-                <div role="cell">
-                  <Select className="select-sm" value={u.role} disabled={busyId === u.id || u.id === user?.id}
-                    onChange={(e) => changeRole(u.id, e.target.value)} aria-label={`Role for ${u.name}`}>
-                    {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </Select>
-                </div>
-                <div role="cell" className="user-cell-status">
-                  <Badge tone={u.isActive ? 'ok' : 'muted'}>{u.isActive ? 'ACTIVE' : 'INACTIVE'}</Badge>
-                  <button className="icon-btn" disabled={busyId === u.id || u.id === user?.id} title={u.id === user?.id ? 'You cannot deactivate yourself' : undefined}
-                    onClick={() => toggleStatus(u)} aria-label={`${u.isActive ? 'Deactivate' : 'Reactivate'} ${u.name}`}>
-                    <Icon name={u.isActive ? 'x' : 'check'} size={14} />
-                  </button>
-                </div>
-              </div>
-            </InView>
-          ))}
-        </div>
-      )}
-      <p className="muted small">
-        Role/status changes take effect on the affected user's next request. You cannot demote or deactivate your own admin account — the backend rejects it explicitly.
-      </p>
     </Card>
   );
 }

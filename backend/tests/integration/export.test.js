@@ -5,7 +5,7 @@ const { app, request, pool, insertUser, createCampFixture, book } = require('../
 describe('CSV export', () => {
   it('exports camp attendance report as CSV', async () => {
     const organizer = await insertUser({ role: 'ORGANIZER' });
-    const fixture = await createCampFixture({ capacity: 2 });
+    const fixture = await createCampFixture({ organizerId: organizer.id, capacity: 2 });
 
     // Book and check in one patient; leave another confirmed (will be no-show on close-out)
     const attended = await insertUser({ role: 'PATIENT' });

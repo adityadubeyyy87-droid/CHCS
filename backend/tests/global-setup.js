@@ -42,6 +42,23 @@ module.exports = async function globalSetup() {
       .replaceAll('community_health_scheduler', dbName);
 
     await root.query(sql);
+
+    // Apply every shipped migration too. The local schema and the production
+    // migration chain must never drift apart silently. All migrations are
+    // idempotent and safe to replay against a freshly built test database.
+    const migrationsDir = path.join(__dirname, '..', '..', 'database', 'migrations');
+    const migrations = fs
+      .readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort();
+    for (const name of migrations) {
+      // Older migrations carry the local schema name. Point them at the
+      // throwaway database exactly as we do for schema.sql.
+      const migrationSql = fs
+        .readFileSync(path.join(migrationsDir, name), 'utf8')
+        .replaceAll('community_health_scheduler', dbName);
+      await root.query(migrationSql);
+    }
   } finally {
     await root.end();
   }

@@ -18,6 +18,11 @@ const isoDate = z
   .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00`)), 'Not a real calendar date.');
 const positiveInt = z.coerce.number().int().positive();
 const capacity = z.coerce.number().int().min(1).max(100000);
+const optionalIsoDate = z.union([z.literal(''), isoDate]).optional().default('');
+const campTypeOrAll = z
+  .enum(['ALL', 'GENERAL', 'EYE', 'DENTAL', 'BLOOD_DONATION', 'MATERNAL'])
+  .optional()
+  .default('ALL');
 
 const email = z.string().trim().toLowerCase().email('Enter a valid email address.').max(190);
 const phone = z.string().trim().regex(/^[0-9]{10}$/, 'Phone must be a 10-digit Indian mobile number.');
@@ -79,6 +84,14 @@ const campCreateSchema = z
     longitude: longitude,
     campDate: isoDate,
     status: z.enum(['DRAFT', 'PUBLISHED']).default('PUBLISHED'),
+    campType: z
+      .enum(['GENERAL', 'EYE', 'DENTAL', 'BLOOD_DONATION', 'MATERNAL'])
+      .optional()
+      .default('GENERAL'),
+    serviceChecklist: z.array(z.string().trim().min(2).max(100)).max(20).optional().default([]),
+    avgServiceTimeMins: z.coerce.number().int().min(1).max(240).optional().default(12),
+    checklist: z.array(z.string().trim().min(2).max(500)).max(40).optional().default([]),
+    cloneFromId: positiveInt.optional(),
     ...campWindow,
   })
   .refine((value) => value.endTime > value.startTime, {
@@ -126,9 +139,150 @@ const staffAssignSchema = z.object({
   duties: z.string().max(255).optional().default(''),
 });
 
+const prescreeningSchema = z.object({
+  ageGroup: z.enum(['18-29', '30-45', '46-60', '60+']),
+  conditions: z
+    .array(z.enum(['diabetes', 'hypertension', 'heart disease', 'none']))
+    .min(1, 'Select at least one option. Choose “none” if applicable.')
+    .max(4)
+    .refine(
+      (values) => !(values.includes('none') && values.length > 1),
+      '“none” cannot be combined with other conditions.',
+    ),
+  mobilityNeeds: z.boolean(),
+  preferredLanguage: z.enum(['English', 'Kannada', 'Hindi']),
+  emergencyContactName: z.string().trim().min(2).max(100),
+  emergencyContactPhone: phone,
+});
+
 const bookingSchema = z.object({
   travelMode: z.enum(['WALK', 'AUTO_BUS', 'TWO_WHEELER', 'WITH_FAMILY']).nullish(),
   pledge: z.boolean().optional().default(false),
+  familyMemberId: positiveInt.nullish(),
+  prescreening: prescreeningSchema.optional(),
+});
+
+const familyMemberSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  age: z.coerce.number().int().min(0).max(120),
+  relationship: z.enum(['Parent', 'Spouse', 'Child', 'Sibling', 'Grandparent', 'Other']),
+});
+
+const feedbackSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5),
+  comment: z.string().trim().max(2000).optional().default(''),
+});
+
+const walkinSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  phone,
+  email: z.string().trim().toLowerCase().email('Enter a valid email address.').max(190).optional(),
+  age: z.coerce.number().int().min(0).max(120).optional().nullable(),
+  slotId: positiveInt,
+  source: z.enum(['walkin', 'WALKIN']).optional().default('walkin'),
+  joinWaitlist: z.boolean().optional().default(false),
+});
+
+const promoteSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
+});
+
+const broadcastSchema = z.object({
+  subject: z.string().trim().min(3).max(190),
+  message: z.string().trim().min(3).max(4000),
+  audience: z.enum(['ALL', 'PATIENTS', 'STAFF']).optional().default('ALL'),
+});
+
+const campCloneSchema = z.object({
+  title: z.string().trim().min(3).max(180).optional(),
+  campDate: isoDate,
+  startTime: time,
+  endTime: time,
+  venue: z.string().trim().min(2).max(180).optional(),
+  address: z.string().trim().min(4).max(255).optional(),
+  status: z.enum(['DRAFT', 'PUBLISHED']).optional().default('DRAFT'),
+});
+
+const checkinLookupSchema = z
+  .object({
+    phone: phone.optional(),
+    campId: positiveInt.optional(),
+    token: z.string().trim().max(120).optional(),
+  })
+  .refine((value) => Boolean(value.phone || value.token), {
+    message: 'Enter a phone number or QR token to look up a patient.',
+    path: ['phone'],
+  });
+
+const checklistItemSchema = z.object({
+  item: z.string().trim().min(2).max(500),
+});
+
+const checklistUpdateSchema = z.object({
+  isDone: z.boolean(),
+});
+
+const serviceRecordSchema = z.object({
+  serviceName: z.string().trim().min(2).max(100),
+  outcome: z.string().trim().max(2000).optional().default(''),
+  complete: z.boolean().optional().default(false),
+});
+
+const noteSchema = z.object({
+  note: z.string().trim().min(1).max(2000),
+});
+
+const adminUserCreateSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  email,
+  phone,
+  role: z.enum(['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN']).default('PATIENT'),
+});
+
+const adminRoleSchema = z.object({
+  role: z.enum(['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN']),
+});
+
+const adminStatusSchema = z.object({
+  isActive: z.boolean(),
+});
+
+const campApprovalSchema = z.object({
+  reason: z.string().trim().min(3).max(1000).optional().default(''),
+});
+
+const resubmitApprovalSchema = z.object({
+  note: z.string().trim().max(1000).optional().default(''),
+});
+
+const orgSettingsSchema = z.object({
+  organizationName: z.string().trim().min(2).max(120),
+  logoUrl: z.string().trim().max(500).optional().default(''),
+  contactEmail: email,
+  defaultSlotDuration: z.coerce.number().int().min(5).max(720),
+  bookingHoldMinutes: z.coerce.number().int().min(1).max(120),
+  requireCampApproval: z.boolean(),
+  supportedLanguages: z.array(z.enum(['en', 'kn', 'hi'])).min(1).max(3),
+  emailProviderMode: z.enum(['SANDBOX', 'LIVE']),
+  smsProviderMode: z.enum(['SANDBOX', 'LIVE']),
+});
+
+const campFilterSchema = z.object({
+  q: z.string().trim().max(120).optional().default(''),
+  type: campTypeOrAll,
+  from: optionalIsoDate,
+  to: optionalIsoDate,
+  openOnly: z.enum(['true', 'false', '1', '0']).optional().default('false'),
+  sort: z.enum(['date', 'spots']).optional().default('date'),
+  scope: z.enum(['public', 'manage']).optional().default('public'),
+  page: z.coerce.number().int().min(1).max(1000000).optional().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).optional().default(24),
+});
+
+const adminUserQuerySchema = z.object({
+  q: z.string().trim().max(120).optional().default(''),
+  page: z.coerce.number().int().min(1).max(1000000).optional().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).optional().default(20),
 });
 
 const rescheduleSchema = z.object({
@@ -196,6 +350,26 @@ module.exports = {
     rescheduleSchema,
     attendanceSchema,
     advisorQuerySchema,
+    prescreeningSchema,
+    familyMemberSchema,
+    feedbackSchema,
+    walkinSchema,
+    promoteSchema,
+    broadcastSchema,
+    campCloneSchema,
+    checkinLookupSchema,
+    checklistItemSchema,
+    checklistUpdateSchema,
+    serviceRecordSchema,
+    noteSchema,
+    adminUserCreateSchema,
+    adminRoleSchema,
+    adminStatusSchema,
+    campApprovalSchema,
+    resubmitApprovalSchema,
+    orgSettingsSchema,
+    campFilterSchema,
+    adminUserQuerySchema,
   },
   paginationSchema,
   validateBody,

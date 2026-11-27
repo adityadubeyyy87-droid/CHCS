@@ -89,7 +89,7 @@ describe('camps — organizer CRUD', () => {
       .expect(200);
 
     // Camps with history are not.
-    const fixture = await createCampFixture();
+    const fixture = await createCampFixture({ organizerId: organizer.id });
     // Add a booking so the camp has history.
     const bookingPatient = await insertUser({ role: 'PATIENT' });
     await request(app)

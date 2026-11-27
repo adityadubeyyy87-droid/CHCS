@@ -4,6 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Field, Icon, Input, Modal, Sci, Select, Skeleton } from '../components/ui.jsx';
+import { AnnouncementCard, ChecklistCard, OrganizerFeedbackCard, TemplatesCard, WaitlistCard } from '../components/OrganizerWorkflows.jsx';
+import { WalkinCard } from '../components/StaffWorkflows.jsx';
 import { fmtDate, fmtTime12 } from '../lib/format.js';
 import { Tilt, InView, Magnetic, Spotlight } from '../components/motion';
 
@@ -80,6 +82,17 @@ export default function Manage() {
     } catch (err) { toast(err.message, 'bad'); }
   }
 
+  async function submitForApproval(camp) {
+    setBusy(true);
+    try {
+      const res = await api.submitCampForApproval(camp.id, 'Resubmitted after organizer review.');
+      toast(`${res.camp?.title || camp.title} submitted for admin approval.`, 'ok', 'Approval queue refreshed from MySQL.');
+      const fresh = await camps.reload();
+      if (fresh?.camps) setSelected(fresh.camps.find((c) => c.id === camp.id) || fresh.camps[0]);
+    } catch (err) { toast(err.message, 'bad'); }
+    finally { setBusy(false); }
+  }
+
   function openEdit() {
     if (!camp) return;
     setEditForm({
@@ -140,9 +153,8 @@ export default function Manage() {
       if (res.warning) toast(res.warning.message, 'warn', 'Load Balancer');
       else toast(`${res.staff.name} assigned to ${selected.title}.`, 'ok', 'MySQL');
       pushGateway({
-        channel: 'SYSTEM', type: 'STAFF', recipient: 'organizer desk',
+        channel: 'SYSTEM', type: 'STAFF_ASSIGNED', localActivity: true,
         message: `${res.staff.name} → ${selected.title} (${res.staff.roleAtCamp})`,
-        status: 'SENT', provider: 'Load Balancer',
       });
       setStaffForm({ ...staffForm, userId: '' });
       await camps.reload();
@@ -174,7 +186,11 @@ export default function Manage() {
                       <strong>{c.title}</strong>
                       <small className="muted">{c.venue} · {c.bookedTotal}/{c.slotCapacity} booked · {c.staffTotal} staff</small>
                     </div>
-                    <Badge status={c.status} />
+                    <div className="camp-row-badges">
+                      {c.approvalStatus && c.approvalStatus !== 'APPROVED' && <Badge status={c.approvalStatus}>{c.approvalStatus}</Badge>}
+                      {c.avgFeedbackRating > 0 && <Badge tone="info">★ {Number(c.avgFeedbackRating).toFixed(1)}</Badge>}
+                      <Badge status={c.status} />
+                    </div>
                   </button>
                 </Tilt>
               ))}
@@ -213,6 +229,11 @@ export default function Manage() {
                   </Button>
                 )}
                 {camp.status === 'DRAFT' && <Button size="sm" onClick={() => setStatus('PUBLISHED')}>Publish</Button>}
+                {camp.status === 'DRAFT' && ['REJECTED', 'PENDING'].includes(camp.approvalStatus) && (
+                  <Button size="sm" variant="ghost" icon="clock" loading={busy} onClick={() => submitForApproval(camp)}>
+                    Submit for approval
+                  </Button>
+                )}
               </div>
               {closeOutResult && (
                 <div className="close-out-result" role="status">
@@ -267,21 +288,36 @@ export default function Manage() {
               </div>
               {users.error && <ErrorNote onRetry={users.reload}>{users.error}</ErrorNote>}
               <form className="assign-form" onSubmit={addStaff}>
-                <Select value={staffForm.userId} onChange={(e) => setStaffForm((f) => ({ ...f, userId: e.target.value }))} aria-label="Person">
-                  <option value="">Assign a person…</option>
-                  {doctors.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
-                </Select>
-                <Select value={staffForm.roleAtCamp} onChange={(e) => setStaffForm((f) => ({ ...f, roleAtCamp: e.target.value }))} aria-label="Role">
-                  <option>DOCTOR</option><option>VOLUNTEER</option><option>NURSE</option><option>COORDINATOR</option>
-                </Select>
-                <Input type="time" value={staffForm.shiftStart} onChange={(e) => setStaffForm((f) => ({ ...f, shiftStart: e.target.value }))} aria-label="Shift start" />
-                <Input type="time" value={staffForm.shiftEnd} onChange={(e) => setStaffForm((f) => ({ ...f, shiftEnd: e.target.value }))} aria-label="Shift end" />
-                <Input type="number" min="0" max="80" value={staffForm.expectedLoadPerHour} onChange={(e) => setStaffForm((f) => ({ ...f, expectedLoadPerHour: e.target.value }))} aria-label="Expected patients per hour" title="Expected patients per hour" />
+                <Field label="Person" className="assign-field">
+                  <Select value={staffForm.userId} onChange={(e) => setStaffForm((f) => ({ ...f, userId: e.target.value }))}>
+                    <option value="">Assign a person…</option>
+                    {doctors.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+                  </Select>
+                </Field>
+                <Field label="Role" className="assign-field">
+                  <Select value={staffForm.roleAtCamp} onChange={(e) => setStaffForm((f) => ({ ...f, roleAtCamp: e.target.value }))}>
+                    <option>DOCTOR</option><option>VOLUNTEER</option><option>NURSE</option><option>COORDINATOR</option>
+                  </Select>
+                </Field>
+                <Field label="Shift start" className="assign-field">
+                  <Input type="time" value={staffForm.shiftStart} onChange={(e) => setStaffForm((f) => ({ ...f, shiftStart: e.target.value }))} />
+                </Field>
+                <Field label="Shift end" className="assign-field">
+                  <Input type="time" value={staffForm.shiftEnd} onChange={(e) => setStaffForm((f) => ({ ...f, shiftEnd: e.target.value }))} />
+                </Field>
+                <Field label="Patients/hr" className="assign-field">
+                  <Input type="number" min="0" max="80" value={staffForm.expectedLoadPerHour} onChange={(e) => setStaffForm((f) => ({ ...f, expectedLoadPerHour: e.target.value }))} />
+                </Field>
                 <Magnetic intensity={0.4}>
                   <Button type="submit" size="sm" icon="plus" loading={busy}>Assign</Button>
                 </Magnetic>
               </form>
             </Card>
+
+            <ChecklistCard campId={camp.id} campTitle={camp.title} />
+            <WaitlistCard campId={camp.id} campTitle={camp.title} onPromoted={camps.reload} />
+            <WalkinCard campId={camp.id} onRegistered={camps.reload} />
+            <OrganizerFeedbackCard campId={camp.id} />
           </>
         )}
       </div>
@@ -310,6 +346,9 @@ export default function Manage() {
           <p className="muted">Warning at <strong>&gt;= 25 patients/shift</strong> · critical at <strong>&gt;= 30</strong> per doctor-shift.
             The banner appears the moment an assignment breaches its threshold — before camp day, not during the queue.</p>
         </Card>
+
+        <TemplatesCard onCreated={camps.reload} />
+        <AnnouncementCard />
       </div>
 
       <Modal open={creating} onClose={() => setCreating(false)} title="Create health camp" wide>

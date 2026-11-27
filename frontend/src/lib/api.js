@@ -143,8 +143,86 @@ export const api = {
     }),
 
   checkin: (qrToken) => call('/api/checkin', { method: 'POST', body: { qrToken } }),
+  checkinLookup: (payload) => call('/api/checkin/lookup', { method: 'POST', body: payload }),
+  walkin: (payload) => call('/api/walkins', { method: 'POST', body: payload }),
   queue: (campId) => call(`/api/queue/${encodeURIComponent(campId)}`),
+  serviceQueue: (campId) => call(`/api/camps/${encodeURIComponent(campId)}/service-queue`),
+  recordService: (bookingId, payload) =>
+    call(`/api/bookings/${encodeURIComponent(bookingId)}/service-records`, {
+      method: 'POST',
+      body: payload,
+    }),
+  addNote: (bookingId, note) =>
+    call(`/api/bookings/${encodeURIComponent(bookingId)}/notes`, {
+      method: 'POST',
+      body: { note },
+    }),
   staffMe: () => call('/api/staff/me'),
+
+  familyMembers: () => call('/api/family'),
+  addFamilyMember: (payload) => call('/api/family', { method: 'POST', body: payload }),
+  deleteFamilyMember: (id) => call(`/api/family/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  prescreening: (bookingId) => call(`/api/bookings/${encodeURIComponent(bookingId)}/prescreening`),
+  savePrescreening: (bookingId, payload) =>
+    call(`/api/bookings/${encodeURIComponent(bookingId)}/prescreening`, {
+      method: 'POST',
+      body: payload,
+    }),
+  submitFeedback: (bookingId, payload) =>
+    call(`/api/bookings/${encodeURIComponent(bookingId)}/feedback`, {
+      method: 'POST',
+      body: payload,
+    }),
+  organizerFeedback: (campId) => call('/api/feedback/organizer', { qs: { campId } }),
+
+  campTemplates: () => call('/api/camp-templates'),
+  cloneCamp: (campId, payload) =>
+    call(`/api/camps/${encodeURIComponent(campId)}/clone`, { method: 'POST', body: payload }),
+  checklist: (campId) => call(`/api/camps/${encodeURIComponent(campId)}/checklist`),
+  addChecklistItem: (campId, item) =>
+    call(`/api/camps/${encodeURIComponent(campId)}/checklist`, {
+      method: 'POST',
+      body: { item },
+    }),
+  updateChecklistItem: (id, isDone) =>
+    call(`/api/checklist/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: { isDone },
+    }),
+  deleteChecklistItem: (id) =>
+    call(`/api/checklist/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  waitlist: (campId) => call(`/api/camps/${encodeURIComponent(campId)}/waitlist`),
+  promoteWaiter: (campId, waitlistId, reason) =>
+    call(`/api/camps/${encodeURIComponent(campId)}/waitlist/${encodeURIComponent(waitlistId)}/promote`, {
+      method: 'POST',
+      body: { reason },
+    }),
+  announce: (payload) => call('/api/announcements', { method: 'POST', body: payload }),
+
+  approvals: () => call('/api/admin/camps/approvals'),
+  submitCampForApproval: (campId, note = '') =>
+    call(`/api/camps/${encodeURIComponent(campId)}/submit-approval`, {
+      method: 'POST',
+      body: { note },
+    }),
+  approveCamp: (campId) =>
+    call(`/api/admin/camps/${encodeURIComponent(campId)}/approve`, { method: 'POST' }),
+  rejectCamp: (campId, reason) =>
+    call(`/api/admin/camps/${encodeURIComponent(campId)}/reject`, {
+      method: 'POST',
+      body: { reason },
+    }),
+  createUser: (payload) => call('/api/admin/users', { method: 'POST', body: payload }),
+  resetUserPassword: (id) =>
+    call(`/api/admin/users/${encodeURIComponent(id)}/reset-password`, { method: 'POST' }),
+  deleteUser: (id) => call(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  orgSettings: () => call('/api/org/settings'),
+  updateOrgSettings: (payload) =>
+    call('/api/org/settings', { method: 'PUT', body: payload }),
+  inbox: (params) => call('/api/notifications/inbox', { qs: params }),
+  markNotificationRead: (id) =>
+    call(`/api/notifications/inbox/${encodeURIComponent(id)}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: () => call('/api/notifications/inbox/read-all', { method: 'POST' }),
 
   createCamp: (payload) => call('/api/camps', { method: 'POST', body: payload }),
   updateCamp: (campId, payload) =>
@@ -191,7 +269,7 @@ export const api = {
     call('/api/admin/notifications', { qs: { page, pageSize: limit } }),
   retryNotification: (id) =>
     call(`/api/admin/notifications/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
-  users: () => call('/api/admin/users'),
+  users: (params) => call('/api/admin/users', { qs: params }),
   setRole: (id, role) =>
     call(`/api/admin/users/${encodeURIComponent(id)}/role`, {
       method: 'PATCH',
