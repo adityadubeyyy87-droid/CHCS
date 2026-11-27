@@ -59,7 +59,12 @@ export function Icon({ name, size = 18, className, strokeWidth = 1.6 }) {
 /* ------------------------------ buttons ------------------------------ */
 export function Button({ variant = 'primary', size = 'md', icon, children, className, loading, ...rest }) {
   return (
-    <button className={cls('btn', `btn-${variant}`, `btn-${size}`, loading && 'is-loading', className)} disabled={loading || rest.disabled} {...rest}>
+    <button
+      className={cls('btn', `btn-${variant}`, `btn-${size}`, loading && 'is-loading', className)}
+      disabled={loading || rest.disabled}
+      aria-busy={loading || undefined}
+      {...rest}
+    >
       {loading ? <span className="btn-spinner" aria-hidden="true" /> : icon ? <Icon name={icon} size={size === 'sm' ? 14 : 16} /> : null}
       <span>{children}</span>
     </button>

@@ -12,15 +12,30 @@ import {
 } from '../components/ui.jsx';
 import { AnimatedNumber, InView, Spotlight } from '../components/motion';
 
-const C = { ok: '#059669', ok2: '#10b981', amber: '#f59e0b', red: '#f87171', grid: 'rgba(148,163,184,0.15)' };
-
-const tooltipStyle = {
-  background: 'rgba(15,23,42,0.94)', border: '1px solid rgba(148,163,184,0.25)',
-  borderRadius: 12, color: '#e2e8f0', fontSize: 13, padding: '10px 12px',
+/* Charts read the active theme instead of assuming a dark canvas. */
+const CHART = {
+  dark: {
+    ok: '#10b981', ok2: '#34d399', amber: '#fbbf24', red: '#f87171',
+    grid: 'rgba(148,163,184,0.15)', tick: '#94a3b8', capacity: 'rgba(148,163,184,0.35)',
+    cursor: 'rgba(148,163,184,0.08)', tooltipBg: 'rgba(15,23,42,0.96)',
+    tooltipBorder: 'rgba(148,163,184,0.25)', tooltipText: '#e2e8f0',
+  },
+  light: {
+    ok: '#047857', ok2: '#059669', amber: '#b45309', red: '#b91c1c',
+    grid: 'rgba(15,23,42,0.12)', tick: '#475569', capacity: 'rgba(100,116,139,0.28)',
+    cursor: 'rgba(15,23,42,0.06)', tooltipBg: '#ffffff',
+    tooltipBorder: 'rgba(15,23,42,0.16)', tooltipText: '#0f172a',
+  },
 };
 
 export default function Analytics() {
-  const { toast } = useApp();
+  const { toast, theme } = useApp();
+  const chart = CHART[theme] || CHART.dark;
+  const tooltipStyle = {
+    background: chart.tooltipBg, border: `1px solid ${chart.tooltipBorder}`,
+    borderRadius: 12, color: chart.tooltipText, fontSize: 13, padding: '10px 12px',
+    boxShadow: 'var(--shadow-lg)',
+  };
   const data = useFetch(() => api.analytics(), []);
   const [physical, setPhysical] = useState(100);
   const [advisor, setAdvisor] = useState(null);
@@ -124,13 +139,13 @@ export default function Analytics() {
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.bookingsVsCapacity || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
-                      <CartesianGrid stroke={C.grid} vertical={false} />
-                      <XAxis dataKey="short" tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.08)' }} />
-                      <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
-                      <Bar dataKey="capacity" name="Slot capacity" fill="rgba(148,163,184,0.35)" radius={[6, 6, 0, 0]} />
-                      <Bar dataKey="bookings" name="Bookings" fill={C.ok} radius={[6, 6, 0, 0]} />
+                      <CartesianGrid stroke={chart.grid} vertical={false} />
+                      <XAxis dataKey="short" tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: chart.cursor }} />
+                      <Legend wrapperStyle={{ fontSize: 12, color: chart.tick }} />
+                      <Bar dataKey="capacity" name="Slot capacity" fill={chart.capacity} radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="bookings" name="Bookings" fill={chart.ok} radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -142,13 +157,13 @@ export default function Analytics() {
                 <div className="chart-box">
                   <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={charts.attendanceVsNoShow || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
-                      <CartesianGrid stroke={C.grid} vertical={false} />
-                      <XAxis dataKey="camp" tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.08)' }} />
-                      <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
-                      <Bar dataKey="attended" name="Attended" stackId="a" fill={C.ok} radius={[0, 0, 0, 0]} />
-                      <Bar dataKey="noShow" name="No-shows" stackId="a" fill={C.red} radius={[6, 6, 0, 0]} />
+                      <CartesianGrid stroke={chart.grid} vertical={false} />
+                      <XAxis dataKey="camp" tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: chart.cursor }} />
+                      <Legend wrapperStyle={{ fontSize: 12, color: chart.tick }} />
+                      <Bar dataKey="attended" name="Attended" stackId="a" fill={chart.ok} radius={[0, 0, 0, 0]} />
+                      <Bar dataKey="noShow" name="No-shows" stackId="a" fill={chart.red} radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -162,16 +177,16 @@ export default function Analytics() {
                     <AreaChart data={charts.hourlyUtilisation || []} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
                       <defs>
                         <linearGradient id="utilGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={C.ok2} stopOpacity={0.5} />
-                          <stop offset="100%" stopColor={C.ok2} stopOpacity={0.04} />
+                          <stop offset="0%" stopColor={chart.ok2} stopOpacity={0.5} />
+                          <stop offset="100%" stopColor={chart.ok2} stopOpacity={0.04} />
                         </linearGradient>
                       </defs>
-                      <CartesianGrid stroke={C.grid} vertical={false} />
-                      <XAxis dataKey="hour" tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis domain={[0, 100]} unit="%" tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.08)' }} />
-                      <ReferenceLine y={90} stroke={C.amber} strokeDasharray="5 4" label={{ value: 'Target 90%', fill: C.amber, fontSize: 11, position: 'insideTopRight' }} />
-                      <Area type="monotone" dataKey="utilisation" name="Utilisation" stroke={C.ok} strokeWidth={2.4} fill="url(#utilGrad)" />
+                      <CartesianGrid stroke={chart.grid} vertical={false} />
+                      <XAxis dataKey="hour" tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <YAxis domain={[0, 100]} unit="%" tick={{ fill: chart.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: chart.cursor }} />
+                      <ReferenceLine y={90} stroke={chart.amber} strokeDasharray="5 4" label={{ value: 'Target 90%', fill: chart.amber, fontSize: 11, position: 'insideTopRight' }} />
+                      <Area type="monotone" dataKey="utilisation" name="Utilisation" stroke={chart.ok} strokeWidth={2.4} fill="url(#utilGrad)" />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
