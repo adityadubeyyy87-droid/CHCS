@@ -40,7 +40,6 @@ Agent guidance for anyone working on this project. Read before editing.
 - Route hash-based: `#/welcome` (cinematic landing, default when signed out), `#/overview`, `#/discover`, `#/myBookings`, `#/staffDay`, `#/liveQueue`, `#/manage`, `#/analytics`, `#/notifications`, `#/settings`.
 - Nav IDs must match `PAGES` in `frontend/src/App.jsx` and `NAV` in `frontend/src/components/Shell.jsx`.
 - Status badges use `ui.jsx` `Badge` tone map: `ok`/`warn`/`bad`/`info`/`muted` (the `sim` tone is reserved for honest SMTP/SMS sandbox labels, never for database results).
-- Science annotations via `Sci` from `ui.jsx` — toggle body class `science-on`.
 - Kannada strings are partial localization (nav + primary actions only); long-form clinical copy stays English.
 
 ---
