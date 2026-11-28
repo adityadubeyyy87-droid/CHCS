@@ -14,6 +14,7 @@ import { useCampRoom } from './useCampRoom.js';
 
 export function ManualLookupCard({ campId, onCheckedIn }) {
   const { toast, socket } = useApp();
+  const campJoined = useCampRoom(campId);
   const [mode, setMode] = useState('phone');
   const [phone, setPhone] = useState('');
   const [token, setToken] = useState('');
