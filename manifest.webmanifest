@@ -1,0 +1,18 @@
+{
+  "name": "CHSC · Community Health Screening Camp Scheduler",
+  "short_name": "CHSC",
+  "description": "Free community health screening camps — slots, QR passes, live queues and alerts.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#06120d",
+  "theme_color": "#059669",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
