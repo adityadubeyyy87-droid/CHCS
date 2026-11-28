@@ -15,7 +15,6 @@ const COMMANDS = [
   { key: 'manage', label: 'Camp Management', icon: 'clipboard', desc: 'Create & staff camps', action: 'manage' },
   { key: 'analytics', label: 'Executive Analytics', icon: 'chart', desc: 'KPIs & capacity advisor', action: 'analytics' },
   { key: 'controlRoom', label: 'Control Room', icon: 'radio', desc: 'Real-time camp operations', action: 'controlRoom' },
-  { key: 'concurrencyProof', label: 'Concurrency Proof', icon: 'zap', desc: 'Live MySQL row-lock verification', action: 'concurrencyProof' },
   { key: 'auditLog', label: 'Audit Log', icon: 'clipboard', desc: 'Who changed what, and when', action: 'auditLog' },
   { key: 'notifications', label: 'Notification Center', icon: 'bell', desc: 'Gateway interceptor log', action: 'notifications' },
   { key: 'settings', label: 'Settings & Privacy', icon: 'gear', desc: 'Theme, language, data purge', action: 'settings' },

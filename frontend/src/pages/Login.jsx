@@ -3,7 +3,7 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Field, Icon, Input, Select, Sci, Skeleton } from '../components/ui.jsx';
+import { Badge, Button, Field, Icon, Input, Select, Skeleton } from '../components/ui.jsx';
 
 const Hero3D = lazy(() => import('../components/Hero3D.jsx'));
 import { TextShimmer, Magnetic } from '../components/motion';
@@ -261,7 +261,7 @@ export default function Login() {
                   </Field>
                   <Field label="Password" hint="Min 8 characters"><Input type="password" value={form.password} onChange={set('password')} autoComplete="new-password" /></Field>
                 </div>
-                <p className="muted consent-note"><Sci k="privacy"><Icon name="shield" size={13} /> We store only name, phone, email and age group — no medical history, ever.</Sci></p>
+                <p className="muted consent-note"><Icon name="shield" size={13} /> We store only name, phone, email and age group — no medical history, ever.</p>
                 <Magnetic intensity={0.4} range={80}>
                   <Button type="submit" loading={busy === 'reg'} className="auth-cta w-full">Create account</Button>
                 </Magnetic>

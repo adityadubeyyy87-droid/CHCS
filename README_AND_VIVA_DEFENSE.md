@@ -61,12 +61,11 @@ There are no seeded accounts. Four staff accounts (admin, organizer, doctor, vol
 
 These use records created through the API in the running MySQL instance. Never fabricate a scenario with sample rows in a deployed environment.
 
-1. **Last-Seat Concurrency** — run the real row-lock proofs:
+1. **Last-Seat Concurrency** — run the real row-lock proof:
    ```bash
-   cd backend && node concurrency-test.js   # 20 requests / 1 seat → 1 held+confirmed, 19 FIFO-waitlisted, 0 overbooked
-   cd backend && npm test                   # includes 50 requests / 10 seats → 10 held+confirmed, 40 waitlisted, 0 overbooked
+   cd backend && npm test -- tests/integration/concurrency.test.js   # 50 requests / 10 seats → 10 held+confirmed, 40 FIFO-waitlisted, 0 overbooked
    ```
-   The 50-way proof is the mandatory invariant and is reproduced by `backend/scripts/verify-live.js` against the running Express + MySQL stack.
+   The 50-way proof is the mandatory invariant and runs against a real MySQL database; there is no browser simulation.
 2. **Waitlist Auto-Promotion** — cancel a real confirmed booking for a full slot; the first waiting neighbour is promoted inside the same transaction, and the notification audit log records the attempt (Sandbox-labelled when no gateway credentials are configured).
 3. **QR Check-In** — verify a real QR token from a confirmed booking and watch the Live Queue TV update over Socket.io (`checkin:new` / `queue:updated`).
 4. **Smart Analytics** — executive KPIs and the Capacity Advisor computed from real MySQL aggregates.
@@ -99,7 +98,6 @@ database/migrations/            Incremental DDL migrations
 backend/scripts/db.js            Local setup + idempotent production schema/migrations
 backend/scripts/bootstrap-production.js  Creates real staff accounts from env vars
 backend/server.js                Express API, JWT auth, row-lock transactions, Socket.io, cron
-backend/concurrency-test.js      50-way last-seat race (10/40/0, real MySQL proof)
 backend/tests/integration/       50-way / 10-seat proof and hold-expiry tests
 backend/seed.js                  LOCAL ONLY — never run in production
 backend/.env.example             DB + JWT + mail configuration template

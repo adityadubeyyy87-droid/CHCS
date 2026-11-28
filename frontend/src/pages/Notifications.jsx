@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Sci, Skeleton } from '../components/ui.jsx';
+import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Skeleton } from '../components/ui.jsx';
 import { relTime } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
@@ -67,11 +67,9 @@ export default function Notifications() {
                 </Magnetic>
               </Spotlight>
             )} />
-          <Sci k="privacy" as="div" className="sci-block">
-            <p className="muted">
-              Message bodies contain logistics only — token, venue, time. No health information is ever sent or stored.
-            </p>
-          </Sci>
+          <p className="muted">
+            Message bodies contain logistics only — token, venue, time. No health information is ever sent or stored.
+          </p>
 
           {log.loading && <div className="stack-md"><Skeleton h={64} /><Skeleton h={64} /><Skeleton h={64} /></div>}
           {log.error && <ErrorNote onRetry={log.reload}>{log.error}</ErrorNote>}

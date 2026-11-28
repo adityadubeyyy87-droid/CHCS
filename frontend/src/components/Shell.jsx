@@ -1,6 +1,6 @@
 // Shell.jsx — Biophilic Clinical Precision shell: hairline sidebar,
 // top bar, global search, notification center, EN/ಕನ್ನಡ switch,
-// theme toggle, science X-ray toggle, profile menu, toasts, mode indicator.
+// theme toggle, profile menu, toasts, mode indicator.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store.jsx';
 import { api } from '../lib/api.js';
@@ -16,7 +16,6 @@ export const NAV = [
   { id: 'manage', icon: 'clipboard', labelKey: 'nav.manage', label: 'Camp Management', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'analytics', icon: 'chart', labelKey: 'nav.analytics', label: 'Analytics', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'readiness', icon: 'flask', labelKey: 'nav.readiness', label: 'Ops Readiness', roles: ['ORGANIZER', 'ADMIN'] },
-  { id: 'concurrencyProof', icon: 'zap', labelKey: 'nav.concurrencyProof', label: 'Concurrency Proof', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'controlRoom', icon: 'radio', labelKey: 'nav.controlRoom', label: 'Control Room', roles: ['ORGANIZER', 'ADMIN'] },
   { id: 'auditLog', icon: 'clipboard', labelKey: 'nav.auditLog', label: 'Audit Log', roles: ['ADMIN'] },
   { id: 'notifications', icon: 'bell', labelKey: 'nav.notifications', label: 'Notifications', roles: ['PATIENT', 'ORGANIZER', 'DOCTOR', 'VOLUNTEER', 'ADMIN'] },
@@ -28,7 +27,7 @@ export const PAGE_ACCESS = Object.fromEntries(NAV.map((item) => [item.id, item.r
 const PAGE_TITLES = {
   overview: 'Overview', discover: 'Find Health Camps', myBookings: 'My Appointments',
   staffDay: 'Camp Day', liveQueue: 'Live Queue TV', manage: 'Camp Management',
-  analytics: 'Executive Analytics', concurrencyProof: 'Concurrency Proof',
+  analytics: 'Executive Analytics',
   readiness: 'Ops Readiness',
   controlRoom: 'Control Room', auditLog: 'Audit Log', notifications: 'Notification Center',
   settings: 'Settings',
@@ -36,7 +35,7 @@ const PAGE_TITLES = {
 
 export default function Shell({ children }) {
   const app = useApp();
-  const { user, page, setPage: navigate, t, lang, setLang, theme, setTheme, science, setScience, mode, connectionError, refreshConnection, unread, setUnread, gateway, drawerOpen, setDrawerOpen, screenshotMode, setScreenshotMode } = app;
+  const { user, page, setPage: navigate, t, lang, setLang, theme, setTheme, mode, connectionError, refreshConnection, unread, setUnread, gateway, drawerOpen, setDrawerOpen, screenshotMode, setScreenshotMode } = app;
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
@@ -227,10 +226,6 @@ export default function Shell({ children }) {
             <Badge tone={mode === 'live' ? 'ok' : mode === 'error' ? 'bad' : 'muted'} className="mode-badge">
               {mode === 'live' ? 'LIVE · MySQL' : mode === 'error' ? 'Connection error' : 'Connecting…'}
             </Badge>
-
-            <button className={cls('icon-btn', 'topbar-util', science && 'active')} onClick={() => setScience(!science)} aria-pressed={science} aria-label="Toggle science annotations" title="Biophilic Science X-Ray — annotate the science behind the interface">
-              <Icon name="flask" />
-            </button>
 
             <button
               className="icon-btn topbar-util"

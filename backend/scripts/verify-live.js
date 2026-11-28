@@ -443,53 +443,6 @@ async function main() {
   const holdSweep = await api('POST', '/api/admin/holds/expire', { token: tokens.ADMIN, body: {} });
   assert('hold/promotion expiry sweep runs', holdSweep.status === 200 && typeof holdSweep.body?.expiredHolds === 'number');
 
-  /* ------------------------------------------------------- concurrency proof */
-  const proof = await api('POST', '/api/admin/concurrency-proof', {
-    token: tokens.ADMIN,
-    body: { campId },
-  });
-  const p = proof.body || {};
-  assert(
-    'concurrency proof: 50 requests / 10 confirmed / 40 waitlisted / 0 violations',
-    proof.status === 200 &&
-      p.totalRequests === 50 &&
-      p.capacity === 10 &&
-      p.confirmed === 10 &&
-      p.waitlisted === 40 &&
-      p.errors === 0 &&
-      p.zeroOverbooked === true,
-    JSON.stringify({ total: p.totalRequests, confirmed: p.confirmed, waitlisted: p.waitlisted, errors: p.errors, zeroOverbooked: p.zeroOverbooked }),
-  );
-  assert(
-    'concurrency proof assigned distinct FIFO positions 1..40',
-    Array.isArray(p.positions) &&
-      JSON.stringify([...p.positions].sort((a, b) => a - b)) ===
-        JSON.stringify(Array.from({ length: 40 }, (_, i) => i + 1)),
-  );
-  assert(
-    'proof records live pre-cleanup DB evidence (10 seats / 40 waiters)',
-    p.db?.capacity === 10 &&
-      p.db?.booked_count === 10 &&
-      p.db?.confirmedBookings === 10 &&
-      p.db?.waitingBookings === 40,
-    JSON.stringify(p.db),
-  );
-  const afterProof = await api('GET', `/api/camps/${campId}/slots`);
-  const proofSlot = (afterProof.body?.slots || []).find(
-    (slot) => Number(slot.id) === Number(p.slotId),
-  );
-  assert(
-    'proof cleanup restored the reused slot booked_count to 0',
-    Boolean(proofSlot) && Number(proofSlot.bookedCount) === 0,
-    `slot #${p.slotId} bookedCount ${proofSlot?.bookedCount ?? 'missing'}`,
-  );
-  assert(
-    'no temporary bookings remain in the public slot view',
-    afterProof.status === 200 &&
-      Array.isArray(afterProof.body?.slots) &&
-      afterProof.body.slots.every((slot) => Number(slot.bookedCount) <= Number(slot.capacity)),
-  );
-
   /* ------------------------------------------------------------------ close-out */
   const closeOut = await api('POST', `/api/camps/${checkinCamp.body.camp.id}/close-out`, {
     token: tokens.ORGANIZER,

@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Input, Sci, Skeleton } from '../components/ui.jsx';
+import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Icon, Input, Skeleton } from '../components/ui.jsx';
 import { FamilyMembersCard, PreScreeningFields, EMPTY_PRESCREENING, prescreeningComplete } from '../components/PatientWorkflows.jsx';
 import { Passport } from '../components/Passport.jsx';
 import Confetti from '../components/Confetti.jsx';
@@ -260,7 +260,7 @@ export default function Discover() {
 
   return (
     <div className="discover">
-      <Sci k="zeigarnik" as="div" className="steps-wrap">
+      <div className="steps-wrap">
         <ol className="steps" aria-label="Booking progress">
           {['Camp', 'Choose a slot', 'Confirm'].map((label, i) => (
             <li key={label} className={cls(step > i + 0 && step !== 0 && 'done', step === i + 1 && 'current')} aria-current={step === i + 1 ? 'step' : undefined}>
@@ -269,7 +269,7 @@ export default function Discover() {
             </li>
           ))}
         </ol>
-      </Sci>
+      </div>
 
       <div className="discover-grid">
         <aside className="discover-list">
@@ -363,9 +363,7 @@ export default function Discover() {
                   <div><small>Slot length</small><strong>{selected.slotDurationMins} min</strong></div>
                   <div><small>Screening seats</small><strong>{selected.physicalCapacity}</strong></div>
                 </div>
-                <Sci k="hicks">
-                  <Button icon="chevronR" onClick={() => setStep(2)}>Choose a time slot</Button>
-                </Sci>
+                <Button icon="chevronR" onClick={() => setStep(2)}>Choose a time slot</Button>
               </Card>
             </InView>
           )}
@@ -373,7 +371,7 @@ export default function Discover() {
           {selected && step === 2 && (
             <Card className="slot-card entrance card-tilt">
               <CardHead icon="clock" title={`Pick a slot — ${fmtDate(selected.campDate)}`}
-                sub={`${selected.slotDurationMins} min screening windows · Miller's Law: times are grouped into three chunks, not one long list.`}
+                sub={`${selected.slotDurationMins} min screening windows · times are grouped into three chunks, not one long list.`}
                 actions={<Button size="sm" variant="ghost" icon="chevronL" onClick={() => setStep(1)}>Back</Button>} />
 
               {['morning', 'midday', 'afternoon'].map((band) => grouped[band].length > 0 && (
@@ -417,9 +415,9 @@ export default function Discover() {
               {slot && (
                 <Spotlight color="rgba(16, 185, 129, 0.1)" size={400}>
                   <div className="commit-panel">
-                    <Sci k="intent" as="div" className="sci-block">
+                    <div>
                       <h4>Plan your visit <Badge tone="info">commitment improves follow-through</Badge></h4>
-                    </Sci>
+                    </div>
                     <div className="travel-row" role="radiogroup" aria-label="How will you get there?">
                       {TRAVEL.map((t) => (
                         <Magnetic key={t.id} intensity={0.2} range={50}>
@@ -467,7 +465,7 @@ export default function Discover() {
                     {error && <div className="error-note compact" role="alert"><Icon name="alert" size={14} /><p>{error}</p></div>}
                     <div className="slot-actions">
                       {slotTone(slot.remaining, slot.capacity) === 'full' ? (
-                        <Sci k="fifo"><Magnetic intensity={0.3}><Button icon="users" loading={busy} onClick={confirm}>Join waitlist (FIFO)</Button></Magnetic></Sci>
+                        <Magnetic intensity={0.3}><Button icon="users" loading={busy} onClick={confirm}>Join waitlist (FIFO)</Button></Magnetic>
                       ) : (
                         <Magnetic intensity={0.3}><Button icon="check" loading={busy} onClick={confirm}>Hold this seat for 10 min — {fmtTime12(slot.startTime)}</Button></Magnetic>
                       )}

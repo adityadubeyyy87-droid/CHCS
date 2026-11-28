@@ -19,7 +19,7 @@ A) A browser "race" that creates temporary booking rows and animates results. (P
 B) Run the existing backend concurrency test against a throwaway MySQL database and show its output. (Pro: real InnoDB locks, no production data touched. Cons: terminal output.)
 C) No proof. (Cons: weak evidence for the 10 implementation marks.)
 
-**Choice:** B — the mandatory proof is `backend/tests/integration/concurrency.test.js` (50 requests / 10 seats → 10 held+confirmed, 40 waitlisted, 0 overbooked), runnable against the live database through `backend/concurrency-test.js` with proof-only row cleanup. A browser page may explain the mechanism but never fabricates a result.
+**Choice:** B — the mandatory proof is `backend/tests/integration/concurrency.test.js` (50 requests / 10 seats → 10 held+confirmed, 40 waitlisted, 0 overbooked), runnable against a throwaway MySQL database. There is no browser proof page; the UI never fabricates a result.
 
 **Risk:** Rate limits or lock timeouts. Fallback: run in CI/local with `RATE_LIMIT_DISABLED=true` against a throwaway database; never weaken production limits to stage a proof.
 

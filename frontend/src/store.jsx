@@ -1,5 +1,5 @@
 // store.jsx — global app state: auth, live connection status, theme, language,
-// science overlay, toasts, real gateway feed, Socket.io and routing.
+// toasts, real gateway feed, Socket.io and routing.
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { api, probeHealth, setToken, setUser } from './lib/api.js';
@@ -20,7 +20,6 @@ export function AppProvider({ children }) {
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('chsc_theme') || 'dark');
   const [lang, setLang] = useState(() => localStorage.getItem('chsc_lang') || 'en');
-  const [science, setScience] = useState(false);
   const [page, setPage] = useState(() => {
     const hash = location.hash.replace('#/', '');
     if (hash) return hash;
@@ -199,16 +198,16 @@ export function AppProvider({ children }) {
   }, []);
 
   const value = useMemo(() => ({
-    mode, connectionError, user, theme, lang, science, page, toasts, gateway,
+    mode, connectionError, user, theme, lang, page, toasts, gateway,
     drawerOpen, unread, screenshotMode, inbox, inboxUnread,
-    setTheme, setLang, setScience, setPage: navigate, setDrawerOpen, setUnread, setScreenshotMode,
+    setTheme, setLang, setPage: navigate, setDrawerOpen, setUnread, setScreenshotMode,
     toast, pushGateway, t, signIn, signOut, refreshConnection, refreshInbox,
     socketOnline,
     isStaff: Boolean(user && ['DOCTOR', 'VOLUNTEER'].includes(user.role)),
     isOrganizer: Boolean(user && ['ORGANIZER', 'ADMIN'].includes(user.role)),
     isAdmin: Boolean(user && user.role === 'ADMIN'),
     socket: socketRef.current,
-  }), [mode, connectionError, user, theme, lang, science, page, toasts, gateway, drawerOpen, unread,
+  }), [mode, connectionError, user, theme, lang, page, toasts, gateway, drawerOpen, unread,
     screenshotMode, inbox, inboxUnread, toast, pushGateway, t, signIn, signOut, refreshConnection,
     refreshInbox, navigate, socketOnline]);
 

@@ -8,14 +8,14 @@ import {
 } from '../lib/push.js';
 import {
   Badge, Button, Card, CardHead, EmptyState, ErrorNote, Field, Icon, Input,
-  Modal, Sci, Select, Skeleton,
+  Modal, Select, Skeleton,
 } from '../components/ui.jsx';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 import { ApprovalsCard, OrgSettingsCard, UserAdminCard } from '../components/AdminWorkflows.jsx';
 
 export default function Settings() {
   const app = useApp();
-  const { user, theme, setTheme, lang, setLang, science, setScience, screenshotMode, setScreenshotMode, toast, signOut, t } = app;
+  const { user, theme, setTheme, lang, setLang, screenshotMode, setScreenshotMode, toast, signOut, t } = app;
   const [confirmPurge, setConfirmPurge] = useState(false);
   const [purging, setPurging] = useState(false);
   const isAdmin = user?.role === 'ADMIN';
@@ -60,19 +60,8 @@ export default function Settings() {
               </div>
               <div className="setting-row">
                 <div>
-                  <strong>Biophilic Science X-Ray</strong>
-                  <p className="muted">Overlay the behavioral-science annotation chips across the interface.</p>
-                </div>
-                <Magnetic intensity={0.3}>
-                  <Button size="sm" variant={science ? 'primary' : 'ghost'} icon="flask" onClick={() => setScience(!science)} aria-pressed={science}>
-                    {science ? 'Annotations ON' : 'Annotations OFF'}
-                  </Button>
-                </Magnetic>
-              </div>
-              <div className="setting-row">
-                <div>
                   <strong>Clean PPT screenshot mode</strong>
-                  <p className="muted">Hides chrome and annotations for clean presentation captures.</p>
+                  <p className="muted">Hides chrome for clean presentation captures.</p>
                 </div>
                 <Magnetic intensity={0.3}>
                   <Button size="sm" variant={screenshotMode ? 'primary' : 'ghost'} icon="camera" onClick={() => setScreenshotMode(!screenshotMode)} aria-pressed={screenshotMode}>
@@ -95,9 +84,7 @@ export default function Settings() {
               <div><small>Age group</small><strong>{user?.ageGroup || 'Not collected'}</strong></div>
               <div><small>Language</small><strong>{(user?.preferredLanguage || lang).toUpperCase()}</strong></div>
             </div>
-            <Sci k="privacy" as="div" className="sci-block">
-              <p className="muted config-note"><Icon name="flask" size={13} /> Name, phone, email, age group — that is the complete schema. No diagnosis, prescription or report field exists anywhere in the database.</p>
-            </Sci>
+            <p className="muted config-note"><Icon name="flask" size={13} /> Name, phone, email, age group — that is the complete schema. No diagnosis, prescription or report field exists anywhere in the database.</p>
           </Card>
         </InView>
 

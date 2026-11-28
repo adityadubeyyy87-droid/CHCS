@@ -166,7 +166,7 @@
     <div class="card">
       <h4>Stress Test: 50 parallel bookings vs 10 seats</h4>
       <p class="emerald" style="font-size: 16px; font-weight: 700;">✓ Exactly 10 confirmed · 40 waitlisted (FIFO positions 1–40) · 0 overbooked · 0 server errors</p>
-      <p>Proof: <code>backend/concurrency-test.js</code> — runs against real MySQL InnoDB row locks.</p>
+      <p>Proof: <code>backend/tests/integration/concurrency.test.js</code> — runs against real MySQL InnoDB row locks.</p>
     </div>
     <div class="footer">CHSC — Academic Review-2 · Booking Concurrency</div>
   </div>
@@ -269,7 +269,7 @@
         <tr><td>2:00–2:30</td><td>My Bookings</td><td>Cancel / Reschedule / Calendar</td></tr>
         <tr><td>2:30–3:00</td><td>Login as Organizer</td><td>Create camp, assign staff, load warning</td></tr>
         <tr><td>3:00–3:30</td><td>Admin analytics</td><td>KPIs, charts, Capacity Advisor, CSV</td></tr>
-        <tr><td>3:30–4:00</td><td>Concurrency proof</td><td><code>node concurrency-test.js</code> → 10/40/0</td></tr>
+        <tr><td>3:30–4:00</td><td>Concurrency proof</td><td><code>npm test -- tests/integration/concurrency.test.js</code> → 10/40/0</td></tr>
         <tr><td>4:00–5:00</td><td>Q&A</td><td>Viva questions & answers</td></tr>
       </tbody>
     </table>

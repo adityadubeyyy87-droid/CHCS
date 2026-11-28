@@ -11,6 +11,7 @@ import { fmtDate, fmtTime12 } from '../lib/format.js';
 import { Magnetic, InView, Spotlight } from '../components/motion';
 
 const NativeBarcodeDetector = typeof window !== 'undefined' ? window.BarcodeDetector : null;
+const FALLBACK_SCAN_INTERVAL_MS = 160;
 
 export default function StaffDay() {
   const { toast, pushGateway, socket } = useApp();
@@ -26,8 +27,11 @@ export default function StaffDay() {
   const [campId, setCampId] = useState(null);
   const campJoined = useCampRoom(campId);
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const detectorRef = useRef(null);
+  const jsQrRef = useRef(null);
+  const lastFallbackScanRef = useRef(0);
   const scanFrameRef = useRef(null);
   const scanningRef = useRef(false);
 
@@ -38,19 +42,53 @@ export default function StaffDay() {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     detectorRef.current = null;
+    lastFallbackScanRef.current = 0;
     if (videoRef.current) videoRef.current.srcObject = null;
     setScanning(false);
+  }, []);
+
+  /** Lazy-loaded decoder for browsers without the native BarcodeDetector API. */
+  const loadFallbackDecoder = useCallback(async () => {
+    if (jsQrRef.current) return jsQrRef.current;
+    const module = await import('jsqr');
+    const decoder = module.default || module;
+    if (typeof decoder !== 'function') {
+      throw new Error('The fallback QR decoder could not be loaded.');
+    }
+    jsQrRef.current = decoder;
+    return decoder;
   }, []);
 
   const scanFrame = useCallback(async () => {
     if (!scanningRef.current) return;
     const video = videoRef.current;
-    if (video && video.readyState >= 2 && detectorRef.current) {
+    if (video && video.readyState >= 2) {
       try {
-        const codes = await detectorRef.current.detect(video);
-        const code = codes.find((item) => item.rawValue?.trim());
-        if (code) {
-          const raw = code.rawValue.trim();
+        let raw = null;
+        if (detectorRef.current) {
+          const codes = await detectorRef.current.detect(video);
+          raw = codes.find((item) => item.rawValue?.trim())?.rawValue.trim() || null;
+        } else if (jsQrRef.current && canvasRef.current) {
+          // jsQR is CPU-bound, so sample a few frames per second rather than
+          // decoding every animation frame.
+          const now = performance.now();
+          if (now - lastFallbackScanRef.current >= FALLBACK_SCAN_INTERVAL_MS) {
+            lastFallbackScanRef.current = now;
+            const width = video.videoWidth;
+            const height = video.videoHeight;
+            if (width && height) {
+              const canvas = canvasRef.current;
+              canvas.width = width;
+              canvas.height = height;
+              const context = canvas.getContext('2d', { willReadFrequently: true });
+              context.drawImage(video, 0, 0, width, height);
+              const image = context.getImageData(0, 0, width, height);
+              const found = jsQrRef.current(image.data, image.width, image.height);
+              raw = found?.data?.trim() || null;
+            }
+          }
+        }
+        if (raw) {
           setToken(raw);
           stopScanner();
           toast('QR captured — review the token and verify check-in.', 'ok', raw);
@@ -65,12 +103,16 @@ export default function StaffDay() {
 
   async function startScanner() {
     setCameraError(null);
-    if (!NativeBarcodeDetector || !navigator.mediaDevices?.getUserMedia) {
-      setCameraError('Camera QR scanning is not available in this browser. Enter the token manually.');
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera access is not available in this browser. Enter the token manually.');
       return;
     }
     try {
-      detectorRef.current = new NativeBarcodeDetector({ formats: ['qr_code'] });
+      if (NativeBarcodeDetector) {
+        detectorRef.current = new NativeBarcodeDetector({ formats: ['qr_code'] });
+      } else {
+        await loadFallbackDecoder();
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' } }, audio: false,
       });
@@ -205,6 +247,7 @@ export default function StaffDay() {
                 hidden={!scanning}
                 aria-label="QR camera preview"
               />
+              <canvas ref={canvasRef} hidden aria-hidden="true" />
               {!scanning && (
                 <Button size="sm" icon="camera" onClick={startScanner}>
                   Scan QR with camera
@@ -216,8 +259,8 @@ export default function StaffDay() {
                 </Button>
               )}
               <p className="muted small">
-                Camera scanning uses the browser's native QR detector. If it is unavailable or permission is denied,
-                enter the reference from the patient's pass below.
+                Camera scanning uses the browser's native QR detector, with a bundled fallback decoder
+                when it is unavailable. If the camera is blocked, enter the reference from the patient's pass below.
               </p>
               {cameraError && <ErrorNote>{cameraError}</ErrorNote>}
             </div>

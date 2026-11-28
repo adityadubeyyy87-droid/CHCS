@@ -1,6 +1,6 @@
 // App.jsx — top-level wiring: provider → auth gate → route RBAC → shell + pages.
-// Page transitions (clip-path reveal), science-on body class, CommandPalette
-// (⌘K), and global audio context start on first click.
+// Page transitions (clip-path reveal), CommandPalette (⌘K), and global audio
+// context start on first click.
 import React, { Suspense, lazy } from 'react';
 import { AppProvider, useApp } from './store.jsx';
 import Shell, { PAGE_ACCESS } from './components/Shell.jsx';
@@ -20,7 +20,6 @@ const LiveQueuePage = lazy(() =>
 const Manage = lazy(() => import('./pages/Manage.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
 const Readiness = lazy(() => import('./pages/Readiness.jsx'));
-const ConcurrencyProof = lazy(() => import('./pages/ConcurrencyProof.jsx'));
 const ControlRoom = lazy(() => import('./pages/ControlRoom.jsx'));
 const AuditLog = lazy(() => import('./pages/AuditLog.jsx'));
 const Notifications = lazy(() => import('./pages/Notifications.jsx'));
@@ -35,7 +34,6 @@ const PAGES = {
   manage: Manage,
   analytics: Analytics,
   readiness: Readiness,
-  concurrencyProof: ConcurrencyProof,
   controlRoom: ControlRoom,
   auditLog: AuditLog,
   notifications: Notifications,
@@ -43,7 +41,7 @@ const PAGES = {
 };
 
 function Routes() {
-  const { user, page, science, screenshotMode, setScreenshotMode, setPage } = useApp();
+  const { user, page, screenshotMode, setScreenshotMode, setPage } = useApp();
   const [prevPage, setPrevPage] = React.useState(page);
   const [transitioning, setTransitioning] = React.useState(false);
   const [audioStarted, setAudioStarted] = React.useState(false);
@@ -57,11 +55,6 @@ function Routes() {
       window.removeEventListener('keydown', start);
     };
   }, []);
-
-  React.useEffect(() => {
-    document.body.classList.toggle('science-on', Boolean(science));
-    return () => document.body.classList.remove('science-on');
-  }, [science]);
 
   React.useEffect(() => {
     if (!screenshotMode) return undefined;

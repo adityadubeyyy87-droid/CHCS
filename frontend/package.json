@@ -16,6 +16,7 @@
     "@react-three/fiber": "^8.18.0",
     "@tailwindcss/vite": "^4.3.5",
     "clsx": "^2.1.1",
+    "jsqr": "^1.4.0",
     "lodash": "4.17.21",
     "lucide-react": "^1.71.0",
     "motion": "^14.12.0",

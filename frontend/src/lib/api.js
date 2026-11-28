@@ -284,21 +284,6 @@ export const api = {
   expireHolds: () => call('/api/admin/holds/expire', { method: 'POST' }),
   auditLog: (params = {}) => call('/api/admin/audit-log', { qs: params }),
 
-  /**
-   * The backend requires a published campId; callers select a real camp first.
-   * With no camp selected this fails honestly instead of inventing a target.
-   */
-  concurrencyProof: (campId) => {
-    const id = Number(campId);
-    if (!Number.isInteger(id)) {
-      const error = new Error('Select a published camp before running the proof.');
-      error.code = 'VALIDATION';
-      return Promise.reject(error);
-    }
-    return call('/api/admin/concurrency-proof', { method: 'POST', body: { campId: id } });
-  },
-  concurrency: (campId) => api.concurrencyProof(campId),
-
   purgeMe: () => call('/api/users/me/purge', { method: 'DELETE' }),
 
   /**

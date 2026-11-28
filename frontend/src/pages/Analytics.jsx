@@ -8,7 +8,7 @@ import {
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import {
-  Badge, Button, Card, CardHead, Counter, EmptyState, ErrorNote, Icon, Sci, Skeleton, Slider,
+  Badge, Button, Card, CardHead, Counter, EmptyState, ErrorNote, Icon, Skeleton, Slider,
 } from '../components/ui.jsx';
 import { AnimatedNumber, InView, Spotlight } from '../components/motion';
 
@@ -84,12 +84,10 @@ export default function Analytics() {
 
   return (
     <div className="stack-lg analytics gap-6">
-      <Sci k="privacy" as="div" className="sci-block">
-        <div className="banner-quiet">
-          <Icon name="shield" size={16} />
-          <p>Every number here is derived from booking logistics only — never from medical data, which the platform does not collect.</p>
-        </div>
-      </Sci>
+      <div className="banner-quiet">
+        <Icon name="shield" size={16} />
+        <p>Every number here is derived from booking logistics only — never from medical data, which the platform does not collect.</p>
+      </div>
 
       {data.loading && (
         <div className="bento">
@@ -270,9 +268,7 @@ function CapacityAdvisor({ advisor, busy, physical, setPhysical }) {
             p = empirical no-show rate from completed bookings; α_max = 25% hard safety ceiling.
             {advisor && <> Current p = <strong>{advisor.noShowRate}%</strong> ({advisor.noShows} no-shows in {advisor.sampleSize} completed bookings).</>}
           </p>
-          <Sci k="ethical" as="div" className="sci-block">
-            <p className="muted small">{advisor?.interpretation}</p>
-          </Sci>
+          <p className="muted small">{advisor?.interpretation}</p>
         </div>
         <div className="advisor-results">
           {busy && !advisor && <Skeleton h={150} />}

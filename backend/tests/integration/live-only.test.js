@@ -2,7 +2,7 @@
 
 /**
  * Strict-live regressions: no demo surfaces, no fabricated data, honest sandbox
- * labels, PII-free promotion payloads, and a proof-only concurrency endpoint.
+ * labels and PII-free promotion payloads.
  */
 
 const {
@@ -14,7 +14,6 @@ const {
   insertNotification,
   insertUser,
   createCampFixture,
-  countRows,
   book,
   hold,
   confirm,
@@ -171,69 +170,13 @@ describe('strict live / real data only', () => {
     expect(payload).not.toContain(waiter.phone);
   });
 
-  it('runs 50 real transactions, leaves no proof rows and records an audit event', async () => {
+  it('no longer exposes the retired concurrency-proof endpoint', async () => {
     const admin = await insertUser({ role: 'ADMIN' });
-    const patient = await insertUser({ role: 'PATIENT' });
-    const fixture = await createCampFixture({ capacity: 10, startsInHours: 120 });
     await request(app)
       .post('/api/admin/concurrency-proof')
-      .set('Authorization', `Bearer ${patient.token}`)
-      .send({ campId: fixture.campId })
-      .expect(403);
-
-    const beforeUsers = await countRows('SELECT COUNT(*) AS n FROM users');
-    const response = await request(app)
-      .post('/api/admin/concurrency-proof')
       .set('Authorization', `Bearer ${admin.token}`)
-      .send({ campId: fixture.campId })
-      .expect(200);
-
-    expect(response.body).toMatchObject({
-      slotId: fixture.slotId,
-      capacity: 10,
-      totalRequests: 50,
-      confirmed: 10,
-      waitlisted: 40,
-      errors: 0,
-      zeroOverbooked: true,
-      source: 'Live MySQL transactions (SELECT ... FOR UPDATE)',
-    });
-    expect(response.body.positions).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
-    // `db` is evidence captured before the finally-cleanup in the endpoint.
-    expect(response.body.db).toMatchObject({
-      booked_count: 10,
-      capacity: 10,
-      confirmedBookings: 10,
-      waitingBookings: 40,
-    });
-
-    expect(await countRows('SELECT booked_count FROM slots WHERE id = ?', [fixture.slotId])).toBe(0);
-    expect(
-      await countRows('SELECT COUNT(*) AS n FROM bookings WHERE slot_id = ?', [fixture.slotId]),
-    ).toBe(0);
-    expect(
-      await countRows('SELECT COUNT(*) AS n FROM waitlist WHERE slot_id = ?', [fixture.slotId]),
-    ).toBe(0);
-    expect(
-      await countRows("SELECT COUNT(*) AS n FROM users WHERE email LIKE 'proof.%@invalid.local'"),
-    ).toBe(0);
-    expect(await countRows('SELECT COUNT(*) AS n FROM users')).toBe(beforeUsers);
-
-    const [[slot]] = await pool.query('SELECT booked_count, capacity FROM slots WHERE id = ?', [
-      fixture.slotId,
-    ]);
-    expect(Number(slot.booked_count)).toBeLessThanOrEqual(Number(slot.capacity));
-
-    const audit = await request(app)
-      .get('/api/admin/audit-log?page=1&pageSize=100')
-      .set('Authorization', `Bearer ${admin.token}`)
-      .expect(200);
-    expect(audit.body.pagination).toMatchObject({ page: 1, pageSize: 100 });
-    const proofRow = audit.body.audit.find(
-      (row) => row.action === 'CONCURRENCY_PROOF' && Number(row.targetId) === fixture.campId,
-    );
-    expect(proofRow).toBeTruthy();
-    expect(proofRow.after).toMatchObject({ confirmed: 10, waitlisted: 40, errors: 0 });
+      .send({ campId: 1 })
+      .expect(404);
   });
 
   it('keeps DRAFT camps private while exposing them to the management workspace', async () => {

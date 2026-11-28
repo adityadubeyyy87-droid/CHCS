@@ -19,7 +19,7 @@
 **Platform:** web app, desktop + tablet + mobile. Strict-live only: Express + MySQL + Socket.io with no local simulation or offline fallback. Connection status is visible; a backend outage surfaces a real error rather than fabricated data.
 
 **Success criteria:**
-- A professor can be shown SELECT … FOR UPDATE concurrency (1 confirmed / 19 waitlisted / 0 overbooked) via the backend proof scripts.
+- A professor can be shown SELECT … FOR UPDATE concurrency (1 confirmed / 19 waitlisted / 0 overbooked) via the backend integration test.
 - A real community member can book a camp in three steps without instruction.
 - Every screen is presentation-ready with real data; no dead buttons and no fabricated outcomes.
 

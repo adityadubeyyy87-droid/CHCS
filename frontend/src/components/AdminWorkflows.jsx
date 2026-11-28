@@ -138,7 +138,6 @@ export function OrgSettingsCard() {
       requireCampApproval: Boolean(settings.data.requireCampApproval),
       supportedLanguages: settings.data.supportedLanguages?.length ? settings.data.supportedLanguages : ['en'],
       emailProviderMode: settings.data.emailProviderMode || 'SANDBOX',
-      smsProviderMode: 'SANDBOX',
     });
   }, [settings.data]);
 
@@ -198,9 +197,6 @@ export function OrgSettingsCard() {
                   <option value="SANDBOX">Sandbox</option>
                   <option value="LIVE">Live SMTP (requires credentials)</option>
                 </Select>
-              </Field>
-              <Field label="SMS delivery mode" hint="Paid SMS is intentionally unused. Web Push is free.">
-                <Select value="SANDBOX" disabled><option value="SANDBOX">Sandbox (paid SMS disabled)</option></Select>
               </Field>
             </div>
             <Button type="submit" icon="check" loading={busy}>Save settings</Button>

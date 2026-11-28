@@ -4,7 +4,7 @@ import React, { Suspense, lazy, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import {
-  Badge, Button, Card, CardHead, ErrorNote, Icon, Sci, Skeleton, EmptyState,
+  Badge, Button, Card, CardHead, ErrorNote, Icon, Skeleton, EmptyState,
 } from '../components/ui.jsx';
 import { PassportModal } from '../components/Passport.jsx';
 import {

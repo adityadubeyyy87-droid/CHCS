@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
-import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Field, Icon, Input, Modal, Sci, Select, Skeleton } from '../components/ui.jsx';
+import { Badge, Button, Card, CardHead, EmptyState, ErrorNote, Field, Icon, Input, Modal, Select, Skeleton } from '../components/ui.jsx';
 import { AnnouncementCard, ChecklistCard, OrganizerFeedbackCard, TemplatesCard, WaitlistCard } from '../components/OrganizerWorkflows.jsx';
 import { WalkinCard } from '../components/StaffWorkflows.jsx';
 import { fmtDate, fmtTime12 } from '../lib/format.js';
@@ -244,14 +244,12 @@ export default function Manage() {
                   </span>
                 </div>
               )}
-              <Sci k="miller" as="div" className="sci-block">
-                <p className="muted config-note">
-                  <Icon name="flask" size={13} />
-                  k = floor((T<sub>end</sub> − T<sub>start</sub>) / Δt) = <strong>{camp.slots.length}</strong> slots ·
-                  base seat load {Math.floor(camp.totalCapacity / camp.slots.length)} + remainder spread earliest-first.
-                  No overlaps, no partial windows.
-                </p>
-              </Sci>
+              <p className="muted config-note">
+                <Icon name="flask" size={13} />
+                k = floor((T<sub>end</sub> − T<sub>start</sub>) / Δt) = <strong>{camp.slots.length}</strong> slots ·
+                base seat load {Math.floor(camp.totalCapacity / camp.slots.length)} + remainder spread earliest-first.
+                No overlaps, no partial windows.
+              </p>
             </Card>
 
             <Card>

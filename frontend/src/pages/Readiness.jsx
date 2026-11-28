@@ -8,7 +8,7 @@ import React, { useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
 import { api } from '../lib/api.js';
 import {
-  Badge, Button, Card, CardHead, ErrorNote, Icon, Sci, Skeleton,
+  Badge, Button, Card, CardHead, ErrorNote, Icon, Skeleton,
 } from '../components/ui.jsx';
 
 const BAND_TONE = { READY: 'ok', ATTENTION: 'warn', BLOCKED: 'bad' };
@@ -26,14 +26,12 @@ function codeList(provider) {
 
 const PROVIDER_VIEW = {
   EMAIL: { icon: 'send', title: 'Email delivery', testLabel: 'email' },
-  SMS: { icon: 'radio', title: 'SMS delivery', testLabel: 'SMS' },
   PUSH: { icon: 'bell', title: 'Free browser alerts', testLabel: 'browser alert' },
 };
 
 function ProviderCard({ channel, provider, canTest, testing, onTest, deviceCount }) {
   const view = PROVIDER_VIEW[channel] || PROVIDER_VIEW.EMAIL;
   const isEmail = channel === 'EMAIL';
-  const isSms = channel === 'SMS';
   const isPush = channel === 'PUSH';
 
   return (
@@ -55,15 +53,6 @@ function ProviderCard({ channel, provider, canTest, testing, onTest, deviceCount
             <strong className="mono readiness-from">{provider.from}</strong>
           </div>
         )}
-        {isSms && (
-          <div>
-            <small className="muted">Route</small>
-            <strong className="mono">
-              {provider.route}
-              {provider.route === 't' ? ' · transactional' : ' · quick'}
-            </strong>
-          </div>
-        )}
         {isPush && (
           <>
             <div>
@@ -77,13 +66,6 @@ function ProviderCard({ channel, provider, canTest, testing, onTest, deviceCount
           </>
         )}
       </div>
-
-      {isSms && (
-        <div className="readiness-dlt">
-          <Badge tone={provider.dlt?.sender ? 'ok' : 'muted'}>DLT sender {provider.dlt?.sender ? 'set' : 'missing'}</Badge>
-          <Badge tone={provider.dlt?.template ? 'ok' : 'muted'}>DLT template {provider.dlt?.template ? 'set' : 'missing'}</Badge>
-        </div>
-      )}
 
       <div className="readiness-env">{codeList(provider)}</div>
 
@@ -204,14 +186,14 @@ export default function Readiness() {
           <div className="kpi"><div className="value">{integrity.failedNotifications}</div><div className="label">Failed messages</div></div>
           <div className="kpi"><div className="value ok">{integrity.browserDevices || 0}</div><div className="label">Browser devices</div></div>
         </div>
-        <Sci k="ethical" as="p" className="muted small">
+        <p className="muted small">
           Each score is 100 minus fixed penalties for named failures. This console is arithmetic over
           checkable conditions — not a model, and never a prediction about patients.
-        </Sci>
+        </p>
       </Card>
 
       <div className="bento">
-        <div className="bento-3">
+        <div className="bento-2">
           <ProviderCard
             channel="EMAIL"
             provider={provider.email || { present: {}, missing: [] }}
@@ -220,16 +202,7 @@ export default function Readiness() {
             onTest={runTest}
           />
         </div>
-        <div className="bento-3">
-          <ProviderCard
-            channel="SMS"
-            provider={provider.sms || { present: {}, missing: [] }}
-            canTest={isAdmin}
-            testing={testing}
-            onTest={runTest}
-          />
-        </div>
-        <div className="bento-3">
+        <div className="bento-2">
           <ProviderCard
             channel="PUSH"
             provider={provider.push || { present: {}, missing: [] }}

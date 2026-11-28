@@ -266,36 +266,3 @@ export function Slider({ label, value, min, max, step, onChange, format }) {
     </div>
   );
 }
-
-/* -------------------------- science annotation ------------------------ */
-const SCIENCE = {
-  hicks: { name: "Hick's Law", text: 'Decision time grows with the number of choices. Booking is compressed to 3 fixed steps, so each screen offers few, clear choices.' },
-  miller: { name: "Miller's Law", text: 'Working memory holds ~7±2 items. Slots are grouped into Morning / Midday / Afternoon chunks instead of one long list.' },
-  fitts: { name: "Fitts's Law", text: 'Time to target shrinks with size and proximity. Primary actions are at least 44px tall and sit where the eye already is.' },
-  jakob: { name: "Jakob's Law", text: 'Users expect your site to work like sites they already know. The slot grid follows familiar calendar/timetable patterns.' },
-  zeigarnik: { name: 'Zeigarnik Effect', text: 'Interrupted tasks are remembered better — an explicit 3-step progress indicator motivates completion of a started booking.' },
-  peakend: { name: 'Peak-End Rule', text: 'People judge an experience by its peak and its end. The confirmation moment gets a satisfying, celebratory pass reveal.' },
-  intent: { name: 'Implementation Intentions', text: 'Stating when/how/where ("I will arrive by auto by 09:45") measurably increases follow-through on plans (Gollwitzer, 1999).' },
-  ethical: { name: 'Ethical cancellation', text: 'Releasing a seat is one tap and penalty-free, so unused capacity returns to waiting neighbours instead of being wasted.' },
-  privacy: { name: 'Privacy by Design', text: 'Only name, phone, email and age group are collected — no medical history. Data minimisation per DPDP principles.' },
-  fifo: { name: 'FIFO fairness', text: 'Waitlist promotions follow strict first-in-first-out order under a row lock, so nobody can jump the queue.' },
-};
-
-export function Sci({ k, children, className, as: Tag = 'span' }) {
-  const s = SCIENCE[k];
-  const descriptionId = useId();
-  if (!s) return children;
-  return (
-    <Tag
-      className={cls('sci', className)}
-      data-sci={k}
-      role="note"
-      tabIndex={0}
-      aria-describedby={descriptionId}
-    >
-      {children}
-      <span className="sci-chip" aria-hidden="true">⌕ {s.name}</span>
-      <span className="sci-pop" id={descriptionId} role="tooltip">{s.text}</span>
-    </Tag>
-  );
-}

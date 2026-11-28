@@ -113,7 +113,6 @@ backend/server.js           Express API, JWT auth, row-lock transactions, Socket
 backend/scripts/db.js       Local setup + idempotent production schema/migrations
 backend/scripts/bootstrap-production.js  Creates real staff accounts from env vars
 backend/seed.js             LOCAL ONLY — never run in production
-backend/concurrency-test.js 50-way last-seat race (10/40/0)
 backend/tests/              Unit + integration tests, incl. 50-way / 10-seat proof
 frontend/                   React 18 + Vite app (strict live, no fallback engine)
 frontend/dist/              Production build (served by backend)
