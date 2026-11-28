@@ -1,5 +1,5 @@
 // StaffWorkflows.jsx — manual check-in lookup, live service queue with ETA and
-// completion records, quick clinical notes, and volunteer/organizer walk-ins.
+// completion records, quick operational notes, and volunteer/organizer walk-ins.
 // All reads and writes go through api.js; Socket.io only triggers real reloads.
 import React, { useEffect, useState } from 'react';
 import { useApp, useFetch } from '../store.jsx';
@@ -229,8 +229,8 @@ export function ServiceQueueCard({ campId }) {
                 ))}
               </Select>
             </Field>
-            <Field label="Outcome" hint="Clinical observation or referral — kept with this visit only.">
-              <textarea className="input" rows={3} maxLength={2000} value={outcome} onChange={(e) => setOutcome(e.target.value)} placeholder="e.g. BP within range, advised follow-up" />
+            <Field label="Service note" hint="Short operational screening note only — no diagnoses, prescriptions, or lab reports.">
+              <textarea className="input" rows={3} maxLength={2000} value={outcome} onChange={(e) => setOutcome(e.target.value)} placeholder="e.g. screening completed, advised follow-up desk" />
             </Field>
             <label className="pledge"><input type="checkbox" checked={complete} onChange={(e) => setComplete(e.target.checked)} /><span>Mark the visit complete</span></label>
             <div className="modal-foot">
