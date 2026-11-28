@@ -14,7 +14,7 @@ const NativeBarcodeDetector = typeof window !== 'undefined' ? window.BarcodeDete
 const FALLBACK_SCAN_INTERVAL_MS = 160;
 
 export default function StaffDay() {
-  const { toast, pushGateway, socket } = useApp();
+  const { toast, pushGateway, socket, isAdmin } = useApp();
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -26,6 +26,7 @@ export default function StaffDay() {
   const assignments = useFetch(() => api.staffMe(), []);
   const [campId, setCampId] = useState(null);
   const campJoined = useCampRoom(campId);
+  const campsFallback = useFetch(() => api.camps(), [], { skip: !isAdmin });
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -179,6 +180,12 @@ export default function StaffDay() {
     if (list.length && !campId) setCampId(list[0].campId);
   }, [assignments.data, campId]);
 
+  useEffect(() => {
+    if (!isAdmin || campId) return;
+    const fallback = campsFallback.data?.camps?.[0];
+    if (fallback?.id) setCampId(fallback.id);
+  }, [isAdmin, campId, campsFallback.data]);
+
   useEffect(() => { loadQueue(); }, [loadQueue]);
 
   useEffect(() => {
@@ -195,7 +202,9 @@ export default function StaffDay() {
   }, [socket, campJoined, loadQueue]);
 
   const duty = assignments.data?.assignments || [];
-  const currentCamp = duty.find((a) => Number(a.campId) === Number(campId));
+  const fallbackCamps = isAdmin ? (campsFallback.data?.camps || []) : [];
+  const currentCamp = duty.find((a) => Number(a.campId) === Number(campId))
+    || fallbackCamps.find((c) => Number(c.id) === Number(campId));
   const resultTitle = result?.error
     ? 'Check-in failed'
     : result?.status === 'ALREADY_CHECKED_IN'
@@ -208,7 +217,35 @@ export default function StaffDay() {
         <Card>
           <CardHead icon="stetho" title="Staff Duty Roster" sub="Your assigned camps and shifts" />
           {assignments.loading ? <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={64} />)}</div> : assignments.error ? <ErrorNote onRetry={assignments.reload}>{assignments.error}</ErrorNote> : duty.length === 0 ? (
-            <EmptyState icon="stetho" title="No duty assignments yet">An organizer can assign you to a camp from Manage → Staff matrix.</EmptyState>
+            isAdmin ? (
+              campsFallback.loading ? <div className="stack">{[0, 1, 2].map((i) => <Skeleton key={i} h={64} />)}</div>
+                : campsFallback.error ? <ErrorNote onRetry={campsFallback.reload}>{campsFallback.error}</ErrorNote>
+                  : fallbackCamps.length === 0 ? <EmptyState icon="stetho" title="No camps available">Create a camp before using Staff Day.</EmptyState>
+                    : (
+                      <div className="stack-sm">
+                        <p className="muted small">Admin view: no personal duty assignments. Select a camp to operate Staff Day.</p>
+                        <div className="camp-rows">
+                          {fallbackCamps.map((c) => (
+                            <InView key={c.id} once>
+                              <button type="button" className={`camp-row ${Number(campId) === Number(c.id) ? 'sel' : ''}`} onClick={() => setCampId(c.id)}>
+                                <div className="camp-date">
+                                  <strong>{fmtDate(c.campDate).split(',')[1] || c.campDate}</strong>
+                                  <small>{fmtDate(c.campDate).split(',')[0]}</small>
+                                </div>
+                                <div className="camp-row-main">
+                                  <strong>{c.title || `Camp #${c.id}`}</strong>
+                                  <small className="muted">{c.venue} · {fmtTime12(c.startTime)}–{fmtTime12(c.endTime)}</small>
+                                </div>
+                                <Badge tone="info">Admin</Badge>
+                              </button>
+                            </InView>
+                          ))}
+                        </div>
+                      </div>
+                    )
+            ) : (
+              <EmptyState icon="stetho" title="No duty assignments yet">An organizer can assign you to a camp from Manage → Staff matrix.</EmptyState>
+            )
           ) : (
             <div className="camp-rows">
               {duty.map((a) => (
